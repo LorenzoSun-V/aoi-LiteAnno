@@ -28,7 +28,7 @@ liteanno_check_toolchain_pin()
 qt_standard_project_setup()
 
 if(MSVC)
-    add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus)
+    add_compile_options(/utf-8 /W4 /permissive- /Zc:__cplusplus /bigobj)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
 endif()

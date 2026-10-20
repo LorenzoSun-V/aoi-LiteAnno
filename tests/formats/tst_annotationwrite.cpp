@@ -7,6 +7,10 @@
 #include <QTest>
 
 #include <algorithm>
+#include <cstddef>
+#include <optional>
+#include <string>
+#include <vector>
 
 using namespace liteanno;
 using namespace liteanno::formats;

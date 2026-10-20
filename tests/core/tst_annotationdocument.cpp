@@ -2,6 +2,8 @@
 
 #include <QTest>
 
+#include <utility>
+
 using namespace liteanno;
 
 namespace {
