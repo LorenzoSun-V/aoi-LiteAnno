@@ -38,8 +38,7 @@ QString shapeTypeName(ShapeType type)
         if (entry.type == type)
             return QString::fromUtf16(entry.name);
     }
-    Q_UNREACHABLE();
-    return QString();
+    return QString();  // Not reached: kShapeTypes has an entry for every ShapeType.
 }
 
 bool isEditableShapeType(ShapeType type)

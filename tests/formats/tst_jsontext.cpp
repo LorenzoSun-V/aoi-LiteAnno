@@ -93,10 +93,14 @@ private slots:
     void stringEscapes()
     {
         Json value = std::string("\"\\/\b\f\n\r\t\x01\x1f\x7f");
-        QCOMPARE(serializeJson(value), QByteArray(R"("\"\\/\b\f\n\r\t\u0001\u001f)" "\x7f\""));
+        // A plain literal held outside QCOMPARE: MSVC's preprocessor mangles a raw string with
+        // backslashes when QCOMPARE turns its arguments into text.
+        const QByteArray expected("\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0001\\u001f\x7f\"");
+        QCOMPARE(serializeJson(value), expected);
         value = std::string("\xE5\x88\x92\xE4\xBC\xA4 \xF0\x9F\x98\x80");  // "划伤 😀"
         QCOMPARE(serializeJson(value), QByteArray("\"\xE5\x88\x92\xE4\xBC\xA4 \xF0\x9F\x98\x80\""));
-        QCOMPARE(serializeJson(json(R"({"a\nb": 1})")), QByteArray("{\n  \"a\\nb\": 1\n}"));
+        const Json escapedKey = json(R"({"a\nb": 1})");
+        QCOMPARE(serializeJson(escapedKey), QByteArray("{\n  \"a\\nb\": 1\n}"));
     }
 
     void keyOrderIsKept()
