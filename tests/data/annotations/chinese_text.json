@@ -1,0 +1,42 @@
+{
+  "version": "3.0.0",
+  "flags": {
+    "\u5408\u683c": true
+  },
+  "checked": true,
+  "shapes": [
+    {
+      "label": "\u5212\u4f24",
+      "score": null,
+      "points": [
+        [
+          1.5,
+          2.5
+        ],
+        [
+          3.5,
+          2.5
+        ],
+        [
+          3.5,
+          4.5
+        ],
+        [
+          1.5,
+          4.5
+        ]
+      ],
+      "group_id": null,
+      "description": "\u7b2c\u4e00\u884c\n\u7b2c\u4e8c\u884c\u0001\u63a7\u5236\u5b57\u7b26 \"\u5f15\u53f7\" \\\u53cd\u659c\u6760 \ud83d\ude00",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "\u6837\u672c 01.png",
+  "imageData": null,
+  "imageHeight": 64,
+  "imageWidth": 64
+}

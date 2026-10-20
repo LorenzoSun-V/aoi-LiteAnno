@@ -1,0 +1,44 @@
+{
+  "version": "0.1.0",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "label": "scratch",
+      "score": null,
+      "points": [
+        [
+          1.0,
+          1.0
+        ],
+        [
+          5.0,
+          1.0
+        ],
+        [
+          5.0,
+          5.0
+        ],
+        [
+          1.0,
+          5.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    }
+  ],
+  "imagePath": "0008.png",
+  "imageData": null,
+  "imageHeight": 100,
+  "imageWidth": 100,
+  "liteanno": {
+    "formatVersion": "1.5",
+    "reviewRound": 2
+  }
+}

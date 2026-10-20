@@ -1,0 +1,14 @@
+# Sources are stored and checked out with LF line endings on every platform.
+* text=auto eol=lf
+
+# Test data is compared byte for byte; some fixtures use CRLF or a BOM on purpose.
+tests/data/** -text
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.bmp binary
+*.tif binary
+*.tiff binary
+*.webp binary
+*.ico binary
