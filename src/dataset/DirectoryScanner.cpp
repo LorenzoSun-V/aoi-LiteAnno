@@ -223,6 +223,27 @@ bool isImageFileName(const QString& fileName)
     return kImageSuffixes.contains(suffixOf(fileName));
 }
 
+bool hasNameCollision(const QString& imageFile)
+{
+    const QFileInfo image(imageFile);
+    const QString name = image.fileName();
+    const QString stem = comparisonKey(name.left(name.lastIndexOf(QLatin1Char('.'))));
+    const QDir folder = image.dir();
+    const QFileInfoList entries =
+        folder.entryInfoList(QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
+    if (entries.isEmpty() && cannotList(folder.path()))
+        return true;
+    int sameStem = 0;
+    for (const QFileInfo& entry : entries) {
+        const QString other = entry.fileName();
+        if (!isImageFileName(other) || hasHiddenOrSystemAttribute(entry))
+            continue;
+        if (comparisonKey(other.left(other.lastIndexOf(QLatin1Char('.')))) == stem && ++sameStem > 1)
+            return true;
+    }
+    return false;
+}
+
 ScanResult scanDirectory(const QString& root, const ScanOptions& options)
 {
     ScanResult result;

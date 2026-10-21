@@ -21,6 +21,7 @@ struct SaveJobResult {
     QString imagePath;
     quint64 sessionId = 0;
     quint64 entryId = 0;
+    qint64 documentVersion = 0;
     SaveOutcome outcome;
     // The clone that was saved, and the file after the save; for DocumentSession::savedSnapshot.
     // After a failed save, the edits that were not written and the file they expect.

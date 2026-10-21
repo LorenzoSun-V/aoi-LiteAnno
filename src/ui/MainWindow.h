@@ -67,6 +67,7 @@ public:
     // "重新扫描": lists the folder again and checks what changed (architecture 6.1).
     void rescan();
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
+    application::BackgroundSaver* saver() const { return m_saver.get(); }
 
     // For tests and status displays.
     int imageCount() const { return int(m_images.size()); }
@@ -137,14 +138,24 @@ private:
     // Recovery records the user answered "以后再说" for; their images stay read-only so that
     // a new save does not replace the record.
     QSet<QString> m_deferredRecords;
+    // Recovery records not offered because the image has a name collision: writing them
+    // would go into the annotation file the images share. Offered once the collision is gone.
+    QSet<QString> m_collisionRecords;
     // Edits whose save failed and left no recovery record (the local folder was not writable
     // either). They live only here; opening the image again continues from them.
     struct HeldEdit {
         std::shared_ptr<formats::AnnotationFile> file;
         formats::FileStamp stamp;
         QString error;
+        // The session and its document version the edits come from. Sessions are numbered
+        // in the order they were opened, so a save result only concerns held edits that are
+        // not newer than what it saved.
+        quint64 sessionId = 0;
+        qint64 version = 0;
     };
     QHash<QString, HeldEdit> m_heldEdits;
+    // Whether edits held for the image are newer than the save of (sessionId, version).
+    bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
     QTimer m_idleTimer;
     int m_savingWaits = 0;

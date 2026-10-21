@@ -154,6 +154,24 @@ private slots:
 
     // The scan pairs the file the editor opens and saves (formats::existingAnnotationPath),
     // also where several files differ only in the case of the extension.
+    // The check for one image agrees with the full scan.
+    void nameCollisionOfOneImage()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("a.png"));
+        touch(root, QStringLiteral("a.json"));
+        touch(root, QStringLiteral("b.png"));
+        touch(root, QStringLiteral("b.txt"));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("a.png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("b.png"))));
+        touch(root, QStringLiteral("A.JPG"));
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("a.png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("b.png"))));
+        for (const ScannedImage& image : scanDirectory(root.path()).images)
+            QCOMPARE(hasNameCollision(root.filePath(image.path)), image.nameCollision);
+    }
+
     void pairingMatchesTheEditor()
     {
         QTemporaryDir dir;

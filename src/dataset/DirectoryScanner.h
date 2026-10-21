@@ -59,4 +59,10 @@ ScanResult scanDirectory(const QString& root, const ScanOptions& options = {});
 
 bool isImageFileName(const QString& fileName);
 
+// Whether another image in the same folder as `imageFile` (an absolute path) has the same
+// stem or the same name under the comparison of format spec 3: STEM_COLLISION or
+// NAME_COLLISION found without a full scan. True also when the folder cannot be listed,
+// since then nothing says the shared annotation file may be written.
+bool hasNameCollision(const QString& imageFile);
+
 } // namespace liteanno::dataset

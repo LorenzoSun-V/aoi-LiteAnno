@@ -164,6 +164,7 @@ void BackgroundSaver::run()
         result.imagePath = job.snapshot.imagePath;
         result.sessionId = job.snapshot.sessionId;
         result.entryId = job.snapshot.entryId;
+        result.documentVersion = job.snapshot.documentVersion;
         result.outcome = m_coordinator.save(job.snapshot.imagePath, job.snapshot.annotation,
                                             job.snapshot.documentVersion, job.options);
         result.stamp = job.snapshot.annotation.stamp;

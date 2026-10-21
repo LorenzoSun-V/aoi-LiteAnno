@@ -2,6 +2,7 @@
 
 #include "application/FileStatus.h"
 #include "application/RecoveryService.h"
+#include "dataset/DirectoryScanner.h"
 #include "imaging/ImageLoader.h"
 #include "ui/Texts.h"
 
@@ -483,6 +484,22 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
             }
         }
     }
+    // Recovery records held back for a name collision are offered when the image is opened
+    // next; the one shown is offered now.
+    for (auto it = m_collisionRecords.begin(); it != m_collisionRecords.end();) {
+        const int index = m_imageIndex.value(*it, -1);
+        if (index >= 0 && m_images[index].nameCollision) {
+            ++it;
+            continue;
+        }
+        m_deferredRecords.remove(*it);
+        it = m_collisionRecords.erase(it);
+    }
+    if (m_session && m_current >= 0 && m_session->isBlocked() && !m_deferredRecords.contains(m_session->imagePath())
+        && !m_session->needsSave()) {
+        handleRecoveryRecords(m_session->imagePath());
+        reloadCurrent();
+    }
     if (m_session && m_current >= 0)
         m_statuses.insert(m_session->imagePath(), m_session->status());
 
@@ -545,6 +562,7 @@ bool MainWindow::closeProject(bool force)
     m_statuses.clear();
     m_unwritten.clear();
     m_deferredRecords.clear();
+    m_collisionRecords.clear();
     m_heldEdits.clear();
     m_current = -1;
     m_imageList->clear();
@@ -583,6 +601,15 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         if (!onlyImage.isEmpty() && candidate.record.imagePath != onlyImage)
             continue;
+        // Format spec 2: restoring would write the annotation file the images share. The
+        // record stays, and the image read-only, until the collision is gone.
+        if (dataset::hasNameCollision(m_project->imageFilePath(candidate.record.imagePath))) {
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_deferredRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            continue;
+        }
+        m_collisionRecords.remove(candidate.record.imagePath);
         const RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
         application::RecordResult result;
         if (choice == RecoveryChoice::Restore)
@@ -595,7 +622,8 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         }
         if (result.status == application::RecordStatus::Done) {
-            m_unwritten.remove(candidate.record.imagePath);
+            if (!m_heldEdits.contains(candidate.record.imagePath))
+                m_unwritten.remove(candidate.record.imagePath);
             m_deferredRecords.remove(candidate.record.imagePath);
         } else {
             m_deferredRecords.insert(candidate.record.imagePath);
@@ -710,7 +738,8 @@ void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
         formats::LoadedAnnotation copy = m_session->copy();
         m_heldEdits.insert(m_session->imagePath(),
                            HeldEdit{std::make_shared<formats::AnnotationFile>(std::move(copy.file)), copy.stamp,
-                                    QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件")});
+                                    QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件"),
+                                    m_session->id(), m_session->version()});
         if (!m_unwritten.contains(m_session->imagePath())) {
             m_unwritten.insert(m_session->imagePath());
             refreshImageItem(m_current);
@@ -760,6 +789,14 @@ void MainWindow::flushSaves()
     } while (m_saver->pendingCount() > 0 || (!m_handlingResults && m_saver->hasResults()));
 }
 
+bool MainWindow::heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const
+{
+    const auto held = m_heldEdits.constFind(imagePath);
+    if (held == m_heldEdits.cend())
+        return false;
+    return held->sessionId > sessionId || (held->sessionId == sessionId && held->version > version);
+}
+
 void MainWindow::processSaveResults()
 {
     if (!m_saver || m_handlingResults)
@@ -769,9 +806,18 @@ void MainWindow::processSaveResults()
         const SaveStatus status = result.outcome.result.status;
         // Results of an earlier session of the same image (before "重新加载") are not this one's.
         const bool current = m_session && m_session->id() == result.sessionId;
+        // Edits held after this save was handed over (a name collision found meanwhile) are
+        // not what it wrote or failed to write; they stay.
+        const bool newerHeld = heldNewerThan(result.imagePath, result.sessionId, result.documentVersion);
         if (status == SaveStatus::Saved || status == SaveStatus::NotModified) {
-            m_unwritten.remove(result.imagePath);
-            m_heldEdits.remove(result.imagePath);
+            if (!newerHeld) {
+                m_unwritten.remove(result.imagePath);
+                m_heldEdits.remove(result.imagePath);
+            } else if (status == SaveStatus::Saved && m_heldEdits[result.imagePath].sessionId == result.sessionId) {
+                // The held edits go on from this session's own write; when they can be written
+                // the file they replace is this one, not an external change.
+                m_heldEdits[result.imagePath].stamp = result.stamp;
+            }
             if (status == SaveStatus::Saved && m_catalog && result.saved) {
                 // Format spec 5.4: what this program wrote counts without reading it again.
                 const int index = m_imageIndex.value(result.imagePath, -1);
@@ -790,14 +836,17 @@ void MainWindow::processSaveResults()
             }
             continue;
         }
-        if (result.outcome.recoveryRecordKept) {
+        if (newerHeld) {
+            // Kept as they are; the failed older version is in the recovery record, if any.
+        } else if (result.outcome.recoveryRecordKept) {
             m_heldEdits.remove(result.imagePath);
         } else if (result.saved) {
             m_heldEdits.insert(result.imagePath,
                                HeldEdit{result.saved, result.stamp,
                                         status == SaveStatus::ExternallyModified
                                             ? QStringLiteral(u"文件被其他程序修改过")
-                                            : result.outcome.result.error});
+                                            : result.outcome.result.error,
+                                        result.sessionId, result.documentVersion});
         }
         // The next commit hands the edits over again.
         if (current)
@@ -809,8 +858,10 @@ void MainWindow::processSaveResults()
                 continue;
             switch (m_prompts.externalChange(result.imagePath)) {
             case ExternalChangeChoice::Reload:
+                // The user gives up the edits for the file as it is now.
                 m_saver->coordinator().discardRecoveryRecord(result.imagePath);
                 m_unwritten.remove(result.imagePath);
+                m_heldEdits.remove(result.imagePath);
                 reloadCurrent();
                 break;
             case ExternalChangeChoice::Overwrite: {
