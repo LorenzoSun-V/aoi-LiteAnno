@@ -76,24 +76,6 @@ bool isValidKieLinking(const Json& value)
     });
 }
 
-// The major version of a "major.minor" string, or -1 when the string has another form.
-int formatMajorVersion(const std::string& text)
-{
-    const auto isDigits = [](std::string_view part) {
-        return !part.empty() && std::all_of(part.begin(), part.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
-    };
-    const std::size_t dot = text.find('.');
-    if (dot == std::string::npos)
-        return -1;
-    const std::string_view major(text.data(), dot);
-    const std::string_view minor(text.data() + dot + 1, text.size() - dot - 1);
-    if (!isDigits(major) || !isDigits(minor))
-        return -1;
-    int value = 0;
-    const auto parsed = std::from_chars(major.data(), major.data() + major.size(), value);
-    return parsed.ec == std::errc() ? value : -1;
-}
-
 // New and edited coordinates are always written as decimals, as upstream does (13.5).
 Json pointsToJson(const PointList& points)
 {
@@ -377,6 +359,18 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
             shape.locked = lockedIt->get<bool>();
         else
             addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/locked"));
+    }
+    const auto attributesIt = item.find("attributes");
+    if (attributesIt != item.end()) {
+        if (attributesIt->is_object()) {
+            // Only string values count as filled in (format spec 5.3); others stay in the file.
+            for (auto it = attributesIt->begin(); it != attributesIt->end(); ++it) {
+                if (it->is_string())
+                    shape.attributes.insert(QString::fromStdString(it.key()), fromJson(*it));
+            }
+        } else if (!attributesIt->is_null()) {
+            addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/attributes"));
+        }
     }
     return shape;
 }

@@ -11,21 +11,36 @@ function(liteanno_set_test_environment test)
     endif()
 endfunction()
 
+# A separate process for tests that kill a save midway or leave a lock behind.
+add_executable(liteanno_test_helper tools/test_helper.cpp common/ReliableSaveTestData.h)
+target_include_directories(liteanno_test_helper PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(liteanno_test_helper PRIVATE liteanno_application Qt6::Core)
+
 function(liteanno_add_test name)
-    add_executable(${name} ${ARGN} common/TestData.h)
+    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h)
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(${name} PRIVATE liteanno_formats liteanno_core liteanno_nlohmann_json Qt6::Test)
-    target_compile_definitions(${name} PRIVATE LITEANNO_TEST_DATA_DIR="${LITEANNO_TEST_DATA_DIR}")
+    target_link_libraries(${name} PRIVATE
+        liteanno_application liteanno_platform liteanno_formats liteanno_core liteanno_nlohmann_json Qt6::Test)
+    target_compile_definitions(${name} PRIVATE
+        LITEANNO_TEST_DATA_DIR="${LITEANNO_TEST_DATA_DIR}"
+        LITEANNO_TEST_HELPER="$<TARGET_FILE:liteanno_test_helper>")
     add_test(NAME ${name} COMMAND ${name})
     liteanno_set_test_environment(${name})
 endfunction()
 
 liteanno_add_test(tst_annotationdocument core/tst_annotationdocument.cpp)
+liteanno_add_test(tst_validation core/tst_validation.cpp)
+liteanno_add_test(tst_imagepath core/tst_imagepath.cpp)
 liteanno_add_test(tst_jsontext formats/tst_jsontext.cpp)
 liteanno_add_test(tst_annotationread formats/tst_annotationread.cpp)
 liteanno_add_test(tst_annotationwrite formats/tst_annotationwrite.cpp)
 liteanno_add_test(tst_annotationstore formats/tst_annotationstore.cpp)
 liteanno_add_test(tst_worksetfiles formats/tst_worksetfiles.cpp)
+liteanno_add_test(tst_projectfile formats/tst_projectfile.cpp)
+liteanno_add_test(tst_recoveryrecord formats/tst_recoveryrecord.cpp)
+liteanno_add_test(tst_volumebinding platform/tst_volumebinding.cpp)
+liteanno_add_test(tst_reliablesave application/tst_reliablesave.cpp common/ReliableSaveTestData.h)
+add_dependencies(tst_reliablesave liteanno_test_helper)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions

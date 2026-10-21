@@ -1,5 +1,7 @@
 add_subdirectory(core)
 add_subdirectory(formats)
+add_subdirectory(platform)
+add_subdirectory(application)
 if(LITEANNO_BUILD_UI)
     add_subdirectory(ui)
 endif()

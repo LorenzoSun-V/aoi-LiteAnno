@@ -40,4 +40,8 @@ std::string pythonFloatRepr(double value);
 // members, arrays element by element, numbers as doubles.
 bool jsonValuesEqual(const Json& a, const Json& b);
 
+// The major version of a "major.minor" format version string, or -1 for any other form
+// (format spec 13.5).
+int formatMajorVersion(const std::string& text);
+
 } // namespace liteanno::formats
