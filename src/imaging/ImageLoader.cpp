@@ -42,8 +42,9 @@ LoadedImage loadImage(const QString& path)
     reader.setDecideFormatFromContent(true);
     // Qt keeps images as stored unless asked (format spec 9.2).
     reader.setAutoTransform(true);
-    result.info.exifOrientation = exifOrientation(reader.transformation());
+    // Counted first: Qt's TIFF reader answers 1 once the orientation has been asked for.
     result.hasMoreFrames = reader.imageCount() > 1;
+    result.info.exifOrientation = exifOrientation(reader.transformation());
 
     QImage image = reader.read();
     if (image.isNull()) {

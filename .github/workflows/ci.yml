@@ -32,6 +32,8 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
+          # TIFF and WebP readers (format spec 9.1).
+          modules: qtimageformats
           aqtversion: "==3.3.0"
           cache: true
 
@@ -67,6 +69,7 @@ jobs:
           host: linux
           target: desktop
           arch: linux_gcc_64
+          modules: qtimageformats
           aqtversion: "==3.3.0"
           cache: true
 

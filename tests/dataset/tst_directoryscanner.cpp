@@ -81,6 +81,37 @@ private slots:
         QCOMPARE(result.unsupported, QStringList{QStringLiteral("line2/raw.dng")});
     }
 
+    // Format spec 3, 11: names are kept as they are on disk; Chinese names scan like others,
+    // and names that differ only in Unicode normalization collide.
+    void unicodeNames()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString chinese = QStringLiteral(u"产线一/划痕_001.png");
+        touch(root, chinese);
+        const QString nfc = QStringLiteral(u"l\u00e9.png");   // é as one code point
+        const QString nfd = QStringLiteral(u"le\u0301.png");  // e + combining acute
+        touch(root, QStringLiteral(u"u/") + nfc);
+        touch(root, QStringLiteral(u"u/") + nfd);
+        touch(root, QStringLiteral(u"u/plain.png"));
+
+        const ScanResult result = scanDirectory(dir.path());
+        QStringList found = paths(result);
+        QVERIFY2(found.contains(chinese), qPrintable(found.join(QLatin1Char(' '))));
+        const QStringList u = found.filter(QStringLiteral("u/"));
+        // Some file systems store one normalization form only; then both names are one file.
+        if (QDir(root.filePath(QStringLiteral("u"))).entryList(QDir::Files).size() < 3)
+            QSKIP("this file system normalizes names");
+        QCOMPARE(u.size(), 3);
+        for (const ScannedImage& image : result.images) {
+            const bool accented = image.path != QStringLiteral("u/plain.png") && image.path.startsWith(QLatin1String("u/"));
+            QCOMPARE(image.nameCollision, accented);
+            // The characters on disk, not a normalized form.
+            if (accented)
+                QVERIFY(image.path == QStringLiteral(u"u/") + nfc || image.path == QStringLiteral(u"u/") + nfd);
+        }
+    }
+
     // Windows attributes: system alone, hidden alone, on files and on directories.
     void windowsAttributes()
     {
