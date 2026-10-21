@@ -32,6 +32,8 @@ jobs:
           host: windows
           target: desktop
           arch: win64_msvc2022_64
+          # TIFF and WebP readers (format spec 9.1).
+          modules: qtimageformats
           aqtversion: "==3.3.0"
           cache: true
 
@@ -67,11 +69,18 @@ jobs:
           host: linux
           target: desktop
           arch: linux_gcc_64
+          modules: qtimageformats
           aqtversion: "==3.3.0"
           cache: true
 
+      - name: Install X-AnyLabeling for the round trips
+        # Format spec 11: files this program writes are read back by the pinned upstream release.
+        run: |
+          python3 -m venv "$RUNNER_TEMP/upstream"
+          "$RUNNER_TEMP/upstream/bin/pip" install --quiet "x-anylabeling-cvhub==4.2.0"
+
       - name: Configure
-        run: cmake --preset linux-gcc
+        run: cmake --preset linux-gcc -DLITEANNO_UPSTREAM_PYTHON="$RUNNER_TEMP/upstream/bin/python"
 
       - name: Build
         run: cmake --build --preset linux-gcc --parallel

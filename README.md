@@ -65,6 +65,15 @@ ctest --preset dev
 
 `ctest` 会运行全部单元测试、与 Python json 模块的逐字节对照，以及程序启动检查。没有 Python 3 时可以加 `-DLITEANNO_SKIP_PYTHON_TESTS=ON` 跳过字节对照。
 
+与 X-AnyLabeling 的往返验证（格式规范第 11 节）需要装有固定版本 X-AnyLabeling 的 Python，Linux CI 里会自动运行：
+
+```
+python3 -m venv ~/xal && ~/xal/bin/pip install "x-anylabeling-cvhub==4.2.0"
+cmake --preset linux-gcc -DLITEANNO_UPSTREAM_PYTHON=$HOME/xal/bin/python
+```
+
+样本包括：X-AnyLabeling 4.2.0 自己保存的各类形状文件、上游仓库里 2.4.0 写的示例（按固定版本下载并校验摘要）、仓库里的上游格式样本。每份样本先由 X-AnyLabeling 读取，再由本程序读入（不编辑时不写盘）、改类别、加矩形、加图片级标签、确认后写出，然后用 X-AnyLabeling 读回逐项比对，最后让 X-AnyLabeling 再存一次，本程序读回。现场标注文件不放进仓库，可以用 `tests/python/upstream_compat.py ... --field-dir <目录>` 在本地跑。
+
 ## 设计文档
 
 架构说明和标注文件格式规范 1.0 目前放在项目的共享文档中。代码注释里的 “format spec section N” 指格式规范的第 N 节，“architecture section N” 指架构说明的第 N 节。

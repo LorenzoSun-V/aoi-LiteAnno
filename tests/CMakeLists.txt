@@ -1,5 +1,7 @@
 option(LITEANNO_SKIP_PYTHON_TESTS
     "Do not run the byte-format comparison with Python's json module (needs Python 3)" OFF)
+set(LITEANNO_UPSTREAM_PYTHON "" CACHE FILEPATH
+    "A Python with X-AnyLabeling (x-anylabeling-cvhub) 4.2.0 installed; runs the round trips of format spec 11")
 
 set(LITEANNO_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
 
@@ -67,6 +69,31 @@ if(LITEANNO_BUILD_UI)
     add_test(NAME ui_starts COMMAND liteanno_ui --smoke-test)
     set_property(TEST ui_starts PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     liteanno_set_test_environment(ui_starts)
+
+    liteanno_add_test(tst_imageloader imaging/tst_imageloader.cpp)
+    target_link_libraries(tst_imageloader PRIVATE liteanno_imaging)
+    set_property(TEST tst_imageloader PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Format spec 11: round trips checked with X-AnyLabeling's own reader and writer.
+    add_executable(liteanno_compat_roundtrip tools/compat_roundtrip.cpp)
+    target_link_libraries(liteanno_compat_roundtrip PRIVATE liteanno_imaging liteanno_formats Qt6::Gui)
+    if(LITEANNO_UPSTREAM_PYTHON)
+        add_test(NAME upstream_compat
+            COMMAND "${LITEANNO_UPSTREAM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/python/upstream_compat.py"
+                    "$<TARGET_FILE:liteanno_compat_roundtrip>"
+                    "${LITEANNO_TEST_DATA_DIR}/annotations"
+                    "${CMAKE_CURRENT_BINARY_DIR}/upstream_compat")
+        set_property(TEST upstream_compat PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        liteanno_set_test_environment(upstream_compat)
+        # The checks must catch a writer that turns original true/false values into 1/0.
+        add_test(NAME upstream_compat_catches_changed_types
+            COMMAND "${LITEANNO_UPSTREAM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/python/upstream_compat.py"
+                    "$<TARGET_FILE:liteanno_compat_roundtrip>"
+                    "${LITEANNO_TEST_DATA_DIR}/annotations"
+                    "${CMAKE_CURRENT_BINARY_DIR}/upstream_compat_tamper" --tamper)
+        set_property(TEST upstream_compat_catches_changed_types PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        liteanno_set_test_environment(upstream_compat_catches_changed_types)
+    endif()
 
     liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
     target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)
