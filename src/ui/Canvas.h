@@ -43,7 +43,14 @@ public:
     QPointF imageToWidget(const QPointF& point) const;
     QPointF widgetToImage(const QPointF& point) const;
     void fitToWindow();
+    // Zooms by `factor` around the middle of the widget.
+    void zoomBy(double factor);
+    // One image pixel per screen pixel, keeping the middle where it is.
+    void zoomToOriginalSize();
     double zoom() const { return m_scale; }
+    // Takes back the last point of a polygon being drawn (Ctrl+Z while drawing, as in
+    // X-AnyLabeling). False when no polygon is being drawn.
+    bool removeLastPolygonPoint();
 
 signals:
     void shapeDrawn(const liteanno::Shape& shape);
@@ -62,6 +69,8 @@ protected:
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
 
 private:
     enum class Drag {
@@ -79,6 +88,9 @@ private:
     bool canEdit(qsizetype index) const;
     PointList displayedPoints(qsizetype index) const;
     void finishPolygon();
+    void zoomAround(const QPointF& anchor, double factor);
+    // Arrow keys: the selected shape moves one image pixel, unless that leaves the image.
+    void moveSelectedBy(const QPointF& delta);
     void cancelDrawing();
     QColor colorFor(const QString& label) const;
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
@@ -93,6 +105,7 @@ private:
     double m_scale = 1.0;
     QPointF m_offset;  // widget position of the image origin
     bool m_fitPending = true;
+    bool m_spaceHeld = false;  // Space + left button pans, as in X-AnyLabeling
 
     Drag m_drag = Drag::None;
     QPointF m_pressWidget;

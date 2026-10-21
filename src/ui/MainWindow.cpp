@@ -180,31 +180,61 @@ void MainWindow::buildUi()
     m_saveState = new QLabel;
     statusBar()->addPermanentWidget(m_saveState);
 
-    // Menus and tools.
+    // Menus and tools. Shortcuts are X-AnyLabeling 4.2.0's defaults (its
+    // xanylabeling_config.yaml), so people used to it need not learn new ones.
+    const auto named = [](QAction* action, const char* name) {
+        action->setObjectName(QLatin1String(name));
+        return action;
+    };
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral(u"文件(&F)"));
-    QAction* open = fileMenu->addAction(QStringLiteral(u"打开项目…"), this, &MainWindow::chooseProject);
-    open->setShortcut(QKeySequence::Open);
-    QAction* save = fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow);
-    save->setShortcut(QKeySequence::Save);
+    QAction* open = named(fileMenu->addAction(QStringLiteral(u"打开项目…"), this, &MainWindow::chooseProject), "open_dir");
+    open->setShortcut(QKeySequence(QStringLiteral("Ctrl+U")));
+    QAction* save = named(fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow), "save");
+    save->setShortcut(QKeySequence(QStringLiteral("Ctrl+S")));
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
     fileMenu->addSeparator();
-    fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close);
+    QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
+    quit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
 
     QMenu* editMenu = menuBar()->addMenu(QStringLiteral(u"编辑(&E)"));
-    m_undoAction = editMenu->addAction(QStringLiteral(u"撤销"), this, [this] { undo(); });
-    m_undoAction->setShortcut(QKeySequence::Undo);
-    m_redoAction = editMenu->addAction(QStringLiteral(u"重做"), this, [this] { redo(); });
-    m_redoAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+    m_undoAction = named(editMenu->addAction(QStringLiteral(u"撤销"), this, [this] { undo(); }), "undo");
+    m_undoAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Z")));
+    // X-AnyLabeling has no redo; Ctrl+Y is its "use the last label" switch, so it stays free.
+    m_redoAction = named(editMenu->addAction(QStringLiteral(u"重做"), this, [this] { redo(); }), "redo");
+    m_redoAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Z")));
+    editMenu->addSeparator();
+    QAction* editLabelAction = named(editMenu->addAction(QStringLiteral(u"修改类别"), this,
+                                                         [this] { editLabel(m_canvas->selectedShape()); }),
+                                     "edit_label");
+    editLabelAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+E")));
+    QAction* deleteAction = named(editMenu->addAction(QStringLiteral(u"删除选中形状"), this,
+                                                      [this] { deleteSelectedShape(); }),
+                                  "delete_polygon");
+    deleteAction->setShortcut(QKeySequence(QStringLiteral("Delete")));
+    QAction* checkAction = named(editMenu->addAction(QStringLiteral(u"确认当前图片"), this, [this] { confirmCurrent(); }),
+                                 "toggle_annotation_checked");
+    checkAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+K")));
+
+    QMenu* viewMenu = menuBar()->addMenu(QStringLiteral(u"视图(&V)"));
+    QAction* zoomIn = named(viewMenu->addAction(QStringLiteral(u"放大"), this, [this] { m_canvas->zoomBy(1.1); }), "zoom_in");
+    zoomIn->setShortcut(QKeySequence(QStringLiteral("Ctrl++")));
+    QAction* zoomOut = named(viewMenu->addAction(QStringLiteral(u"缩小"), this, [this] { m_canvas->zoomBy(1 / 1.1); }), "zoom_out");
+    zoomOut->setShortcut(QKeySequence(QStringLiteral("Ctrl+-")));
+    QAction* original = named(viewMenu->addAction(QStringLiteral(u"原始大小"), m_canvas, &Canvas::zoomToOriginalSize),
+                              "zoom_to_original");
+    original->setShortcut(QKeySequence(QStringLiteral("Ctrl+=")));
+    QAction* fit = named(viewMenu->addAction(QStringLiteral(u"适合窗口"), m_canvas, &Canvas::fitToWindow), "fit_window");
+    fit->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
 
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
     tools->setObjectName(QStringLiteral("tools"));
     auto* toolGroup = new QActionGroup(this);
-    m_selectTool = tools->addAction(QStringLiteral(u"选择 (V)"));
-    m_selectTool->setShortcut(Qt::Key_V);
-    m_rectangleTool = tools->addAction(QStringLiteral(u"矩形 (R)"));
-    m_rectangleTool->setShortcut(Qt::Key_R);
-    m_polygonTool = tools->addAction(QStringLiteral(u"多边形 (P)"));
-    m_polygonTool->setShortcut(Qt::Key_P);
+    m_selectTool = named(tools->addAction(QStringLiteral(u"选择 (Ctrl+J)")), "edit_polygon");
+    m_selectTool->setShortcut(QKeySequence(QStringLiteral("Ctrl+J")));
+    m_rectangleTool = named(tools->addAction(QStringLiteral(u"矩形 (R)")), "create_rectangle");
+    m_rectangleTool->setShortcut(QKeySequence(QStringLiteral("R")));
+    m_polygonTool = named(tools->addAction(QStringLiteral(u"多边形 (P)")), "create_polygon");
+    m_polygonTool->setShortcut(QKeySequence(QStringLiteral("P")));
     for (QAction* action : {m_selectTool, m_rectangleTool, m_polygonTool}) {
         action->setCheckable(true);
         toolGroup->addAction(action);
@@ -214,11 +244,11 @@ void MainWindow::buildUi()
     connect(m_rectangleTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Rectangle); });
     connect(m_polygonTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Polygon); });
     tools->addSeparator();
-    QAction* previous = tools->addAction(QStringLiteral(u"上一张 (A)"), this, [this] { previousImage(); });
-    previous->setShortcut(Qt::Key_A);
-    QAction* next = tools->addAction(QStringLiteral(u"下一张 (D)"), this, [this] { nextImage(); });
-    next->setShortcut(Qt::Key_D);
-    tools->addAction(QStringLiteral(u"适合窗口"), m_canvas, &Canvas::fitToWindow);
+    QAction* previous = named(tools->addAction(QStringLiteral(u"上一张 (A)"), this, [this] { previousImage(); }), "open_prev");
+    previous->setShortcut(QKeySequence(QStringLiteral("A")));
+    QAction* next = named(tools->addAction(QStringLiteral(u"下一张 (D)"), this, [this] { nextImage(); }), "open_next");
+    next->setShortcut(QKeySequence(QStringLiteral("D")));
+    tools->addAction(fit);
 }
 
 void MainWindow::buildImageLabelPanel()
@@ -423,9 +453,11 @@ bool MainWindow::goToImage(int index)
     // A save of that image may still be running; its file is read after it.
     if (m_saver->isPending(path))
         waitForSaver([this, path](int ms) { return m_saver->waitUntilIdle(path, ms); });
+    // The session goes first: a save of the image being left that already finished is
+    // reported like any other image's, not taken as the state of an image still shown.
+    dropSession();
     processSaveResults();
 
-    dropSession();
     m_current = index;
     // A record the user already put off is not asked about again; the image stays read-only.
     if (m_unwritten.contains(path) && !m_deferredRecords.contains(path))
@@ -705,6 +737,9 @@ bool MainWindow::unskipCurrent()
 
 bool MainWindow::undo()
 {
+    // While a polygon is being drawn, Ctrl+Z takes back its last point, as in X-AnyLabeling.
+    if (m_canvas->removeLastPolygonPoint())
+        return true;
     if (!m_session || !m_session->undo())
         return false;
     m_canvas->setSelectedShape(-1);
