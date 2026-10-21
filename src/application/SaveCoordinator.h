@@ -31,8 +31,8 @@ struct SaveOutcome {
 // record is removed. A crash or a pulled USB drive at any point leaves either the old file
 // and a record, or the new file.
 //
-// Synchronous for now; the pending-save limit of architecture section 8.2 comes with the
-// editing interface.
+// Synchronous; BackgroundSaver runs it on a worker thread under the pending-save limit of
+// architecture section 8.2.
 class SaveCoordinator
 {
 public:

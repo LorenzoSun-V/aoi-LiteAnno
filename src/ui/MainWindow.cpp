@@ -276,6 +276,7 @@ bool MainWindow::openProject(const QString& root)
     }
     m_project = std::move(result.session);
     application::SaveCoordinator coordinator(m_project->paths(), m_project->location());
+    coordinator.stageHook = m_options.saveStageHook;
     m_saver = std::make_unique<BackgroundSaver>(coordinator, m_options.saveLimits);
     connect(m_saver.get(), &BackgroundSaver::resultsReady, this, &MainWindow::processSaveResults,
             Qt::QueuedConnection);
@@ -388,7 +389,6 @@ bool MainWindow::goToImage(int index)
     processSaveResults();
 
     m_session.reset();
-    m_saveError.clear();
     m_current = index;
     if (m_unwritten.contains(path))
         handleRecoveryRecords(path);
@@ -411,6 +411,9 @@ bool MainWindow::previousImage()
 
 void MainWindow::loadCurrentImage()
 {
+    m_saveError.clear();
+    m_submittedVersion = -1;
+    m_externalChangeDeferred = false;
     const dataset::ScannedImage& scanned = m_images[m_current];
     const imaging::LoadedImage image = imaging::loadImage(m_project->imageFilePath(scanned.path));
     m_canvas->setImage(image.image);
@@ -436,14 +439,16 @@ void MainWindow::reloadCurrent()
     if (m_current < 0)
         return;
     m_session.reset();
-    m_saveError.clear();
     loadCurrentImage();
 }
 
-void MainWindow::commitCurrent(const formats::SaveOptions& options)
+void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
 {
     if (!m_session || !m_saver || m_session->isReadOnly() || !m_session->needsSave())
         return;
+    if (!force && m_session->version() == m_submittedVersion)
+        return;
+    m_submittedVersion = m_session->version();
     m_saver->submit(m_session->snapshot(), options);
     refresh();
 }
@@ -451,7 +456,9 @@ void MainWindow::commitCurrent(const formats::SaveOptions& options)
 void MainWindow::saveNow()
 {
     m_idleTimer.stop();
-    commitCurrent();
+    // An explicit save asks again about an external change answered with "以后再说".
+    const bool retry = std::exchange(m_externalChangeDeferred, false);
+    commitCurrent({}, retry);
 }
 
 bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
@@ -471,9 +478,12 @@ void MainWindow::flushSaves()
     if (!m_saver)
         return;
     commitCurrent();
-    if (m_saver->pendingCount() > 0)
-        waitForSaver([this](int ms) { return m_saver->waitUntilAllDone(ms); });
-    processSaveResults();
+    // Answering a prompt can hand over another save ("用我的版本覆盖").
+    do {
+        if (m_saver->pendingCount() > 0)
+            waitForSaver([this](int ms) { return m_saver->waitUntilAllDone(ms); });
+        processSaveResults();
+    } while (m_saver->pendingCount() > 0);
 }
 
 void MainWindow::processSaveResults()
@@ -489,10 +499,18 @@ void MainWindow::processSaveResults()
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
                 m_saveError.clear();
+                m_externalChangeDeferred = false;
             }
             continue;
         }
+        // The next commit hands the edits over again.
+        if (current)
+            m_submittedVersion = -1;
         if (current && status == SaveStatus::ExternallyModified) {
+            m_unwritten.insert(result.imagePath);
+            m_saveError = QStringLiteral(u"标注文件被其他程序修改，修改未写入");
+            if (m_externalChangeDeferred)
+                continue;
             switch (m_prompts.externalChange(result.imagePath)) {
             case ExternalChangeChoice::Reload:
                 m_saver->coordinator().discardRecoveryRecord(result.imagePath);
@@ -502,12 +520,11 @@ void MainWindow::processSaveResults()
             case ExternalChangeChoice::Overwrite: {
                 formats::SaveOptions overwrite;
                 overwrite.overwriteExternalChanges = true;
-                commitCurrent(overwrite);
+                commitCurrent(overwrite, true);
                 break;
             }
             case ExternalChangeChoice::Later:
-                m_saveError = QStringLiteral(u"标注文件被其他程序修改，修改未写入");
-                m_unwritten.insert(result.imagePath);
+                m_externalChangeDeferred = true;
                 break;
             }
             continue;

@@ -29,6 +29,8 @@ struct MainWindowOptions {
     application::LocalDataPaths localData = application::LocalDataPaths::standard();
     application::BackgroundSaver::Limits saveLimits;
     int idleSaveMs = 800;  // save this long after the last edit
+    // Tests slow saves down with it.
+    std::function<void(application::SaveStage)> saveStageHook;
 };
 
 // The editing window: one project, one image at a time (milestone 2).
@@ -83,7 +85,8 @@ private:
     void chooseProject();
     void handleRecoveryRecords(const QString& onlyImage = QString());
     void loadCurrentImage();
-    void commitCurrent(const formats::SaveOptions& options = {});
+    // Hands the current edits to the saver unless that version is already handed over.
+    void commitCurrent(const formats::SaveOptions& options = {}, bool force = false);
     bool waitForSaver(const std::function<bool(int)>& wait);
     void processSaveResults();
     void reloadCurrent();
@@ -103,6 +106,10 @@ private:
     int m_current = -1;
     std::unique_ptr<application::DocumentSession> m_session;
     QString m_saveError;  // the last save failure of the current image
+    qint64 m_submittedVersion = -1;  // the version of the current image last handed to the saver
+    // The user answered "以后再说" to an external change: later saves keep the edits in the
+    // recovery record without asking again, until the user saves explicitly.
+    bool m_externalChangeDeferred = false;
     QSet<QString> m_unwritten;  // other images whose edits wait in recovery records
     QString m_lastLabel;
     QTimer m_idleTimer;

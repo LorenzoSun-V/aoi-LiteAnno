@@ -57,11 +57,16 @@ void Canvas::setImage(const QImage& image)
 
 void Canvas::setDocument(const AnnotationDocument* document, bool readOnly)
 {
+    // The window refreshes the same document after saves; a drag in progress survives that.
+    const bool otherDocument = document != m_document || readOnly != m_readOnly;
     m_document = document;
     m_readOnly = readOnly;
-    if (!m_document || m_selected >= m_document->shapes().size())
+    if (!m_document || m_selected >= m_document->shapes().size()) {
         m_selected = -1;
-    if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
+        if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
+            m_drag = Drag::None;
+    }
+    if (otherDocument && (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex))
         m_drag = Drag::None;
     update();
 }

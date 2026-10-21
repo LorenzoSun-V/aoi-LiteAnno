@@ -67,4 +67,8 @@ if(LITEANNO_BUILD_UI)
     add_test(NAME ui_starts COMMAND liteanno_ui --smoke-test)
     set_property(TEST ui_starts PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     liteanno_set_test_environment(ui_starts)
+
+    liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
+    target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)
+    set_property(TEST tst_mainwindow PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
