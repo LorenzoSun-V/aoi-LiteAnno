@@ -138,10 +138,9 @@ Json newShapeObject(const Shape& shape)
 
 void applyShapeEdits(Json& object, const Shape& before, const Shape& after)
 {
-    // Format spec 4.5: a save completes missing required keys. A missing or null shape_type
-    // was read as a polygon (13.5).
-    const auto typeIt = object.find("shape_type");
-    if (typeIt == object.end() || typeIt->is_null())
+    // Format spec 4.5: a save completes a missing shape_type (read as a polygon, 13.5). An
+    // existing null is a value the edit did not touch and stays as it is (13.3).
+    if (!object.contains("shape_type"))
         object["shape_type"] = toJson(shapeTypeName(after.type));
     if (after.label != before.label)
         object["label"] = toJson(after.label);
