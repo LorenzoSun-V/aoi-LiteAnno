@@ -71,6 +71,10 @@ struct SaveOptions {
     int retryDelayMs = 200;
     // Called before each retry with the number of the coming attempt (2, 3, ...). For tests.
     std::function<void(int)> beforeRetry;
+    // Run right before every write attempt, after the check for external changes and also
+    // when overwriting: Saved lets the attempt go ahead, any other status stops and is
+    // returned. For conditions outside the file, such as a name collision (format spec 2).
+    std::function<SaveResult()> mayWrite;
 };
 
 // Run before each write attempt. Saved lets the attempt go ahead, Failed waits for the next

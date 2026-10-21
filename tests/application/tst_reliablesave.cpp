@@ -175,6 +175,75 @@ private slots:
         QVERIFY(setup.records().isEmpty());
     }
 
+    // Review of d9cd04a: the first attempt to replace the file fails, and a same-name image
+    // appears while the retry waits. The retry must not write the file the images share,
+    // also when the user chose to overwrite.
+    void collisionDuringSaveRetry_data()
+    {
+        QTest::addColumn<bool>("overwrite");
+        QTest::newRow("normal save") << false;
+        QTest::newRow("use my version") << true;
+    }
+
+    void collisionDuringSaveRetry()
+    {
+        QFETCH(bool, overwrite);
+        Setup setup;
+        LoadedAnnotation annotation = setup.load();
+        QVERIFY(annotation.file.document().addShape(test::reliableSaveShape()) >= 0);
+        writeFile(setup.data.filePath(test::kReliableSaveImage), "image");
+        test::FileBlocker blocker(setup.annotationPath(), test::FileBlocker::Mode::Replace);
+        if (!blocker.isActive())
+            QSKIP("the file cannot be blocked here (running as root)");
+        SaveOptions options;
+        options.overwriteExternalChanges = overwrite;
+        options.retryDelayMs = 0;
+        int retries = 0;
+        options.beforeRetry = [&](int) {
+            ++retries;
+            blocker.release();
+            writeFile(setup.data.filePath(QStringLiteral("line1/0002.png")), "image");
+        };
+        const SaveOutcome outcome = setup.coordinator().save(test::kReliableSaveImage, annotation, 3, options);
+        QVERIFY(retries >= 1);
+        QCOMPARE(saveStatusName(outcome.result.status), saveStatusName(SaveStatus::ReadOnly));
+        QVERIFY(outcome.nameCollision);
+        QVERIFY(outcome.recoveryRecordKept);
+        QCOMPARE(readFile(setup.annotationPath()), setup.original);
+        QCOMPARE(setup.records().size(), 1);
+    }
+
+    // The same for writing a recovery record back.
+    void collisionDuringRestoreRetry()
+    {
+        Setup setup;
+        LoadedAnnotation annotation = setup.load();
+        QVERIFY(annotation.file.document().addShape(test::reliableSaveShape()) >= 0);
+        const QByteArray external = test::readTestData(QStringLiteral("annotations/upstream_v4.json"));
+        writeFile(setup.annotationPath(), external);
+        QVERIFY(setup.coordinator().save(test::kReliableSaveImage, annotation, 4).recoveryRecordKept);
+        const RecoveryScan scan = setup.recovery().scan();
+        QCOMPARE(scan.candidates.size(), 1);
+
+        writeFile(setup.data.filePath(test::kReliableSaveImage), "image");
+        test::FileBlocker blocker(setup.annotationPath(), test::FileBlocker::Mode::Replace);
+        if (!blocker.isActive())
+            QSKIP("the file cannot be blocked here (running as root)");
+        SaveOptions options;
+        options.retryDelayMs = 0;
+        int retries = 0;
+        options.beforeRetry = [&](int) {
+            ++retries;
+            blocker.release();
+            writeFile(setup.data.filePath(QStringLiteral("line1/0002.png")), "image");
+        };
+        const RecordResult result = setup.recovery().restore(scan.candidates[0], true, options);
+        QVERIFY(retries >= 1);
+        QCOMPARE(int(result.status), int(RecordStatus::NameCollision));
+        QCOMPARE(readFile(setup.annotationPath()), external);
+        QCOMPARE(setup.records().size(), 1);
+    }
+
     // Forced kill after the record, before the annotation file: the file is untouched and the
     // edit comes back from the record.
     void killedBeforeReplaceIsRestorable_data()

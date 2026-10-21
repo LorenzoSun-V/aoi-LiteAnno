@@ -118,17 +118,24 @@ SaveOutcome SaveCoordinator::save(const QString& imagePath, formats::LoadedAnnot
     if (stageHook)
         stageHook(SaveStage::RecoveryRecordWritten);
 
-    // Format spec 2, checked last: a same-name image may have appeared after the window
-    // handed this save over. The edit stays in the record.
-    if (dataset::hasNameCollision(m_location.rootPath + QLatin1Char('/') + imagePath)) {
-        SaveOutcome refused{{SaveStatus::ReadOnly, QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件")}, true};
-        refused.nameCollision = true;
-        return refused;
+    // Format spec 2, checked before every write attempt: a same-name image may have
+    // appeared after the window handed this save over, or while a retry waited. The edit
+    // stays in the record.
+    bool collision = false;
+    formats::SaveOptions annotationOptions = options;
+    annotationOptions.mayWrite = [&, outer = options.mayWrite]() -> SaveResult {
+        if (dataset::hasNameCollision(m_location.rootPath + QLatin1Char('/') + imagePath)) {
+            collision = true;
+            return {SaveStatus::ReadOnly, QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件")};
+        }
+        return outer ? outer() : SaveResult{SaveStatus::Saved, QString()};
+    };
+    const SaveResult result = formats::saveAnnotationFile(annotationFilePath(imagePath), annotation, annotationOptions);
+    if (result.status != SaveStatus::Saved) {
+        SaveOutcome failed{result, true};
+        failed.nameCollision = collision;
+        return failed;
     }
-
-    const SaveResult result = formats::saveAnnotationFile(annotationFilePath(imagePath), annotation, options);
-    if (result.status != SaveStatus::Saved)
-        return {result, true};
     if (stageHook)
         stageHook(SaveStage::AnnotationWritten);
 

@@ -705,6 +705,15 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
                 held->stamp = formats::readFileStamp(candidate.annotationPath);
             }
             m_deferredRecords.remove(candidate.record.imagePath);
+        } else if (result.status == application::RecordStatus::NameCollision) {
+            // Found while writing: held back like a collision found before the question.
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_deferredRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            m_prompts.message(QStringLiteral(u"没有恢复"),
+                              QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
+                                             u"同名图片移走后会再询问。")
+                                  .arg(candidate.record.imagePath));
         } else {
             m_deferredRecords.insert(candidate.record.imagePath);
             m_unwritten.insert(candidate.record.imagePath);
