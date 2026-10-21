@@ -452,7 +452,13 @@ MainWindow::ListHold::~ListHold()
         return;
     QList<dataset::CatalogEntry> images = std::move(*m_window->m_pendingImages);
     m_window->m_pendingImages.reset();
-    if (m_window->m_project)
+    if (!m_window->m_project)
+        return;
+    // The catalog may have moved on while the list waited (statuses checked, another scan):
+    // what it has now is applied, not the list that was kept aside.
+    if (m_window->m_catalog)
+        m_window->reloadImages();
+    else
         m_window->setImages(std::move(images));
 }
 
@@ -665,7 +671,20 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         }
         m_collisionRecords.remove(candidate.record.imagePath);
-        const RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
+        RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
+        // Checked again after the question: a same-name image may have appeared meanwhile.
+        if (choice == RecoveryChoice::Restore
+            && (dataset::hasNameCollision(m_project->imageFilePath(candidate.record.imagePath))
+                || latestNameCollision(candidate.record.imagePath))) {
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_deferredRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            m_prompts.message(QStringLiteral(u"没有恢复"),
+                              QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
+                                             u"同名图片移走后会再询问。")
+                                  .arg(candidate.record.imagePath));
+            continue;
+        }
         application::RecordResult result;
         if (choice == RecoveryChoice::Restore)
             result = recovery.restore(candidate, candidate.state == RecoveryState::Conflict);
@@ -805,6 +824,14 @@ void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
     // annotation file the images share, nor be lost. They are held like edits whose save
     // failed: shown again when the image is opened, written once the collision is gone,
     // and closing the project asks before giving them up.
+    // The collision the catalog knows now counts, also while a new list waits for a
+    // question to close.
+    if (m_session && !m_session->hasNameCollision() && latestNameCollision(m_session->imagePath())) {
+        m_session->setNameCollision(true);
+        statusBar()->showMessage(QStringLiteral(u"这张图片出现了同名图片，改为只能查看。还没保存的修改留在这台电脑的内存里，不写入标注文件；"
+                                                u"关闭项目前会再询问。"),
+                                 15000);
+    }
     if (m_session && m_session->hasNameCollision() && m_session->needsSave()) {
         formats::LoadedAnnotation copy = m_session->copy();
         m_heldEdits.insert(m_session->imagePath(),
@@ -859,6 +886,23 @@ void MainWindow::flushSaves()
             waitForSaver([this](int ms) { return m_saver->waitUntilAllDone(ms); });
         processSaveResults();
     } while (m_saver->pendingCount() > 0 || (!m_handlingResults && m_saver->hasResults()));
+}
+
+bool MainWindow::latestNameCollision(const QString& imagePath) const
+{
+    if (m_catalog) {
+        const std::optional<dataset::CatalogEntry> entry = m_catalog->reader().image(imagePath);
+        if (entry && entry->nameCollision)
+            return true;
+    }
+    if (m_pendingImages) {
+        for (const dataset::CatalogEntry& entry : *m_pendingImages) {
+            if (entry.path == imagePath && entry.nameCollision)
+                return true;
+        }
+    }
+    const int index = m_imageIndex.value(imagePath, -1);
+    return index >= 0 && m_images[index].nameCollision;
 }
 
 bool MainWindow::heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const
@@ -924,6 +968,15 @@ void MainWindow::processSaveResults()
         // The next commit hands the edits over again.
         if (current)
             m_submittedVersion = -1;
+        if (current && result.outcome.nameCollision) {
+            // The edits are in the recovery record and on screen; the image is read-only
+            // until the same-name image is gone, and the record is offered then.
+            m_session->setNameCollision(true);
+            m_collisionRecords.insert(result.imagePath);
+            m_unwritten.insert(result.imagePath);
+            m_saveError = result.outcome.result.error;
+            continue;
+        }
         if (current && status == SaveStatus::ExternallyModified) {
             m_unwritten.insert(result.imagePath);
             m_saveError = QStringLiteral(u"标注文件被其他程序修改，修改未写入");

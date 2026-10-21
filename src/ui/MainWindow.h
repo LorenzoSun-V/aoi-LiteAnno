@@ -174,6 +174,9 @@ private:
     std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
     // Offers the recovery records of the image shown once nothing holds them back.
     void offerUnblockedRecords();
+    // Whether the image has a name collision as far as the window knows now: the catalog,
+    // a list waiting to be applied, or the list shown.
+    bool latestNameCollision(const QString& imagePath) const;
     bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
     QTimer m_idleTimer;
