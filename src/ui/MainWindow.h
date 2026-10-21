@@ -1,0 +1,134 @@
+#pragma once
+
+#include "application/BackgroundSaver.h"
+#include "application/DocumentSession.h"
+#include "application/LocalDataPaths.h"
+#include "application/ProjectSession.h"
+#include "dataset/DirectoryScanner.h"
+#include "ui/Canvas.h"
+#include "ui/Prompts.h"
+
+#include <QHash>
+#include <QMainWindow>
+#include <QSet>
+#include <QTimer>
+
+#include <memory>
+
+class QAbstractButton;
+class QAction;
+class QGroupBox;
+class QLabel;
+class QListWidget;
+class QPushButton;
+class QVBoxLayout;
+
+namespace liteanno::ui {
+
+struct MainWindowOptions {
+    application::LocalDataPaths localData = application::LocalDataPaths::standard();
+    application::BackgroundSaver::Limits saveLimits;
+    int idleSaveMs = 800;  // save this long after the last edit
+};
+
+// The editing window: one project, one image at a time (milestone 2).
+class MainWindow : public QMainWindow
+{
+    Q_OBJECT
+
+public:
+    using Options = MainWindowOptions;
+
+    explicit MainWindow(Options options = Options(), QWidget* parent = nullptr);
+    ~MainWindow() override;
+
+    void setPrompts(Prompts prompts) { m_prompts = std::move(prompts); }
+
+    // Opens the project whose data root is `root`. Reports problems through the prompts.
+    bool openProject(const QString& root);
+    // Writes every edit and releases the project.
+    void closeProject();
+
+    bool goToImage(int index);
+    bool nextImage();
+    bool previousImage();
+    // Hands the current edits to the background saver now.
+    void saveNow();
+    // Waits until all handed-over saves are written and their results are handled.
+    void flushSaves();
+
+    // For tests and status displays.
+    int imageCount() const { return int(m_images.size()); }
+    int currentIndex() const { return m_current; }
+    application::DocumentSession* session() const { return m_session.get(); }
+    Canvas* canvas() const { return m_canvas; }
+    QString saveStateText() const;
+    int savingWaits() const { return m_savingWaits; }
+    bool hasProject() const { return m_project != nullptr; }
+
+    // The actions of the panel, as buttons and menu entries do them.
+    bool confirmCurrent();
+    bool skipCurrent();
+    bool unskipCurrent();
+    bool undo();
+    bool redo();
+    bool deleteSelectedShape();
+
+protected:
+    void closeEvent(QCloseEvent* event) override;
+
+private:
+    void buildUi();
+    void buildImageLabelPanel();
+    void chooseProject();
+    void handleRecoveryRecords(const QString& onlyImage = QString());
+    void loadCurrentImage();
+    void commitCurrent(const formats::SaveOptions& options = {});
+    bool waitForSaver(const std::function<bool(int)>& wait);
+    void processSaveResults();
+    void reloadCurrent();
+    void edited();
+    void refresh();
+    void refreshImageItem(int index);
+    void addDrawnShape(const Shape& shape);
+    void editLabel(qsizetype index);
+    QStringList classNames() const;
+
+    Options m_options;
+    Prompts m_prompts;
+    std::unique_ptr<application::ProjectSession> m_project;
+    std::unique_ptr<application::BackgroundSaver> m_saver;
+    QList<dataset::ScannedImage> m_images;
+    QHash<QString, AnnotationStatus> m_statuses;
+    int m_current = -1;
+    std::unique_ptr<application::DocumentSession> m_session;
+    QString m_saveError;  // the last save failure of the current image
+    QSet<QString> m_unwritten;  // other images whose edits wait in recovery records
+    QString m_lastLabel;
+    QTimer m_idleTimer;
+    int m_savingWaits = 0;
+    bool m_handlingResults = false;
+
+    Canvas* m_canvas = nullptr;
+    QListWidget* m_imageList = nullptr;
+    QListWidget* m_shapeList = nullptr;
+    QLabel* m_imageStatus = nullptr;
+    QLabel* m_readOnlyNote = nullptr;
+    QLabel* m_blockers = nullptr;
+    QLabel* m_saveState = nullptr;
+    QPushButton* m_confirmButton = nullptr;
+    QPushButton* m_skipButton = nullptr;
+    QPushButton* m_unskipButton = nullptr;
+    QPushButton* m_correctSizeButton = nullptr;
+    QPushButton* m_deleteButton = nullptr;
+    QGroupBox* m_imageLabelPanel = nullptr;
+    QVBoxLayout* m_imageLabelLayout = nullptr;
+    QList<QAbstractButton*> m_imageLabelButtons;
+    QAction* m_undoAction = nullptr;
+    QAction* m_redoAction = nullptr;
+    QAction* m_selectTool = nullptr;
+    QAction* m_rectangleTool = nullptr;
+    QAction* m_polygonTool = nullptr;
+};
+
+} // namespace liteanno::ui

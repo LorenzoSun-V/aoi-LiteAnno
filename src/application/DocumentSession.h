@@ -44,6 +44,10 @@ public:
     bool skip(const QString& reason);
     bool unskip();
 
+    // "按当前图片尺寸更正" (format spec 5.3): lifts a size mismatch; the next save writes the
+    // image's actual size. Not an undo step.
+    bool correctImageSize();
+
     bool canUndo() const { return m_index > 0; }
     bool canRedo() const { return m_index + 1 < m_history.size(); }
     bool undo();

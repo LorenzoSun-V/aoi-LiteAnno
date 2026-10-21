@@ -88,6 +88,14 @@ bool DocumentSession::unskip()
     return edit([](AnnotationDocument& document) { return document.unskip(); });
 }
 
+bool DocumentSession::correctImageSize()
+{
+    if (m_nameCollision || !m_annotation.file.correctImageSize())
+        return false;
+    ++m_version;
+    return true;
+}
+
 void DocumentSession::moveTo(qsizetype index)
 {
     m_index = index;
