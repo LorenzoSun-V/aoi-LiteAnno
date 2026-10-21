@@ -52,12 +52,20 @@ public:
     bool skip(const QString& reason);  // a reason is required
     bool unskip();
 
+    // Undo and redo: takes the shapes, image-level labels and review state of `state`, an
+    // earlier copy of this document (format spec 5.2). `matchesSaved` says that this content
+    // is exactly what was last read or saved, so nothing needs writing.
+    void restoreContent(const AnnotationDocument& state, bool matchesSaved);
+
     // Whether anything changed since the document was read or last saved.
     bool isModified() const { return m_modified; }
     // Whether an operation set "checked" or the skip state since the document was read or
     // last saved. Writers update those fields only in that case (13.3).
     bool reviewStateWritten() const { return m_reviewStateWritten; }
     void markSaved();
+    // The file now holds other content than this document, whose review state was `saved`;
+    // the next save writes this content, review state included where it differs.
+    void markDiffersFromSaved(const ReviewState& saved);
 
 private:
     bool isEditable(qsizetype index) const;

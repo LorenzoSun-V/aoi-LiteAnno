@@ -152,6 +152,31 @@ bool AnnotationDocument::unskip()
     return true;
 }
 
+void AnnotationDocument::restoreContent(const AnnotationDocument& state, bool matchesSaved)
+{
+    const bool reviewChanged = m_review.checked != state.m_review.checked || m_review.skip != state.m_review.skip
+                               || m_review.skipReason != state.m_review.skipReason;
+    m_shapes = state.m_shapes;
+    m_imageLabels = state.m_imageLabels;
+    m_review = state.m_review;
+    // Ids given out since `state` was copied may still name shapes in the saved file.
+    m_nextShapeId = std::max(m_nextShapeId, state.m_nextShapeId);
+    if (matchesSaved) {
+        m_modified = false;
+        m_reviewStateWritten = false;
+    } else {
+        m_modified = true;
+        m_reviewStateWritten = m_reviewStateWritten || state.m_reviewStateWritten || reviewChanged;
+    }
+}
+
+void AnnotationDocument::markDiffersFromSaved(const ReviewState& saved)
+{
+    m_modified = true;
+    if (m_review.checked != saved.checked || m_review.skip != saved.skip || m_review.skipReason != saved.skipReason)
+        m_reviewStateWritten = true;
+}
+
 void AnnotationDocument::markSaved()
 {
     m_modified = false;

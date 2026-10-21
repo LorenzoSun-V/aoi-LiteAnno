@@ -1,8 +1,7 @@
 #include "core/Version.h"
+#include "ui/MainWindow.h"
 
 #include <QApplication>
-#include <QLabel>
-#include <QMainWindow>
 #include <QTimer>
 
 int main(int argc, char* argv[])
@@ -11,17 +10,17 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("aoi-LiteAnno"));
     QApplication::setApplicationVersion(QString::fromLatin1(liteanno::kAppVersion));
 
-    QMainWindow window;
-    window.setWindowTitle(QStringLiteral("aoi-LiteAnno %1").arg(QApplication::applicationVersion()));
-    auto* placeholder = new QLabel(QStringLiteral(u"工程骨架：标注界面尚未实现"));
-    placeholder->setAlignment(Qt::AlignCenter);
-    window.setCentralWidget(placeholder);
-    window.resize(960, 640);
+    liteanno::ui::MainWindow window;
     window.show();
 
     // Used by CI to check that the application starts.
-    if (QApplication::arguments().contains(QStringLiteral("--smoke-test")))
+    const QStringList args = QApplication::arguments();
+    if (args.contains(QStringLiteral("--smoke-test"))) {
         QTimer::singleShot(0, &app, &QApplication::quit);
-
+    } else if (args.size() > 1 && !args.last().startsWith(QLatin1Char('-'))) {
+        // A data root given on the command line, e.g. by dropping a folder on the program.
+        const QString root = args.last();
+        QTimer::singleShot(0, &window, [&window, root] { window.openProject(root); });
+    }
     return app.exec();
 }

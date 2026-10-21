@@ -1,10 +1,13 @@
 #include "formats/AnnotationStore.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
 #include <QThread>
+
+#include <algorithm>
 
 namespace liteanno::formats {
 
@@ -47,6 +50,36 @@ FileStamp readFileStamp(const QString& path)
     if (!file.open(QIODevice::ReadOnly))
         return {true, QFileInfo(path).size(), QFileInfo(path).lastModified(), QString()};
     return stampOf(path, file.readAll());
+}
+
+QString existingAnnotationPath(const QString& jsonPath)
+{
+    const QFileInfo info(jsonPath);
+#ifndef Q_OS_WIN
+    // Case-sensitive names: the lower-case file is the one.
+    if (info.exists())
+        return jsonPath;
+#endif
+    QString pattern = info.fileName();
+    // Wildcard characters in the name are matched literally.
+    for (const QChar special : {QLatin1Char('['), QLatin1Char('*'), QLatin1Char('?')})
+        pattern.replace(special, QLatin1Char('[') + special + QLatin1Char(']'));
+    // Name filters ignore case. Listing also gives the name as it is on disk, which Windows
+    // keeps when the file is replaced under it.
+    QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
+    if (names.contains(info.fileName()))
+        return jsonPath;
+#ifndef Q_OS_WIN
+    // The filter ignores case in the whole name; on Linux only the extension may differ.
+    const QString stem = info.completeBaseName() + QLatin1Char('.');
+    names.erase(std::remove_if(names.begin(), names.end(),
+                               [&stem](const QString& name) { return !name.startsWith(stem, Qt::CaseSensitive); }),
+                names.end());
+#endif
+    if (names.isEmpty())
+        return jsonPath;
+    // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
+    return info.dir().filePath(names.first());
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,

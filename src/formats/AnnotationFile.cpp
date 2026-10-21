@@ -18,8 +18,8 @@ namespace liteanno::formats {
 namespace {
 
 struct OriginalShape {
-    std::size_t baseIndex = 0;  // position in the "shapes" array of the base JSON
-    Shape typed;                // the shape as read, to tell which fields an edit changed
+    Json object;  // the shape's JSON object in the base
+    Shape typed;  // the shape as read, to tell which fields an edit changed
 };
 
 struct TypedContent {
@@ -152,6 +152,9 @@ struct AnnotationFile::Data {
     // The file content as read or last saved; edits are applied to a copy of it.
     Json base;
     QHash<quint64, OriginalShape> originalShapes;
+    // Shapes of earlier bases that a saved edit removed. Undoing the removal brings the shape
+    // back with its JSON object, unknown fields included, instead of as a new shape.
+    QHash<quint64, OriginalShape> retiredShapes;
     QList<ImageLabel> originalImageLabels;
     AnnotationDocument document;
     QList<Diagnostic> diagnostics;
@@ -161,6 +164,21 @@ struct AnnotationFile::Data {
     void addDiagnostic(DiagnosticCode code, const QString& location, const QString& detail = QString())
     {
         diagnostics.append(Diagnostic{code, location, detail});
+    }
+
+    void retireOriginals()
+    {
+        for (auto it = originalShapes.cbegin(); it != originalShapes.cend(); ++it)
+            retiredShapes.insert(it.key(), it.value());
+    }
+
+    const OriginalShape* findOriginal(quint64 id) const
+    {
+        auto it = originalShapes.constFind(id);
+        if (it != originalShapes.cend())
+            return &*it;
+        it = retiredShapes.constFind(id);
+        return it != retiredShapes.cend() ? &*it : nullptr;
     }
 
     void makeReadOnly(ReadOnlyReason reason)
@@ -183,6 +201,7 @@ TypedContent AnnotationFile::Data::readBase(const QList<quint64>& shapeIds)
 {
     diagnostics.clear();
     readOnlyReason = ReadOnlyReason::None;
+    retireOriginals();
     originalShapes.clear();
     TypedContent content;
 
@@ -199,7 +218,7 @@ TypedContent AnnotationFile::Data::readBase(const QList<quint64>& shapeIds)
             Shape shape = readShape((*shapesIt)[i], i);
             const auto position = static_cast<qsizetype>(i);
             shape.id = position < shapeIds.size() ? shapeIds[position] : static_cast<quint64>(i + 1);
-            originalShapes.insert(shape.id, OriginalShape{i, shape});
+            originalShapes.insert(shape.id, OriginalShape{(*shapesIt)[i], shape});
             content.shapes.append(std::move(shape));
         }
     }
@@ -434,12 +453,12 @@ Json AnnotationFile::Data::buildOutput() const
 
     Json shapes = Json::array();
     for (const Shape& shape : document.shapes()) {
-        const auto original = originalShapes.constFind(shape.id);
-        if (original == originalShapes.cend()) {
+        const OriginalShape* original = findOriginal(shape.id);
+        if (!original) {
             shapes.push_back(newShapeObject(shape));
             continue;
         }
-        Json object = base.at("shapes").at(original->baseIndex);
+        Json object = original->object;
         if (shape.kind == ShapeKind::Editable)
             applyShapeEdits(object, original->typed, shape);
         shapes.push_back(std::move(object));
@@ -666,6 +685,23 @@ void AnnotationFile::markSaved()
     // Refresh the originals and the diagnostics; the document already holds this content.
     d->readBase(shapeIds);
     d->document.markSaved();
+}
+
+AnnotationFile AnnotationFile::clone() const
+{
+    return AnnotationFile(std::make_unique<Data>(*d));
+}
+
+void AnnotationFile::adoptSavedBase(const AnnotationFile& saved)
+{
+    d->base = saved.d->base;
+    d->isNew = saved.d->isNew;
+    d->retireOriginals();
+    for (auto it = saved.d->retiredShapes.cbegin(); it != saved.d->retiredShapes.cend(); ++it)
+        d->retiredShapes.insert(it.key(), it.value());
+    d->originalShapes = saved.d->originalShapes;
+    d->originalImageLabels = saved.d->originalImageLabels;
+    d->diagnostics = saved.d->diagnostics;
 }
 
 const char* readOnlyReasonName(ReadOnlyReason reason)

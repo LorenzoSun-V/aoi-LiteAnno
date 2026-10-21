@@ -38,6 +38,11 @@ struct LoadedAnnotation {
 
 // Reads the annotation file next to an image. A missing file gives a new document; a file
 // that exists but cannot be read gives a read-only one, so it is never overwritten.
+// Format spec 3: the annotation of an image matches ".json" in any case. `jsonPath` is the
+// path with a lower-case ".json"; when no such file exists, an existing file whose extension
+// differs only in case is returned instead (on Linux, where names are case-sensitive).
+QString existingAnnotationPath(const QString& jsonPath);
+
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,
                                     const QStringList& imageLabelOptions = {});
 

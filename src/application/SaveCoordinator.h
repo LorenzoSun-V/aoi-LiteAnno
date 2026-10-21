@@ -31,8 +31,8 @@ struct SaveOutcome {
 // record is removed. A crash or a pulled USB drive at any point leaves either the old file
 // and a record, or the new file.
 //
-// Synchronous for now; the pending-save limit of architecture section 8.2 comes with the
-// editing interface.
+// Synchronous; BackgroundSaver runs it on a worker thread under the pending-save limit of
+// architecture section 8.2.
 class SaveCoordinator
 {
 public:
@@ -46,6 +46,8 @@ public:
     // The record file of an image.
     QString recoveryRecordPath(const QString& imagePath) const;
     QString annotationFilePath(const QString& imagePath) const;
+    // The user dropped the edit kept after a failed save ("重新加载").
+    bool discardRecoveryRecord(const QString& imagePath) const;
 
     // Called after each stage; tests use it to stop the process at that point.
     std::function<void(SaveStage)> stageHook;

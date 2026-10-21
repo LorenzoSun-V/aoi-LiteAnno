@@ -41,6 +41,8 @@ liteanno_add_test(tst_recoveryrecord formats/tst_recoveryrecord.cpp)
 liteanno_add_test(tst_volumebinding platform/tst_volumebinding.cpp)
 liteanno_add_test(tst_reliablesave application/tst_reliablesave.cpp common/ReliableSaveTestData.h)
 add_dependencies(tst_reliablesave liteanno_test_helper)
+liteanno_add_test(tst_documentsession application/tst_documentsession.cpp common/ReliableSaveTestData.h)
+liteanno_add_test(tst_directoryscanner dataset/tst_directoryscanner.cpp)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions
@@ -65,4 +67,8 @@ if(LITEANNO_BUILD_UI)
     add_test(NAME ui_starts COMMAND liteanno_ui --smoke-test)
     set_property(TEST ui_starts PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
     liteanno_set_test_environment(ui_starts)
+
+    liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
+    target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)
+    set_property(TEST tst_mainwindow PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

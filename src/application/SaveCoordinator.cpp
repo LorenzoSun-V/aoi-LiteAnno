@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 
 namespace liteanno::application {
 
@@ -30,7 +31,48 @@ QString SaveCoordinator::recoveryRecordPath(const QString& imagePath) const
 
 QString SaveCoordinator::annotationFilePath(const QString& imagePath) const
 {
-    return m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath);
+    return formats::existingAnnotationPath(m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath));
+}
+
+namespace {
+
+// A record at this image's path that this program cannot use (a newer format, damaged, of
+// another location or image) may hold edits nobody delivered yet. It is moved to
+// "unusable/" next to the records instead of being replaced. Returns an error when it
+// stays in the way.
+QString moveAsideIfNotOurs(const QString& recordPath, const ProjectLocation& location, const QString& imagePath)
+{
+    QFile file(recordPath);
+    if (!file.exists())
+        return QString();
+    if (file.open(QIODevice::ReadOnly)) {
+        const formats::RecoveryRecordResult parsed = formats::parseRecoveryRecord(file.readAll());
+        file.close();
+        if (parsed.record && parsed.record->projectId == location.projectId
+            && parsed.record->bindingId == location.bindingId && parsed.record->imagePath == imagePath)
+            return QString();  // an earlier save of this image; the new record supersedes it
+    }
+    const QFileInfo info(recordPath);
+    const QString asideDir = info.dir().filePath(QStringLiteral("unusable"));
+    if (!QDir().mkpath(asideDir))
+        return QStringLiteral("an unusable recovery record is in the way and cannot be moved: ") + recordPath;
+    const QString stamp = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
+    QString target = asideDir + QLatin1Char('/') + info.completeBaseName() + QLatin1Char('-') + stamp + QLatin1String(".json");
+    for (int i = 2; QFile::exists(target); ++i) {
+        target = asideDir + QLatin1Char('/') + info.completeBaseName() + QLatin1Char('-') + stamp + QLatin1Char('-')
+                 + QString::number(i) + QLatin1String(".json");
+    }
+    if (!QFile::rename(recordPath, target))
+        return QStringLiteral("an unusable recovery record is in the way and cannot be moved: ") + recordPath;
+    return QString();
+}
+
+} // namespace
+
+bool SaveCoordinator::discardRecoveryRecord(const QString& imagePath) const
+{
+    const QString path = recoveryRecordPath(imagePath);
+    return !QFile::exists(path) || QFile::remove(path);
 }
 
 SaveOutcome SaveCoordinator::save(const QString& imagePath, formats::LoadedAnnotation& annotation,
@@ -59,6 +101,9 @@ SaveOutcome SaveCoordinator::save(const QString& imagePath, formats::LoadedAnnot
         return {{SaveStatus::Failed, QStringLiteral("the document cannot be serialized")}, false};
     if (!QDir().mkpath(m_paths.recoveryDir(m_location.projectId, m_location.bindingId)))
         return {{SaveStatus::Failed, QStringLiteral("cannot create the recovery directory")}, false};
+    const QString inTheWay = moveAsideIfNotOurs(recordPath, m_location, imagePath);
+    if (!inTheWay.isEmpty())
+        return {{SaveStatus::Failed, inTheWay}, false};
     // The local disk is not where the virus scanner problem is; one attempt is enough.
     formats::SaveOptions recordOptions;
     recordOptions.maxAttempts = 1;
