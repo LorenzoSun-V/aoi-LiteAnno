@@ -142,6 +142,14 @@ Prompts Prompts::dialogs(QWidget* parent)
     prompts.message = [parent](const QString& title, const QString& text) {
         QMessageBox::warning(parent, title, text);
     };
+    prompts.confirmDiscard = [parent](const QString& text) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral(u"修改没有保存"), text, QMessageBox::NoButton, parent);
+        QPushButton* stay = box.addButton(QStringLiteral(u"不关闭，回去处理"), QMessageBox::RejectRole);
+        box.addButton(QStringLiteral(u"放弃这些修改"), QMessageBox::DestructiveRole);
+        box.setDefaultButton(stay);
+        box.exec();
+        return box.clickedButton() != stay;
+    };
     return prompts;
 }
 

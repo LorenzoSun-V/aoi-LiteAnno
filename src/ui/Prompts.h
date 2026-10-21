@@ -35,6 +35,9 @@ struct Prompts {
     // `current` is the annotation file as it is now; empty when it does not exist.
     std::function<RecoveryChoice(const application::RecoveryCandidate& candidate, const QByteArray& current)> recovery;
     std::function<void(const QString& title, const QString& text)> message;
+    // Closing would lose edits that are neither in the file nor in a recovery record. True
+    // when the user gives them up; the default answer keeps the project open.
+    std::function<bool(const QString& text)> confirmDiscard;
 
     // Dialogs on `parent`.
     static Prompts dialogs(QWidget* parent);

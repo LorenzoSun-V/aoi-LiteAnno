@@ -90,6 +90,11 @@ void Canvas::setSelectedShape(qsizetype index)
     if (m_selected == index)
         return;
     m_selected = index;
+    // A drag belongs to the shape it started on.
+    if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex) {
+        m_drag = Drag::None;
+        m_dragPoints.clear();
+    }
     update();
 }
 
@@ -282,6 +287,11 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF widgetPoint = event->position();
     const QPointF imagePoint = widgetToImage(widgetPoint);
+    if ((m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
+        && (!m_document || m_selected < 0 || m_selected >= m_document->shapes().size())) {
+        m_drag = Drag::None;
+        m_dragPoints.clear();
+    }
     switch (m_drag) {
     case Drag::Pan:
         m_offset += widgetPoint - m_pressWidget;
@@ -350,7 +360,8 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
     case Drag::MoveVertex: {
         const PointList points = m_dragPoints;
         m_dragPoints.clear();
-        if (m_selected >= 0 && !exactlyEqual(points, m_document->shapes()[m_selected].points))
+        if (m_document && m_selected >= 0 && m_selected < m_document->shapes().size() && !points.isEmpty()
+            && !exactlyEqual(points, m_document->shapes()[m_selected].points))
             emit shapePointsChanged(m_selected, points);
         break;
     }

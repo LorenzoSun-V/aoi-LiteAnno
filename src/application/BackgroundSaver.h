@@ -19,9 +19,11 @@ namespace liteanno::application {
 
 struct SaveJobResult {
     QString imagePath;
+    quint64 sessionId = 0;
     quint64 entryId = 0;
     SaveOutcome outcome;
     // The clone that was saved, and the file after the save; for DocumentSession::savedSnapshot.
+    // After a failed save, the edits that were not written and the file they expect.
     std::shared_ptr<formats::AnnotationFile> saved;
     formats::FileStamp stamp;
 };
@@ -91,6 +93,7 @@ private:
     // after the last one. A snapshot taken before the window learned of a write still
     // describes a replaced content; see run().
     struct Write {
+        quint64 sessionId = 0;
         QSet<QString> replaced;
         formats::FileStamp after;
     };

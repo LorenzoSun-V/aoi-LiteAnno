@@ -1,5 +1,7 @@
 #include "application/DocumentSession.h"
 
+#include <algorithm>
+#include <atomic>
 #include <utility>
 
 namespace liteanno::application {
@@ -11,10 +13,13 @@ DocumentSession::DocumentSession(QString imagePath, formats::LoadedAnnotation an
     , m_project(project)
     , m_nameCollision(nameCollision)
 {
+    static std::atomic<quint64> nextSessionId{1};
+    m_id = nextSessionId++;
     const quint64 id = m_nextEntryId++;
     m_history.append({m_annotation.file.document(), id});
-    // A new document is not on disk, but writing it unedited is not wanted either.
-    m_savedEntryId = id;
+    // A new document is not on disk, but writing it unedited is not wanted either. Edits kept
+    // from a failed save are not on disk.
+    m_savedEntryId = m_annotation.file.needsWrite() ? 0 : id;
 }
 
 template <typename Edit>
@@ -100,7 +105,7 @@ void DocumentSession::moveTo(qsizetype index)
 {
     m_index = index;
     const Entry& entry = m_history[index];
-    m_annotation.file.document().restoreContent(entry.state, entry.id == m_savedEntryId);
+    m_annotation.file.document().restoreContent(entry.state, entry.id == m_savedEntryId && m_unacknowledged == 0);
     ++m_version;
 }
 
@@ -144,9 +149,10 @@ AnnotationStatus DocumentSession::status() const
     return deriveStatus(facts);
 }
 
-SaveSnapshot DocumentSession::snapshot() const
+SaveSnapshot DocumentSession::snapshot()
 {
-    return {m_imagePath, {m_annotation.file.clone(), m_annotation.stamp}, m_history[m_index].id, m_version};
+    ++m_unacknowledged;
+    return {m_imagePath, {m_annotation.file.clone(), m_annotation.stamp}, m_history[m_index].id, m_version, m_id};
 }
 
 void DocumentSession::savedSnapshot(quint64 entryId, const formats::AnnotationFile& saved,
@@ -154,10 +160,16 @@ void DocumentSession::savedSnapshot(quint64 entryId, const formats::AnnotationFi
 {
     m_annotation.stamp = stamp;
     m_savedEntryId = entryId;
-    if (m_history[m_index].id == entryId)
+    m_unacknowledged = std::max(0, m_unacknowledged - 1);
+    if (m_history[m_index].id == entryId) {
         m_annotation.file.markSaved();
-    else
-        m_annotation.file.adoptSavedBase(saved);
+        return;
+    }
+    // The content moved on (or back, by undo) while the save ran: the file now holds the saved
+    // entry, so the current content has to be written again, even when it is the content the
+    // session started from.
+    m_annotation.file.adoptSavedBase(saved);
+    m_annotation.file.document().markDiffersFromSaved(saved.document().review());
 }
 
 } // namespace liteanno::application

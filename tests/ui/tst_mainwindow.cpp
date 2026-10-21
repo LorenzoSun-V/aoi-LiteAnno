@@ -8,6 +8,7 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QImage>
 #include <QJsonArray>
@@ -39,6 +40,31 @@ void writeFile(const QString& path, const QByteArray& bytes)
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(bytes) != bytes.size())
         qFatal("cannot write %s", qPrintable(path));
+}
+
+// Recovery records of all projects under a local data folder.
+int recoveryRecordCount(const QString& localRoot)
+{
+    int count = 0;
+    QDirIterator it(localRoot + QLatin1String("/recovery"), {QStringLiteral("*.json")}, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        it.next();
+        ++count;
+    }
+    return count;
+}
+
+// A file where the recovery folder should be: no record can be written, also not by root.
+void blockRecoveryFolder(const QString& localRoot)
+{
+    QDir(localRoot + QLatin1String("/recovery")).removeRecursively();
+    writeFile(localRoot + QLatin1String("/recovery"), "blocked");
+}
+
+void unblockRecoveryFolder(const QString& localRoot)
+{
+    QFile::remove(localRoot + QLatin1String("/recovery"));
 }
 
 QJsonObject readJson(const QString& path)
@@ -76,10 +102,14 @@ struct Answers {
     QString skipReason = QStringLiteral("blurred");
     ExternalChangeChoice externalChange = ExternalChangeChoice::Reload;
     RecoveryChoice recovery = RecoveryChoice::Restore;
+    bool discardUnsaved = false;
+    // Runs while the recovery question is shown, like a repaint behind a dialog.
+    std::function<void()> duringRecovery;
 
     int externalChangeAsked = 0;
     QList<application::RecoveryState> recoveryAsked;
     QStringList messages;
+    int discardAsked = 0;
 
     Prompts prompts()
     {
@@ -96,7 +126,13 @@ struct Answers {
         };
         p.recovery = [this](const application::RecoveryCandidate& candidate, const QByteArray&) {
             recoveryAsked.append(candidate.state);
+            if (duringRecovery)
+                duringRecovery();
             return recovery;
+        };
+        p.confirmDiscard = [this](const QString&) {
+            ++discardAsked;
+            return discardUnsaved;
         };
         p.message = [this](const QString& title, const QString& text) { messages.append(title + QLatin1Char('\n') + text); };
         return p;
@@ -480,6 +516,146 @@ private slots:
         // Below the limit no wait.
         QVERIFY(w.window.nextImage());
         QCOMPARE(w.window.savingWaits(), 1);
+    }
+
+    // Review of 168a9cd, item 1: a save that fails without a recovery record keeps the edits
+    // in the program, and closing asks before losing them.
+    void failedSaveWithoutRecordKeepsEdits()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.nextImage());
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+        QCOMPARE(w.answers.messages.size(), 1);
+
+        // Back on the image: the rectangle is still there, and still not saved.
+        QVERIFY(w.window.previousImage());
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.window.session()->needsSave());
+        QVERIFY2(w.window.saveStateText().startsWith(QStringLiteral(u"保存失败")), qPrintable(w.window.saveStateText()));
+
+        // Closing asks; the default answer keeps the project open.
+        QVERIFY(!w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+        QVERIFY(w.window.hasProject());
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        // Once the folder is writable again the edits are saved, and closing does not ask.
+        unblockRecoveryFolder(project.local.path());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+    }
+
+    void closingCanGiveUpUnsavedEdits()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.answers.discardUnsaved = true;
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+        QVERIFY(!w.window.hasProject());
+        QVERIFY(!QFile::exists(project.json(1)));
+    }
+
+    // Item 4: a record put off with "以后再说" is not replaced by new saves.
+    void deferredRecordBlocksEditing()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            writeFile(project.json(1), QByteArray("{\"broken\": "));
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        Window w(project.options());
+        w.answers.recovery = RecoveryChoice::Later;
+        QVERIFY(w.window.openProject(project.data.path()));
+        QCOMPARE(w.answers.recoveryAsked.size(), 1);
+        QVERIFY(w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 70), QPointF(60, 95));
+        QVERIFY(!w.window.confirmCurrent());
+        // Away and back: not asked again, still read-only, the record untouched.
+        QVERIFY(w.window.nextImage());
+        QVERIFY(w.window.previousImage());
+        QCOMPARE(w.answers.recoveryAsked.size(), 1);
+        QVERIFY(w.window.session()->isReadOnly());
+        w.window.flushSaves();
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // Deciding lifts it.
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.recoveryAsked.size(), 2);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.document().shapes().size(), 2);
+    }
+
+    // Item 5: while the recovery question for the next image is shown, the canvas no longer
+    // refers to the previous image's document.
+    void recoveryQuestionWhileSwitching()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.goToImage(1));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        w.window.flushSaves();
+        // Changed by another program, then edited and left: the edit waits in a record.
+        writeFile(project.json(2), QByteArray("{}"));
+        w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+        QVERIFY(w.window.goToImage(0));
+        w.window.flushSaves();
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        bool checked = false;
+        w.answers.recovery = RecoveryChoice::Later;
+        w.answers.duringRecovery = [&] {
+            QVERIFY(w.canvas()->document() == nullptr);
+            QVERIFY(w.window.session() == nullptr);
+            w.canvas()->repaint();
+            checked = true;
+        };
+        QVERIFY(w.window.goToImage(1));
+        QVERIFY(checked);
+        QCOMPARE(w.canvas()->document(), &w.document());
+    }
+
+    // Item 6: deleting the shape being dragged ends the drag.
+    void deleteWhileDragging()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        Canvas* canvas = w.canvas();
+        const QPointF inside = canvas->imageToWidget(QPointF(50, 35));
+        mouse(canvas, QEvent::MouseButtonPress, inside, Qt::LeftButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseMove, inside + QPointF(5, 5), Qt::NoButton, Qt::LeftButton);
+        QTest::keyClick(canvas, Qt::Key_Delete);
+        QVERIFY(w.document().shapes().isEmpty());
+        mouse(canvas, QEvent::MouseMove, inside + QPointF(15, 10), Qt::NoButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, inside + QPointF(15, 10), Qt::LeftButton, Qt::NoButton);
+        QVERIFY(w.document().shapes().isEmpty());
+        QCOMPARE(canvas->selectedShape(), qsizetype(-1));
     }
 };
 

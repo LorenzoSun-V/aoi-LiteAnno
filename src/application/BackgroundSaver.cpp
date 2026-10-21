@@ -147,11 +147,16 @@ void BackgroundSaver::run()
         // as it was before that save, which is not another program's change.
         const QString expected = contentKey(job.snapshot.annotation.stamp);
         Write& writes = m_lastWrites[job.snapshot.imagePath];
+        // Only this session's own earlier saves count: after "重新加载" the new session read
+        // the file as it is, and an older save's content there is another program's doing.
+        if (writes.sessionId != job.snapshot.sessionId)
+            writes = Write{job.snapshot.sessionId, {}, {}};
         if (writes.replaced.contains(expected))
             job.snapshot.annotation.stamp = writes.after;
 
         SaveJobResult result;
         result.imagePath = job.snapshot.imagePath;
+        result.sessionId = job.snapshot.sessionId;
         result.entryId = job.snapshot.entryId;
         result.outcome = m_coordinator.save(job.snapshot.imagePath, job.snapshot.annotation,
                                             job.snapshot.documentVersion, job.options);

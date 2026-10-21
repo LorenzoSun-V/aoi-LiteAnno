@@ -30,7 +30,7 @@ QString SaveCoordinator::recoveryRecordPath(const QString& imagePath) const
 
 QString SaveCoordinator::annotationFilePath(const QString& imagePath) const
 {
-    return m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath);
+    return formats::existingAnnotationPath(m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath));
 }
 
 bool SaveCoordinator::discardRecoveryRecord(const QString& imagePath) const

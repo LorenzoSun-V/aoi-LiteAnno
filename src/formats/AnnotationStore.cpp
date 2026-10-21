@@ -1,6 +1,7 @@
 #include "formats/AnnotationStore.h"
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
@@ -47,6 +48,23 @@ FileStamp readFileStamp(const QString& path)
     if (!file.open(QIODevice::ReadOnly))
         return {true, QFileInfo(path).size(), QFileInfo(path).lastModified(), QString()};
     return stampOf(path, file.readAll());
+}
+
+QString existingAnnotationPath(const QString& jsonPath)
+{
+    const QFileInfo info(jsonPath);
+    if (info.exists())
+        return jsonPath;
+    const QString stem = info.completeBaseName();
+    // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
+    const QStringList names = info.dir().entryList(QDir::Files | QDir::Hidden, QDir::Name);
+    for (const QString& name : names) {
+        if (name.size() == stem.size() + 5 && name.startsWith(stem)
+            && name.mid(stem.size()).compare(QLatin1String(".json"), Qt::CaseInsensitive) == 0) {
+            return info.dir().filePath(name);
+        }
+    }
+    return jsonPath;
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,

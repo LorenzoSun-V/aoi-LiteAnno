@@ -170,6 +170,13 @@ void AnnotationDocument::restoreContent(const AnnotationDocument& state, bool ma
     }
 }
 
+void AnnotationDocument::markDiffersFromSaved(const ReviewState& saved)
+{
+    m_modified = true;
+    if (m_review.checked != saved.checked || m_review.skip != saved.skip || m_review.skipReason != saved.skipReason)
+        m_reviewStateWritten = true;
+}
+
 void AnnotationDocument::markSaved()
 {
     m_modified = false;

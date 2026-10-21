@@ -1,6 +1,7 @@
 #include "application/ProjectSession.h"
 
 #include "core/ImagePath.h"
+#include "formats/AnnotationStore.h"
 #include "formats/ProjectFile.h"
 #include "platform/VolumeBinding.h"
 
@@ -73,7 +74,7 @@ QString ProjectSession::imageFilePath(const QString& imagePath) const
 
 QString ProjectSession::annotationFilePath(const QString& imagePath) const
 {
-    return m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath);
+    return formats::existingAnnotationPath(m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath));
 }
 
 const char* openErrorName(ProjectSession::OpenError error)

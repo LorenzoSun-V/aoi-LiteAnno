@@ -8,6 +8,13 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 namespace liteanno::dataset {
 
 namespace {
@@ -37,15 +44,34 @@ QString comparisonKey(const QString& path)
     return path.normalized(QString::NormalizationForm_C).toCaseFolded();
 }
 
+// Format spec 3: entries with the hidden or the system attribute are not scanned. Qt's
+// QDir::System filter is about device and socket files, not the Windows attribute, so the
+// attributes are read here.
+bool hasHiddenOrSystemAttribute(const QFileInfo& entry)
+{
+#ifdef Q_OS_WIN
+    const DWORD attributes =
+        GetFileAttributesW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(entry.filePath()).utf16()));
+    return attributes != INVALID_FILE_ATTRIBUTES
+           && (attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
+#else
+    Q_UNUSED(entry);
+    return false;
+#endif
+}
+
 void scanInto(const QDir& root, const QString& relativeDir, ScanResult& result)
 {
     const QDir dir(relativeDir.isEmpty() ? root.path() : root.filePath(relativeDir));
-    // Without QDir::Hidden and QDir::System, hidden and system entries are left out.
-    const QFileInfoList entries = dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::NoSort);
+    // Everything is listed and the attributes are checked below.
+    const QFileInfoList entries =
+        dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
     for (const QFileInfo& entry : entries) {
         const QString name = entry.fileName();
-        if (name.startsWith(QLatin1Char('.')))
+        if (name.startsWith(QLatin1Char('.')) || entry.isHidden() || hasHiddenOrSystemAttribute(entry))
             continue;
+        if (!entry.isDir() && !entry.isFile())
+            continue;  // sockets, devices, broken links
         const QString relative = relativeDir.isEmpty() ? name : relativeDir + QLatin1Char('/') + name;
         if (entry.isDir()) {
             if (entry.isSymLink())

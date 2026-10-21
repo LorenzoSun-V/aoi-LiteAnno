@@ -63,6 +63,9 @@ public:
     // last saved. Writers update those fields only in that case (13.3).
     bool reviewStateWritten() const { return m_reviewStateWritten; }
     void markSaved();
+    // The file now holds other content than this document, whose review state was `saved`;
+    // the next save writes this content, review state included where it differs.
+    void markDiffersFromSaved(const ReviewState& saved);
 
 private:
     bool isEditable(qsizetype index) const;

@@ -48,8 +48,9 @@ public:
 
     // Opens the project whose data root is `root`. Reports problems through the prompts.
     bool openProject(const QString& root);
-    // Writes every edit and releases the project.
-    void closeProject();
+    // Writes every edit and releases the project. Refuses, unless `force`, when the user keeps
+    // edits that could not be saved anywhere.
+    bool closeProject(bool force = false);
 
     bool goToImage(int index);
     bool nextImage();
@@ -58,6 +59,8 @@ public:
     void saveNow();
     // Waits until all handed-over saves are written and their results are handled.
     void flushSaves();
+    // "处理未写入的编辑…": asks again about every recovery record, then reopens the image.
+    void resolveRecoveryRecords();
 
     // For tests and status displays.
     int imageCount() const { return int(m_images.size()); }
@@ -90,6 +93,9 @@ private:
     bool waitForSaver(const std::function<bool(int)>& wait);
     void processSaveResults();
     void reloadCurrent();
+    // The canvas must not keep pointing at a session that is gone, also not while a prompt
+    // runs before the next one exists.
+    void dropSession();
     void edited();
     void refresh();
     void refreshImageItem(int index);
@@ -111,6 +117,17 @@ private:
     // recovery record without asking again, until the user saves explicitly.
     bool m_externalChangeDeferred = false;
     QSet<QString> m_unwritten;  // other images whose edits wait in recovery records
+    // Recovery records the user answered "以后再说" for; their images stay read-only so that
+    // a new save does not replace the record.
+    QSet<QString> m_deferredRecords;
+    // Edits whose save failed and left no recovery record (the local folder was not writable
+    // either). They live only here; opening the image again continues from them.
+    struct HeldEdit {
+        std::shared_ptr<formats::AnnotationFile> file;
+        formats::FileStamp stamp;
+        QString error;
+    };
+    QHash<QString, HeldEdit> m_heldEdits;
     QString m_lastLabel;
     QTimer m_idleTimer;
     int m_savingWaits = 0;

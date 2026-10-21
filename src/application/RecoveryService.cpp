@@ -1,6 +1,7 @@
 #include "application/RecoveryService.h"
 
 #include "core/ImagePath.h"
+#include "formats/AnnotationStore.h"
 
 #include <QDir>
 #include <QFile>
@@ -70,7 +71,8 @@ RecoveryScan RecoveryService::scan() const
         RecoveryCandidate candidate;
         candidate.recordPath = recordPath;
         candidate.recordDigest = formats::contentDigest(bytes);
-        candidate.annotationPath = m_location.rootPath + QLatin1Char('/') + annotationPathForImage(record.imagePath);
+        candidate.annotationPath = formats::existingAnnotationPath(
+            m_location.rootPath + QLatin1Char('/') + annotationPathForImage(record.imagePath));
         candidate.current = formats::readFileStamp(candidate.annotationPath);
         candidate.state = classify(record, candidate.current);
         candidate.record = std::move(record);

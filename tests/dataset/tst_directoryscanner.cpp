@@ -8,6 +8,13 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 using namespace liteanno::dataset;
 
 namespace {
@@ -72,6 +79,39 @@ private slots:
         QVERIFY(result.images[2].nameCollision);
         QVERIFY(result.images[3].nameCollision);
         QCOMPARE(result.unsupported, QStringList{QStringLiteral("line2/raw.dng")});
+    }
+
+    // Windows attributes: system alone, hidden alone, on files and on directories.
+    void windowsAttributes()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Windows file attributes");
+#else
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("kept.png"));
+        touch(root, QStringLiteral("system.png"));
+        touch(root, QStringLiteral("hidden.png"));
+        touch(root, QStringLiteral("systemdir/a.png"));
+        touch(root, QStringLiteral("hiddendir/b.png"));
+        const auto set = [&root](const QString& name, DWORD attribute) {
+            const QString path = QDir::toNativeSeparators(root.filePath(name));
+            QVERIFY(SetFileAttributesW(reinterpret_cast<const wchar_t*>(path.utf16()), attribute));
+        };
+        set(QStringLiteral("system.png"), FILE_ATTRIBUTE_SYSTEM);
+        set(QStringLiteral("hidden.png"), FILE_ATTRIBUTE_HIDDEN);
+        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM);
+        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN);
+
+        const ScanResult result = scanDirectory(dir.path());
+        QCOMPARE(paths(result), QStringList{QStringLiteral("kept.png")});
+
+        // Removable again by QTemporaryDir.
+        set(QStringLiteral("system.png"), FILE_ATTRIBUTE_NORMAL);
+        set(QStringLiteral("hidden.png"), FILE_ATTRIBUTE_NORMAL);
+        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_DIRECTORY);
+        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_DIRECTORY);
+#endif
     }
 };
 

@@ -30,6 +30,7 @@ public:
     void setImage(const QImage& image);
     // The shapes to draw; call again after every change of the document.
     void setDocument(const AnnotationDocument* document, bool readOnly);
+    const AnnotationDocument* document() const { return m_document; }
     void setClassColors(const QHash<QString, QColor>& colors);
 
     Tool tool() const { return m_tool; }

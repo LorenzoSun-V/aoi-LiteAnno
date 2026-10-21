@@ -79,7 +79,7 @@ MainWindow::MainWindow(Options options, QWidget* parent)
 
 MainWindow::~MainWindow()
 {
-    closeProject();
+    closeProject(true);
 }
 
 void MainWindow::buildUi()
@@ -186,13 +186,7 @@ void MainWindow::buildUi()
     open->setShortcut(QKeySequence::Open);
     QAction* save = fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow);
     save->setShortcut(QKeySequence::Save);
-    fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, [this] {
-        if (m_project) {
-            flushSaves();
-            handleRecoveryRecords();
-            reloadCurrent();
-        }
-    });
+    fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
     fileMenu->addSeparator();
     fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close);
 
@@ -268,7 +262,8 @@ void MainWindow::chooseProject()
 
 bool MainWindow::openProject(const QString& root)
 {
-    closeProject();
+    if (!closeProject())
+        return false;
     ProjectSession::OpenResult result = ProjectSession::open(root, m_options.localData);
     if (!result.session) {
         m_prompts.message(QStringLiteral(u"无法打开项目"), openErrorText(result, root));
@@ -317,25 +312,60 @@ bool MainWindow::openProject(const QString& root)
     return true;
 }
 
-void MainWindow::closeProject()
+bool MainWindow::closeProject(bool force)
 {
     if (!m_project)
-        return;
+        return true;
     m_idleTimer.stop();
     commitCurrent();
     flushSaves();
-    m_session.reset();
+    if (!m_heldEdits.isEmpty() && !force) {
+        QStringList images = m_heldEdits.keys();
+        images.sort();
+        const QString text =
+            QStringLiteral(u"%1 张图片的修改既没能写入标注文件，也没能存到这台电脑上（%2）。\n"
+                           u"关闭项目会丢失这些修改：\n%3\n\n"
+                           u"可以先检查磁盘空间或文件夹权限，回到这些图片再保存一次。")
+                .arg(images.size())
+                .arg(m_heldEdits.value(images.first()).error, images.mid(0, 10).join(QLatin1Char('\n')));
+        if (!m_prompts.confirmDiscard(text)) {
+            refresh();
+            return false;
+        }
+    }
+    dropSession();
     m_saver.reset();
     m_project.reset();
     m_images.clear();
     m_statuses.clear();
     m_unwritten.clear();
+    m_deferredRecords.clear();
+    m_heldEdits.clear();
     m_current = -1;
     m_imageList->clear();
-    m_canvas->setDocument(nullptr, true);
     m_canvas->setImage(QImage());
     setWindowTitle(QStringLiteral("aoi-LiteAnno"));
     refresh();
+    return true;
+}
+
+void MainWindow::resolveRecoveryRecords()
+{
+    if (!m_project)
+        return;
+    m_idleTimer.stop();
+    flushSaves();
+    dropSession();
+    m_deferredRecords.clear();
+    handleRecoveryRecords();
+    if (m_current >= 0)
+        loadCurrentImage();
+}
+
+void MainWindow::dropSession()
+{
+    m_session.reset();
+    m_canvas->setDocument(nullptr, true);
 }
 
 void MainWindow::handleRecoveryRecords(const QString& onlyImage)
@@ -354,11 +384,17 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             result = recovery.restore(candidate, candidate.state == RecoveryState::Conflict);
         else if (choice == RecoveryChoice::Discard)
             result = recovery.discard(candidate);
-        else
+        if (choice == RecoveryChoice::Later) {
+            m_deferredRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
             continue;
+        }
         if (result.status == application::RecordStatus::Done) {
             m_unwritten.remove(candidate.record.imagePath);
+            m_deferredRecords.remove(candidate.record.imagePath);
         } else {
+            m_deferredRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
             m_prompts.message(QStringLiteral(u"未完成"),
                               QStringLiteral(u"图片 %1 的未写入编辑没有处理完：%2")
                                   .arg(candidate.record.imagePath, result.error));
@@ -388,9 +424,10 @@ bool MainWindow::goToImage(int index)
         waitForSaver([this, path](int ms) { return m_saver->waitUntilIdle(path, ms); });
     processSaveResults();
 
-    m_session.reset();
+    dropSession();
     m_current = index;
-    if (m_unwritten.contains(path))
+    // A record the user already put off is not asked about again; the image stays read-only.
+    if (m_unwritten.contains(path) && !m_deferredRecords.contains(path))
         handleRecoveryRecords(path);
     loadCurrentImage();
     m_imageList->blockSignals(true);
@@ -418,19 +455,28 @@ void MainWindow::loadCurrentImage()
     const imaging::LoadedImage image = imaging::loadImage(m_project->imageFilePath(scanned.path));
     m_canvas->setImage(image.image);
     if (image.image.isNull()) {
-        m_session.reset();
-        m_canvas->setDocument(nullptr, true);
+        dropSession();
         statusBar()->showMessage(QStringLiteral(u"图片无法打开：%1").arg(image.error), 15000);
         refresh();
         return;
     }
     if (image.hasMoreFrames)
         statusBar()->showMessage(QStringLiteral(u"这张图片有多页或多帧，只显示第一页。"), 10000);
-    formats::LoadedAnnotation loaded = formats::loadAnnotationFile(
-        m_project->annotationFilePath(scanned.path), image.info, m_project->config().imageLabels.options);
+    // Edits that could not be saved are opened, not the file without them.
+    const auto held = m_heldEdits.constFind(scanned.path);
+    formats::LoadedAnnotation loaded = held != m_heldEdits.cend()
+                                           ? formats::LoadedAnnotation{held->file->clone(), held->stamp}
+                                           : formats::loadAnnotationFile(m_project->annotationFilePath(scanned.path),
+                                                                         image.info,
+                                                                         m_project->config().imageLabels.options);
+    if (held != m_heldEdits.cend())
+        m_saveError = held->error;
     m_session = std::make_unique<DocumentSession>(scanned.path, std::move(loaded), m_project->config(),
                                                   scanned.nameCollision);
+    m_session->setBlocked(m_deferredRecords.contains(scanned.path));
     m_canvas->setDocument(&m_session->document(), m_session->isReadOnly());
+    if (held != m_heldEdits.cend())
+        m_idleTimer.start();
     refresh();
 }
 
@@ -438,7 +484,7 @@ void MainWindow::reloadCurrent()
 {
     if (m_current < 0)
         return;
-    m_session.reset();
+    dropSession();
     loadCurrentImage();
 }
 
@@ -493,15 +539,29 @@ void MainWindow::processSaveResults()
     m_handlingResults = true;
     for (application::SaveJobResult& result : m_saver->takeResults()) {
         const SaveStatus status = result.outcome.result.status;
-        const bool current = m_session && m_session->imagePath() == result.imagePath;
+        // Results of an earlier session of the same image (before "重新加载") are not this one's.
+        const bool current = m_session && m_session->id() == result.sessionId;
         if (status == SaveStatus::Saved || status == SaveStatus::NotModified) {
             m_unwritten.remove(result.imagePath);
+            m_heldEdits.remove(result.imagePath);
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
                 m_saveError.clear();
                 m_externalChangeDeferred = false;
+                // Undone or edited while the save ran: the file has to follow.
+                if (m_session->needsSave())
+                    m_idleTimer.start();
             }
             continue;
+        }
+        if (result.outcome.recoveryRecordKept) {
+            m_heldEdits.remove(result.imagePath);
+        } else if (result.saved) {
+            m_heldEdits.insert(result.imagePath,
+                               HeldEdit{result.saved, result.stamp,
+                                        status == SaveStatus::ExternallyModified
+                                            ? QStringLiteral(u"文件被其他程序修改过")
+                                            : result.outcome.result.error});
         }
         // The next commit hands the edits over again.
         if (current)
@@ -535,15 +595,20 @@ void MainWindow::processSaveResults()
                 m_unwritten.insert(result.imagePath);
             continue;
         }
-        if (result.outcome.recoveryRecordKept)
+        const QString reason = status == SaveStatus::ExternallyModified ? QStringLiteral(u"文件被其他程序修改过")
+                                                                        : result.outcome.result.error;
+        if (result.outcome.recoveryRecordKept) {
             m_unwritten.insert(result.imagePath);
-        m_prompts.message(QStringLiteral(u"修改没有写入"),
-                          QStringLiteral(u"图片 %1 的修改没有写入标注文件（%2）。\n修改已保存在这台电脑上，"
-                                         u"再次打开这张图片时会提示处理。")
-                              .arg(result.imagePath,
-                                   status == SaveStatus::ExternallyModified
-                                       ? QStringLiteral(u"文件被其他程序修改过")
-                                       : result.outcome.result.error));
+            m_prompts.message(QStringLiteral(u"修改没有写入"),
+                              QStringLiteral(u"图片 %1 的修改没有写入标注文件（%2）。\n修改已保存在这台电脑上，"
+                                             u"再次打开这张图片时会提示处理。")
+                                  .arg(result.imagePath, reason));
+        } else {
+            m_prompts.message(QStringLiteral(u"修改没有写入"),
+                              QStringLiteral(u"图片 %1 的修改没有写入标注文件，也没能存到这台电脑上（%2）。\n"
+                                             u"修改还在程序里：回到这张图片会接着保存。关闭项目前请先处理。")
+                                  .arg(result.imagePath, reason));
+        }
     }
     m_handlingResults = false;
     refresh();
@@ -701,6 +766,9 @@ void MainWindow::refresh()
             text += QStringLiteral(u"（%1）").arg(review.skipReason);
         m_imageStatus->setText(text);
         QString note = readOnlyText(m_session->file().readOnlyReason());
+        if (m_session->isBlocked())
+            note = QStringLiteral(u"这张图片有上次没写入的修改，还没有处理。处理前不能编辑，以免覆盖它："
+                                  u"请用“文件 > 处理未写入的编辑…”恢复或放弃。");
         if (m_images[m_current].nameCollision)
             note = QStringLiteral(u"同一目录下有主文件名相同的图片（例如 001.jpg 和 001.png），它们会共用一个标注文件。"
                                   u"只能查看，请交给工程师改名后重新打开项目。");
@@ -761,8 +829,10 @@ void MainWindow::refresh()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    closeProject();
-    event->accept();
+    if (closeProject())
+        event->accept();
+    else
+        event->ignore();
 }
 
 } // namespace liteanno::ui

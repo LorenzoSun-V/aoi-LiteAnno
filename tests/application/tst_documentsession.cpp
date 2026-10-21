@@ -264,6 +264,144 @@ private slots:
         QCOMPARE(saver.takeResults()[0].outcome.result.status, SaveStatus::ExternallyModified);
     }
 
+    // Review of 168a9cd, item 2: undone before the save was acknowledged, the undone content
+    // is still written.
+    void undoBeforeTheSaveIsAcknowledged()
+    {
+        Setup setup;
+        DocumentSession session = setup.open();
+        BackgroundSaver saver(setup.coordinator());
+        QVERIFY(session.addShape(box(1)) >= 0);
+        saver.submit(session.snapshot());
+        QVERIFY(session.undo());
+        // The file may already hold the rectangle.
+        QVERIFY(session.needsSave());
+        QVERIFY(saver.waitUntilAllDone(30000));
+        for (const SaveJobResult& result : saver.takeResults())
+            session.savedSnapshot(result.entryId, *result.saved, result.stamp);
+        QCOMPARE(test::parseOrFail(readFile(setup.annotationPath()))["shapes"].size(), std::size_t(1));
+        QVERIFY(session.needsSave());
+        saveNow(saver, session);
+        QCOMPARE(test::parseOrFail(readFile(setup.annotationPath()))["shapes"].size(), std::size_t(0));
+        QVERIFY(!session.needsSave());
+    }
+
+    // The same when the undo comes after the save finished but before its result is handled.
+    void undoBetweenSaveAndAcknowledgement()
+    {
+        Setup setup;
+        DocumentSession session = setup.open();
+        BackgroundSaver saver(setup.coordinator());
+        QVERIFY(session.addShape(box(1)) >= 0);
+        saver.submit(session.snapshot());
+        QVERIFY(saver.waitUntilAllDone(30000));
+        QVERIFY(session.undo());
+        for (const SaveJobResult& result : saver.takeResults())
+            session.savedSnapshot(result.entryId, *result.saved, result.stamp);
+        QVERIFY(session.needsSave());
+        saveNow(saver, session);
+        QCOMPARE(test::parseOrFail(readFile(setup.annotationPath()))["shapes"].size(), std::size_t(0));
+    }
+
+    // Item 3: undoing a saved removal brings back the shape's JSON object as it was.
+    void undoSavedRemovalKeepsTheShapeObject()
+    {
+        Setup setup;
+        writeFile(setup.annotationPath(), R"({
+  "version": "2.4.0",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "scratch",
+      "points": [[10.0, 10.0], [40.0, 10.0], [40.0, 30.0], [10.0, 30.0]],
+      "group_id": 7,
+      "description": "kept",
+      "shape_type": "rectangle",
+      "flags": {"reviewed": true},
+      "attributes": {"severity": "high"},
+      "score": 0.9,
+      "custom": {"k": 1}
+    }
+  ],
+  "imagePath": "0002.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640
+})");
+        const auto original = test::parseOrFail(readFile(setup.annotationPath()))["shapes"][0];
+        DocumentSession session = setup.open();
+        BackgroundSaver saver(setup.coordinator());
+        QVERIFY(session.removeShape(0));
+        saveNow(saver, session);
+        QCOMPARE(test::parseOrFail(readFile(setup.annotationPath()))["shapes"].size(), std::size_t(0));
+        QVERIFY(session.undo());
+        saveNow(saver, session);
+        const auto restored = test::parseOrFail(readFile(setup.annotationPath()))["shapes"][0];
+        QVERIFY2(restored == original, restored.dump().c_str());
+        // And through a second round, with a shape added in between.
+        QVERIFY(session.redo());
+        QVERIFY(session.addShape(box(100)) >= 0);
+        saveNow(saver, session);
+        QVERIFY(session.undo());
+        QVERIFY(session.undo());
+        saveNow(saver, session);
+        const auto again = test::parseOrFail(readFile(setup.annotationPath()))["shapes"];
+        QCOMPARE(again.size(), std::size_t(1));
+        QVERIFY2(again[0] == original, again[0].dump().c_str());
+    }
+
+    // Item 7: after "重新加载" the new session's file is the base, even when it holds content
+    // this program wrote over before.
+    void reloadedSessionIsNotTakenForAnOlderSave()
+    {
+        Setup setup;
+        const QByteArray before = test::readTestData(QStringLiteral("annotations/upstream_v2_legacy.json"));
+        writeFile(setup.annotationPath(), before);
+        BackgroundSaver saver(setup.coordinator());
+        {
+            DocumentSession first = setup.open();
+            QVERIFY(first.addShape(box(1)) >= 0);
+            saveNow(saver, first);
+        }
+        // Another program puts the old file back; the window reloads.
+        writeFile(setup.annotationPath(), before);
+        DocumentSession second = setup.open();
+        QVERIFY(second.addShape(box(50)) >= 0);
+        saveNow(saver, second);
+
+        // The same after the file was deleted.
+        QFile::remove(setup.annotationPath());
+        DocumentSession third = setup.open();
+        QVERIFY(third.addShape(box(80)) >= 0);
+        saveNow(saver, third);
+        QCOMPARE(test::parseOrFail(readFile(setup.annotationPath()))["shapes"].size(), std::size_t(1));
+    }
+
+    // Item 8: an annotation named with ".JSON" belongs to the image (format spec 3).
+    void annotationExtensionInAnyCase()
+    {
+        Setup setup;
+        QDir(setup.data.path()).mkpath(QStringLiteral("line1"));
+        const QString upper = setup.data.filePath(QStringLiteral("line1/0002.JSON"));
+        writeFile(upper, test::readTestData(QStringLiteral("annotations/upstream_v2_legacy.json")));
+        const QString path = existingAnnotationPath(setup.annotationPath());
+        QVERIFY(QFileInfo(path).exists());
+        QCOMPARE(setup.coordinator().annotationFilePath(test::kReliableSaveImage), path);
+
+        DocumentSession session(test::kReliableSaveImage, loadAnnotationFile(path, test::reliableSaveImageInfo()),
+                                projectWithClasses());
+        QVERIFY(!session.file().isNew());
+        const qsizetype shapes = session.document().shapes().size();
+        QVERIFY(shapes > 0);
+        BackgroundSaver saver(setup.coordinator());
+        QVERIFY(session.addShape(box(1)) >= 0);
+        saveNow(saver, session);
+        // Written to that file, not to a new lower-case one.
+        const QStringList files = QDir(setup.data.filePath(QStringLiteral("line1"))).entryList(QDir::Files);
+        QCOMPARE(files, QStringList{QStringLiteral("0002.JSON")});
+        QCOMPARE(test::parseOrFail(readFile(upper))["shapes"].size(), std::size_t(shapes + 1));
+    }
+
     void limitCountsWaitingDocuments()
     {
         Setup setup;
