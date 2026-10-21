@@ -26,8 +26,6 @@ public:
     };
 
     FileBlocker(const QString& path, Mode mode)
-        : m_path(path)
-        , m_mode(mode)
     {
 #ifdef Q_OS_WIN
         const DWORD share = mode == Mode::Replace ? FILE_SHARE_READ : 0;
@@ -64,8 +62,6 @@ public:
     }
 
 private:
-    QString m_path;
-    Mode m_mode;
     bool m_active = false;
 #ifdef Q_OS_WIN
     HANDLE m_handle = INVALID_HANDLE_VALUE;
