@@ -53,18 +53,22 @@ FileStamp readFileStamp(const QString& path)
 QString existingAnnotationPath(const QString& jsonPath)
 {
     const QFileInfo info(jsonPath);
+#ifndef Q_OS_WIN
+    // Case-sensitive names: the lower-case file is the one.
     if (info.exists())
         return jsonPath;
-    const QString stem = info.completeBaseName();
+#endif
+    QString pattern = info.fileName();
+    // Wildcard characters in the name are matched literally.
+    for (const QChar special : {QLatin1Char('['), QLatin1Char('*'), QLatin1Char('?')})
+        pattern.replace(special, QLatin1Char('[') + special + QLatin1Char(']'));
+    // Name filters ignore case. Listing also gives the name as it is on disk, which Windows
+    // keeps when the file is replaced under it.
+    const QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
+    if (names.isEmpty() || names.contains(info.fileName()))
+        return jsonPath;
     // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
-    const QStringList names = info.dir().entryList(QDir::Files | QDir::Hidden, QDir::Name);
-    for (const QString& name : names) {
-        if (name.size() == stem.size() + 5 && name.startsWith(stem)
-            && name.mid(stem.size()).compare(QLatin1String(".json"), Qt::CaseInsensitive) == 0) {
-            return info.dir().filePath(name);
-        }
-    }
-    return jsonPath;
+    return info.dir().filePath(names.first());
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,

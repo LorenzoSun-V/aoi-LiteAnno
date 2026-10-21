@@ -577,7 +577,10 @@ private slots:
             w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
             w.window.saveNow();
             w.window.flushSaves();
-            writeFile(project.json(1), QByteArray("{\"broken\": "));
+            // Another program's valid change, so only the record keeps the image read-only.
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
             w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
             w.answers.externalChange = ExternalChangeChoice::Later;
             QVERIFY(w.window.closeProject());
@@ -589,7 +592,9 @@ private slots:
         QVERIFY(w.window.openProject(project.data.path()));
         QCOMPARE(w.answers.recoveryAsked.size(), 1);
         QVERIFY(w.window.session()->isReadOnly());
+        QVERIFY(w.document().shapes().isEmpty());
         w.drawRectangle(QPointF(20, 70), QPointF(60, 95));
+        QVERIFY(w.document().shapes().isEmpty());
         QVERIFY(!w.window.confirmCurrent());
         // Away and back: not asked again, still read-only, the record untouched.
         QVERIFY(w.window.nextImage());

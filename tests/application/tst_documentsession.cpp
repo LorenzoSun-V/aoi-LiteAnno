@@ -385,7 +385,7 @@ private slots:
         const QString upper = setup.data.filePath(QStringLiteral("line1/0002.JSON"));
         writeFile(upper, test::readTestData(QStringLiteral("annotations/upstream_v2_legacy.json")));
         const QString path = existingAnnotationPath(setup.annotationPath());
-        QVERIFY(QFileInfo(path).exists());
+        QCOMPARE(QFileInfo(path).fileName(), QStringLiteral("0002.JSON"));
         QCOMPARE(setup.coordinator().annotationFilePath(test::kReliableSaveImage), path);
 
         DocumentSession session(test::kReliableSaveImage, loadAnnotationFile(path, test::reliableSaveImageInfo()),

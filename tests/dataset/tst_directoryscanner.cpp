@@ -100,8 +100,8 @@ private slots:
         };
         set(QStringLiteral("system.png"), FILE_ATTRIBUTE_SYSTEM);
         set(QStringLiteral("hidden.png"), FILE_ATTRIBUTE_HIDDEN);
-        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_SYSTEM);
-        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN);
+        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_SYSTEM);
+        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_HIDDEN);
 
         const ScanResult result = scanDirectory(dir.path());
         QCOMPARE(paths(result), QStringList{QStringLiteral("kept.png")});
@@ -109,8 +109,8 @@ private slots:
         // Removable again by QTemporaryDir.
         set(QStringLiteral("system.png"), FILE_ATTRIBUTE_NORMAL);
         set(QStringLiteral("hidden.png"), FILE_ATTRIBUTE_NORMAL);
-        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_DIRECTORY);
-        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_DIRECTORY);
+        set(QStringLiteral("systemdir"), FILE_ATTRIBUTE_NORMAL);
+        set(QStringLiteral("hiddendir"), FILE_ATTRIBUTE_NORMAL);
 #endif
     }
 };
