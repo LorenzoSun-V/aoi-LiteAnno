@@ -402,6 +402,24 @@ private slots:
         QCOMPARE(test::parseOrFail(readFile(upper))["shapes"].size(), std::size_t(shapes + 1));
     }
 
+    // Review of 083aa48: only the extension ignores case. On Linux "A.JSON" is not the
+    // annotation of "0002.jpg"'s neighbour "a.png"; here: "0002.jpg" and "0002.JSON" pair, a
+    // stem differing in case does not.
+    void stemCaseStillMatters()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("Windows names ignore case altogether");
+#else
+        Setup setup;
+        QDir(setup.data.path()).mkpath(QStringLiteral("line1"));
+        writeFile(setup.data.filePath(QStringLiteral("line1/A.JSON")), "{}");
+        const QString lower = setup.data.filePath(QStringLiteral("line1/a.json"));
+        QCOMPARE(existingAnnotationPath(lower), lower);
+        writeFile(setup.data.filePath(QStringLiteral("line1/a.Json")), "{}");
+        QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/a.Json")));
+#endif
+    }
+
     void limitCountsWaitingDocuments()
     {
         Setup setup;

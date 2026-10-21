@@ -7,6 +7,8 @@
 #include <QSaveFile>
 #include <QThread>
 
+#include <algorithm>
+
 namespace liteanno::formats {
 
 namespace {
@@ -64,8 +66,17 @@ QString existingAnnotationPath(const QString& jsonPath)
         pattern.replace(special, QLatin1Char('[') + special + QLatin1Char(']'));
     // Name filters ignore case. Listing also gives the name as it is on disk, which Windows
     // keeps when the file is replaced under it.
-    const QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
-    if (names.isEmpty() || names.contains(info.fileName()))
+    QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
+    if (names.contains(info.fileName()))
+        return jsonPath;
+#ifndef Q_OS_WIN
+    // The filter ignores case in the whole name; on Linux only the extension may differ.
+    const QString stem = info.completeBaseName() + QLatin1Char('.');
+    names.erase(std::remove_if(names.begin(), names.end(),
+                               [&stem](const QString& name) { return !name.startsWith(stem, Qt::CaseSensitive); }),
+                names.end());
+#endif
+    if (names.isEmpty())
         return jsonPath;
     // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
     return info.dir().filePath(names.first());

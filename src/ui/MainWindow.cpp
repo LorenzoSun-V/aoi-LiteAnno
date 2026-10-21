@@ -401,7 +401,8 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
         }
     }
     if (onlyImage.isEmpty() && !scan.unusable.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留。").arg(scan.unusable.size()), 15000);
+        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留；保存同一张图片前会把它移到恢复目录下的 unusable 文件夹。")
+                                     .arg(scan.unusable.size()), 15000);
     }
 }
 

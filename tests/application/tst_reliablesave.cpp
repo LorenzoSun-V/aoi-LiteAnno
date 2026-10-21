@@ -343,6 +343,67 @@ private slots:
         QVERIFY(!QFile::exists(setup.data.filePath(QStringLiteral("../outside.json"))));
     }
 
+    // Review of 083aa48: a record this program cannot use is never replaced by a new save.
+    // It is moved aside, byte for byte, before the new record is written.
+    void unusableRecordIsMovedAsideBeforeASave_data()
+    {
+        QTest::addColumn<QByteArray>("from");
+        QTest::addColumn<QByteArray>("to");
+        QTest::newRow("newer format") << QByteArray("\"formatVersion\": \"1.0\"") << QByteArray("\"formatVersion\": \"2.0\"");
+        QTest::newRow("broken") << QByteArray("\"formatVersion\"") << QByteArray("\"formatVersion");
+        QTest::newRow("other image") << QByteArray("\"line1/0002.jpg\"") << QByteArray("\"line1/0003.jpg\"");
+    }
+
+    void unusableRecordIsMovedAsideBeforeASave()
+    {
+        QFETCH(QByteArray, from);
+        QFETCH(QByteArray, to);
+        Setup setup;
+        QVERIFY(setup.killDuringSave("after-record"));
+        QCOMPARE(setup.records().size(), 1);
+        const QString recordPath = setup.recoveryDir() + QLatin1String("/") + setup.records().constFirst();
+        QByteArray unusable = readFile(recordPath);
+        QVERIFY(unusable.contains(from));
+        unusable.replace(from, to);
+        writeFile(recordPath, unusable);
+        writeFile(setup.annotationPath(), setup.original);
+
+        LoadedAnnotation annotation = setup.load();
+        QVERIFY(annotation.file.document().addShape(test::reliableSaveShape()) >= 0);
+        const SaveOutcome outcome = setup.coordinator().save(test::kReliableSaveImage, annotation, 1);
+        QCOMPARE(saveStatusName(outcome.result.status), saveStatusName(SaveStatus::Saved));
+        QVERIFY(setup.records().isEmpty());
+
+        const QDir aside(setup.recoveryDir() + QLatin1String("/unusable"));
+        const QStringList kept = aside.entryList(QDir::Files);
+        QCOMPARE(kept.size(), 1);
+        QCOMPARE(readFile(aside.filePath(kept.first())), unusable);
+        // Not scanned again as a record of this location.
+        const RecoveryScan scan = setup.recovery().scan();
+        QVERIFY(scan.unusable.isEmpty());
+        QVERIFY(scan.candidates.isEmpty());
+    }
+
+    // When the record cannot be moved, nothing is written.
+    void unusableRecordThatCannotBeMovedStopsTheSave()
+    {
+        Setup setup;
+        QVERIFY(setup.killDuringSave("after-record"));
+        const QString recordPath = setup.recoveryDir() + QLatin1String("/") + setup.records().constFirst();
+        writeFile(recordPath, "{");
+        writeFile(setup.annotationPath(), setup.original);
+        // A file where the folder for moved records would be.
+        writeFile(setup.recoveryDir() + QLatin1String("/unusable"), "blocked");
+
+        LoadedAnnotation annotation = setup.load();
+        QVERIFY(annotation.file.document().addShape(test::reliableSaveShape()) >= 0);
+        const SaveOutcome outcome = setup.coordinator().save(test::kReliableSaveImage, annotation, 1);
+        QCOMPARE(saveStatusName(outcome.result.status), saveStatusName(SaveStatus::Failed));
+        QVERIFY(!outcome.recoveryRecordKept);
+        QCOMPARE(readFile(recordPath), QByteArray("{"));
+        QCOMPARE(readFile(setup.annotationPath()), setup.original);
+    }
+
     // Records of another project or another location are in other directories.
     void otherLocationsSeeNoRecords()
     {
