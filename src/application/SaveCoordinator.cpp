@@ -33,6 +33,12 @@ QString SaveCoordinator::annotationFilePath(const QString& imagePath) const
     return m_location.rootPath + QLatin1Char('/') + annotationPathForImage(imagePath);
 }
 
+bool SaveCoordinator::discardRecoveryRecord(const QString& imagePath) const
+{
+    const QString path = recoveryRecordPath(imagePath);
+    return !QFile::exists(path) || QFile::remove(path);
+}
+
 SaveOutcome SaveCoordinator::save(const QString& imagePath, formats::LoadedAnnotation& annotation,
                                   qint64 documentVersion, const formats::SaveOptions& options)
 {

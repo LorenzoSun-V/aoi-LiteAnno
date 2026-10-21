@@ -668,6 +668,20 @@ void AnnotationFile::markSaved()
     d->document.markSaved();
 }
 
+AnnotationFile AnnotationFile::clone() const
+{
+    return AnnotationFile(std::make_unique<Data>(*d));
+}
+
+void AnnotationFile::adoptSavedBase(const AnnotationFile& saved)
+{
+    d->base = saved.d->base;
+    d->isNew = saved.d->isNew;
+    d->originalShapes = saved.d->originalShapes;
+    d->originalImageLabels = saved.d->originalImageLabels;
+    d->diagnostics = saved.d->diagnostics;
+}
+
 const char* readOnlyReasonName(ReadOnlyReason reason)
 {
     switch (reason) {

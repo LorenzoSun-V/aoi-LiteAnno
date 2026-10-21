@@ -70,6 +70,12 @@ public:
     // Call after the bytes from toBytes() were written: they become the new base for edits.
     void markSaved();
 
+    // A copy to save on another thread while this one keeps being edited.
+    AnnotationFile clone() const;
+    // Call after `saved`, a clone() of this file, was written and then markSaved(): its content
+    // becomes the base for edits, and the edits made since the clone stay to be saved.
+    void adoptSavedBase(const AnnotationFile& saved);
+
 private:
     struct Data;
     explicit AnnotationFile(std::unique_ptr<Data> data);

@@ -54,6 +54,15 @@ liteanno_forbid_dependencies(liteanno_formats
 liteanno_forbid_dependencies(liteanno_platform
     FORBIDDEN Qt6::Gui Qt6::Widgets
               liteanno_dataset liteanno_imaging liteanno_formats liteanno_application)
+liteanno_forbid_dependencies(liteanno_dataset
+    FORBIDDEN Qt6::Gui Qt6::Widgets
+              liteanno_formats liteanno_imaging liteanno_platform liteanno_application)
+if(LITEANNO_BUILD_UI)
+    # imaging decodes images with Qt Gui, but draws no widgets.
+    liteanno_forbid_dependencies(liteanno_imaging
+        FORBIDDEN Qt6::Widgets
+                  liteanno_formats liteanno_dataset liteanno_platform liteanno_application)
+endif()
 # application organizes the flows across modules; it does not need the GUI.
 liteanno_forbid_dependencies(liteanno_application
     FORBIDDEN Qt6::Gui Qt6::Widgets)

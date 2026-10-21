@@ -1,7 +1,10 @@
 add_subdirectory(core)
 add_subdirectory(formats)
 add_subdirectory(platform)
+add_subdirectory(dataset)
 add_subdirectory(application)
 if(LITEANNO_BUILD_UI)
+    # Decoding images needs Qt Gui.
+    add_subdirectory(imaging)
     add_subdirectory(ui)
 endif()

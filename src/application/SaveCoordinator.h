@@ -46,6 +46,8 @@ public:
     // The record file of an image.
     QString recoveryRecordPath(const QString& imagePath) const;
     QString annotationFilePath(const QString& imagePath) const;
+    // The user dropped the edit kept after a failed save ("重新加载").
+    bool discardRecoveryRecord(const QString& imagePath) const;
 
     // Called after each stage; tests use it to stop the process at that point.
     std::function<void(SaveStage)> stageHook;
