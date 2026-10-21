@@ -68,9 +68,18 @@ struct SaveOptions {
     std::function<void(int)> beforeRetry;
 };
 
+// Run before each write attempt. Saved lets the attempt go ahead, Failed waits for the next
+// attempt (the last one is returned when none is left), any other status stops and is returned.
+using WriteCheck = std::function<SaveResult()>;
+
 // Writes bytes atomically: a temporary file is written, flushed and renamed over the target
 // (QSaveFile), retried as SaveOptions says. The target is unchanged when this fails.
-SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, const SaveOptions& options = {});
+SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, const SaveOptions& options = {},
+                               const WriteCheck& check = {});
+
+// Saved when the file still has the content `expected` describes, ExternallyModified when it
+// changed, appeared or disappeared, Failed when it cannot be read now.
+SaveResult checkUnchanged(const QString& path, const FileStamp& expected);
 
 // Writes an edited file atomically. Unedited and read-only files are left untouched, and a
 // file another program changed since `annotation.stamp` is not overwritten unless the

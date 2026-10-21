@@ -78,7 +78,8 @@ const char* saveStatusName(SaveStatus status)
     return "unknown";
 }
 
-SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, const SaveOptions& options)
+SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, const SaveOptions& options,
+                               const WriteCheck& check)
 {
     const int maxAttempts = qMax(1, options.maxAttempts);
     SaveResult result;
@@ -88,12 +89,32 @@ SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, con
                 options.beforeRetry(attempt);
             QThread::msleep(static_cast<unsigned long>(qMax(0, options.retryDelayMs)));
         }
+        // Checked before every attempt: the target can change while a retry waits.
+        if (check) {
+            result = check();
+            result.attempts = attempt;
+            if (result.status == SaveStatus::Failed)
+                continue;
+            if (result.status != SaveStatus::Saved)
+                return result;
+        }
         result = writeOnce(path, bytes);
         result.attempts = attempt;
         if (result.status == SaveStatus::Saved)
             break;
     }
     return result;
+}
+
+SaveResult checkUnchanged(const QString& path, const FileStamp& expected)
+{
+    const FileStamp current = readFileStamp(path);
+    // A scanner that opened the file exclusively blocks reading it for a moment: retried.
+    if (current.exists && current.digest.isEmpty())
+        return {SaveStatus::Failed, QStringLiteral("the file cannot be read to check for changes")};
+    if (!current.sameContent(expected))
+        return {SaveStatus::ExternallyModified, QStringLiteral("the file was changed by another program")};
+    return {SaveStatus::Saved, QString()};
 }
 
 SaveResult saveAnnotationFile(const QString& jsonPath, LoadedAnnotation& annotation, const SaveOptions& options)
@@ -104,23 +125,14 @@ SaveResult saveAnnotationFile(const QString& jsonPath, LoadedAnnotation& annotat
     if (!file.needsWrite())
         return {SaveStatus::NotModified, QString()};
 
-    // A change made between this check and the rename below is not detected; the window is
-    // one write of a small file.
-    if (!options.overwriteExternalChanges) {
-        // A scanner that opened the file exclusively blocks reading it too, for a moment.
-        FileStamp current = readFileStamp(jsonPath);
-        for (int attempt = 1; attempt < options.maxAttempts && current.exists && current.digest.isEmpty(); ++attempt) {
-            QThread::msleep(static_cast<unsigned long>(qMax(0, options.retryDelayMs)));
-            current = readFileStamp(jsonPath);
-        }
-        if (current.exists && current.digest.isEmpty())
-            return {SaveStatus::Failed, QStringLiteral("the file cannot be read to check for changes")};
-        if (!current.sameContent(annotation.stamp))
-            return {SaveStatus::ExternallyModified, QStringLiteral("the file was changed by another program")};
-    }
+    // A change made between a check and the rename right after it is not detected; the
+    // window is one write of a small file.
+    WriteCheck check;
+    if (!options.overwriteExternalChanges)
+        check = [&jsonPath, &annotation] { return checkUnchanged(jsonPath, annotation.stamp); };
 
     const QByteArray bytes = file.toBytes();
-    SaveResult result = writeFileAtomically(jsonPath, bytes, options);
+    SaveResult result = writeFileAtomically(jsonPath, bytes, options, check);
     if (result.status != SaveStatus::Saved)
         return result;
 

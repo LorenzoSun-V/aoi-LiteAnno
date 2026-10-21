@@ -5,6 +5,7 @@
 #include "application/ProjectLock.h"
 #include "application/RecoveryService.h"
 #include "application/SaveCoordinator.h"
+#include "common/FileBlocker.h"
 #include "common/ReliableSaveTestData.h"
 #include "common/TestData.h"
 
@@ -165,11 +166,11 @@ private slots:
         QCOMPARE(scan.candidates.size(), 1);
         QCOMPARE(scan.candidates[0].state, RecoveryState::Conflict);
         QCOMPARE(scan.candidates[0].record.documentVersion, 4);
-        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RestoreStatus::Conflict);
+        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RecordStatus::Conflict);
         QCOMPARE(readFile(setup.annotationPath()), external);
 
         // The user chose the recorded version.
-        QCOMPARE(setup.recovery().restore(scan.candidates[0], true).status, RestoreStatus::Restored);
+        QCOMPARE(setup.recovery().restore(scan.candidates[0], true).status, RecordStatus::Done);
         QCOMPARE(readFile(setup.annotationPath()), annotation.file.toBytes());
         QVERIFY(setup.records().isEmpty());
     }
@@ -201,7 +202,7 @@ private slots:
         QCOMPARE(candidate.record.rootPathAtWrite, setup.data.path());
         QCOMPARE(candidate.record.baseDigest, withAnnotation ? contentDigest(setup.original) : QString());
 
-        QCOMPARE(setup.recovery().restore(candidate).status, RestoreStatus::Restored);
+        QCOMPARE(setup.recovery().restore(candidate).status, RecordStatus::Done);
         QCOMPARE(readFile(setup.annotationPath()), candidate.record.annotation);
         QVERIFY(hasShape(setup.load(), test::reliableSaveShape()));
         QVERIFY(setup.records().isEmpty());
@@ -227,12 +228,12 @@ private slots:
         QCOMPARE(scan.candidates.size(), 1);
         QCOMPARE(scan.candidates[0].state, RecoveryState::Conflict);
         QCOMPARE(scan.candidates[0].current.digest, contentDigest(external));
-        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RestoreStatus::Conflict);
+        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RecordStatus::Conflict);
         QCOMPARE(readFile(setup.annotationPath()), external);
         QCOMPARE(setup.records().size(), 1);
 
         // The user dropped the edit.
-        QVERIFY(setup.recovery().discard(scan.candidates[0]));
+        QCOMPARE(setup.recovery().discard(scan.candidates[0]).status, RecordStatus::Done);
         QVERIFY(setup.records().isEmpty());
         QCOMPARE(readFile(setup.annotationPath()), external);
     }
@@ -245,7 +246,7 @@ private slots:
         const RecoveryScan scan = setup.recovery().scan();
         QCOMPARE(scan.candidates[0].state, RecoveryState::Restorable);
         writeFile(setup.annotationPath(), "{}");
-        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RestoreStatus::Conflict);
+        QCOMPARE(setup.recovery().restore(scan.candidates[0]).status, RecordStatus::Conflict);
         QCOMPARE(readFile(setup.annotationPath()), QByteArray("{}"));
     }
 
@@ -260,6 +261,68 @@ private slots:
         QCOMPARE(scan.candidates.size(), 1);
         QCOMPARE(scan.candidates[0].state, RecoveryState::AlreadySaved);
         QCOMPARE(setup.recovery().removeAlreadySaved(scan), 1);
+        QVERIFY(setup.records().isEmpty());
+    }
+
+    // A candidate from an old scan never removes a record a newer edit wrote since.
+    void oldScanDoesNotRemoveANewerRecord()
+    {
+        Setup setup;
+        QVERIFY(setup.killDuringSave("after-annotation"));
+        const RecoveryScan old = setup.recovery().scan();
+        QCOMPARE(old.candidates.size(), 1);
+        QCOMPARE(old.candidates[0].state, RecoveryState::AlreadySaved);
+
+        // A newer edit of the same image meets an external change; its record is kept.
+        LoadedAnnotation annotation = setup.load();
+        Shape other = test::reliableSaveShape();
+        other.label = QStringLiteral("dent");
+        QVERIFY(annotation.file.document().addShape(other) >= 0);
+        writeFile(setup.annotationPath(), test::readTestData(QStringLiteral("annotations/upstream_v4.json")));
+        const SaveOutcome outcome = setup.coordinator().save(test::kReliableSaveImage, annotation, 8);
+        QVERIFY(outcome.recoveryRecordKept);
+        const QByteArray newer = readFile(setup.recoveryDir() + QLatin1String("/") + setup.records().constFirst());
+
+        QCOMPARE(setup.recovery().removeAlreadySaved(old), 0);
+        QCOMPARE(setup.recovery().discard(old.candidates[0]).status, RecordStatus::Stale);
+        QCOMPARE(setup.recovery().restore(old.candidates[0], true).status, RecordStatus::Stale);
+        QCOMPARE(setup.records().size(), 1);
+        QCOMPARE(readFile(setup.recoveryDir() + QLatin1String("/") + setup.records().constFirst()), newer);
+        QCOMPARE(setup.recovery().scan().candidates[0].record.documentVersion, 8);
+    }
+
+    // An unreadable file is neither a conflict nor restorable: it is read again, or the
+    // restore fails and keeps everything.
+    void unreadableFileDuringRestore()
+    {
+        Setup setup;
+        QVERIFY(setup.killDuringSave("after-record"));
+        const RecoveryScan scan = setup.recovery().scan();
+        QCOMPARE(scan.candidates[0].state, RecoveryState::Restorable);
+
+        {
+            test::FileBlocker blocker(setup.annotationPath(), test::FileBlocker::Mode::Read);
+            if (!blocker.isActive())
+                QSKIP("File permissions do not stop root");
+            QCOMPARE(setup.recovery().scan().candidates[0].state, RecoveryState::TargetUnreadable);
+            SaveOptions options;
+            options.maxAttempts = 3;
+            options.retryDelayMs = 1;
+            QCOMPARE(setup.recovery().restore(scan.candidates[0], false, options).status, RecordStatus::Failed);
+        }
+        QCOMPARE(readFile(setup.annotationPath()), setup.original);
+        QCOMPARE(setup.records().size(), 1);
+
+        test::FileBlocker blocker(setup.annotationPath(), test::FileBlocker::Mode::Read);
+        QVERIFY(blocker.isActive());
+        SaveOptions options;
+        options.retryDelayMs = 1;
+        options.beforeRetry = [&blocker](int attempt) {
+            if (attempt == 2)
+                blocker.release();
+        };
+        QCOMPARE(setup.recovery().restore(scan.candidates[0], false, options).status, RecordStatus::Done);
+        QCOMPARE(readFile(setup.annotationPath()), scan.candidates[0].record.annotation);
         QVERIFY(setup.records().isEmpty());
     }
 

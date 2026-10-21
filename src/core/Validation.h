@@ -13,7 +13,8 @@ enum class ConfirmBlockerCode {
     UnrecognizedObject,     // an unrecognized or preserve-only object is present
     UnknownClass,           // a label is not in the project's class list
     MissingAttribute,       // a required attribute is empty
-    InvalidGeometry,        // zero-area rectangle, polygon under 3 distinct points, zero-radius circle
+    InvalidGeometry,        // zero-area rectangle, polygon under 3 distinct points, zero-radius circle,
+                            // linestrip under 2 points
     ImageSizeMismatch,      // imageWidth/imageHeight differ from the image
     ImageLabelNotSelected,  // single choice with no configured option selected
     ImageLabelAmbiguous,    // single choice with more than one configured option selected

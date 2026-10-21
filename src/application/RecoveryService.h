@@ -13,10 +13,12 @@ enum class RecoveryState {
     Restorable,    // the file is as it was before the edit: the record can be written back
     AlreadySaved,  // the file already holds the recorded content; the record is left over
     Conflict,      // the file changed after the edit began: show both, the user decides
+    TargetUnreadable,  // the file cannot be read now (held by another program, drive gone)
 };
 
 struct RecoveryCandidate {
     QString recordPath;
+    QString recordDigest;  // of the record file as scanned, to notice a newer record
     formats::RecoveryRecord record;
     RecoveryState state = RecoveryState::Conflict;
     QString annotationPath;      // where the record would be written back
@@ -33,14 +35,15 @@ struct RecoveryScan {
     QList<UnusableRecord> unusable;  // kept on disk; only the user removes records
 };
 
-enum class RestoreStatus {
-    Restored,
-    Conflict,  // the file changed since the scan or since the edit began; nothing written
-    Failed,
+enum class RecordStatus {
+    Done,
+    Conflict,  // the file changed after the edit began; nothing written
+    Stale,     // the record changed since the scan (a newer edit was saved there); nothing done
+    Failed,    // the file or the record cannot be read or written now; nothing removed
 };
 
-struct RestoreResult {
-    RestoreStatus status = RestoreStatus::Failed;
+struct RecordResult {
+    RecordStatus status = RecordStatus::Failed;
     QString error;
 };
 
@@ -54,15 +57,16 @@ public:
 
     RecoveryScan scan() const;
 
-    // Writes the recorded content back. A conflict is overwritten only when the user chose
-    // the recorded version.
-    RestoreResult restore(const RecoveryCandidate& candidate, bool overwriteConflict = false,
-                          const formats::SaveOptions& options = {}) const;
+    // Writes the recorded content back and removes the record. A conflict is overwritten
+    // only when the user chose the recorded version. Every action checks the record and the
+    // file again first, so a candidate from an old scan never removes a newer edit.
+    RecordResult restore(const RecoveryCandidate& candidate, bool overwriteConflict = false,
+                         const formats::SaveOptions& options = {}) const;
 
     // The user dropped the recorded edit.
-    bool discard(const RecoveryCandidate& candidate) const;
+    RecordResult discard(const RecoveryCandidate& candidate) const;
 
-    // Removes records the annotation file already holds; returns how many.
+    // Removes records the annotation file still holds; returns how many.
     int removeAlreadySaved(const RecoveryScan& scan) const;
 
 private:

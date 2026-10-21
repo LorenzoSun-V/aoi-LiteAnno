@@ -111,6 +111,9 @@ private slots:
         QTest::newRow("circle") << int(ShapeType::Circle) << PointList{{5, 5}, {5, 8}} << true;
         QTest::newRow("circle zero radius") << int(ShapeType::Circle) << PointList{{5, 5}, {5, 5}} << false;
         QTest::newRow("point") << int(ShapeType::Point) << PointList{{1, 1}} << true;
+        QTest::newRow("linestrip") << int(ShapeType::LineStrip) << PointList{{0, 0}, {4, 0}} << true;
+        // Format spec 13.5: read with too few points, editable but not confirmable.
+        QTest::newRow("linestrip one point") << int(ShapeType::LineStrip) << PointList{{0, 0}} << false;
     }
 
     void geometry()
@@ -201,6 +204,8 @@ private slots:
         QTest::newRow("checked and skipped") << facts << AnnotationStatus::StateConflict;
         facts.review.checked = false;
         QTest::newRow("skipped") << facts << AnnotationStatus::Skipped;
+        facts.review.skipReason = QStringLiteral(" \t");
+        QTest::newRow("skipped with blank reason") << facts << AnnotationStatus::StateConflict;
         facts.review.skipReason.clear();
         QTest::newRow("skipped without reason") << facts << AnnotationStatus::StateConflict;
         facts.review.skip = SkipState::Unknown;

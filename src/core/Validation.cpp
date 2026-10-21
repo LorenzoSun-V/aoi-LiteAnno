@@ -61,10 +61,12 @@ bool hasValidGeometry(const Shape& shape)
         return distinctPointCount(points) >= 3;
     case ShapeType::Circle:
         return points.size() == 2 && !samePoint(points[0], points[1]);
+    case ShapeType::LineStrip:
+        // Read with fewer points it stays editable but cannot be confirmed (format spec 13.5).
+        return points.size() >= 2;
     case ShapeType::Rotation:
     case ShapeType::Point:
     case ShapeType::Line:
-    case ShapeType::LineStrip:
     case ShapeType::Quadrilateral:
     case ShapeType::Cuboid:
         return true;

@@ -20,7 +20,8 @@ AnnotationStatus deriveStatus(const StatusFacts& facts)
     case SkipState::Unknown:
         return AnnotationStatus::StateConflict;
     case SkipState::Skipped:
-        if (review.checked || review.skipReason.isEmpty())
+        // A reason of only white space is no reason, as for AnnotationDocument::skip().
+        if (review.checked || review.skipReason.trimmed().isEmpty())
             return AnnotationStatus::StateConflict;
         return AnnotationStatus::Skipped;
     case SkipState::None:

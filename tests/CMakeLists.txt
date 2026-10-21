@@ -17,7 +17,7 @@ target_include_directories(liteanno_test_helper PRIVATE "${CMAKE_CURRENT_SOURCE_
 target_link_libraries(liteanno_test_helper PRIVATE liteanno_application Qt6::Core)
 
 function(liteanno_add_test name)
-    add_executable(${name} ${ARGN} common/TestData.h)
+    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h)
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(${name} PRIVATE
         liteanno_application liteanno_platform liteanno_formats liteanno_core liteanno_nlohmann_json Qt6::Test)

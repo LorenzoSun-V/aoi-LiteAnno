@@ -2,6 +2,7 @@
 // read-only files are never touched, changes by other programs are not overwritten
 // (architecture section 8.3) and a blocked replace is retried (8.1).
 
+#include "common/FileBlocker.h"
 #include "common/TestData.h"
 #include "formats/AnnotationStore.h"
 
@@ -13,11 +14,6 @@
 #include <QTest>
 #include <QTimeZone>
 
-#ifdef Q_OS_WIN
-#include <qt_windows.h>
-#else
-#include <unistd.h>
-#endif
 
 using namespace liteanno;
 using namespace liteanno::formats;
@@ -311,40 +307,89 @@ private slots:
     // file open for a moment, so the replace fails; it is retried and then succeeds.
     void blockedReplaceIsRetried()
     {
-#ifndef Q_OS_WIN
-        QSKIP("Renaming over an open file only fails on Windows");
-#else
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
         LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
         QVERIFY(loaded.file.document().confirm());
 
-        // Opened for reading without delete sharing, as a scanner may do: the file can be read
-        // but not replaced.
-        HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
-                                     GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        QVERIFY(blocker != INVALID_HANDLE_VALUE);
+        test::FileBlocker blocker(path, test::FileBlocker::Mode::Replace);
+        if (!blocker.isActive())
+            QSKIP("File permissions do not stop root");
         SaveOptions options;
         options.retryDelayMs = 10;
         options.beforeRetry = [&blocker](int attempt) {
-            if (attempt == 3 && blocker != INVALID_HANDLE_VALUE) {
-                CloseHandle(blocker);
-                blocker = INVALID_HANDLE_VALUE;
+            if (attempt == 3)
+                blocker.release();
+        };
+        const SaveResult result = saveAnnotationFile(path, loaded, options);
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Saved));
+        QCOMPARE(result.attempts, 3);
+        QCOMPARE(fileState(path).bytes, loaded.file.toBytes());
+    }
+
+    // Another program writes the file while a retry waits: the next attempt sees it and stops.
+    void externalChangeDuringRetryIsNotOverwritten()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+
+        test::FileBlocker blocker(path, test::FileBlocker::Mode::Replace);
+        if (!blocker.isActive())
+            QSKIP("File permissions do not stop root");
+        const QByteArray external = test::readTestData(QStringLiteral("annotations/upstream_v4.json"));
+        SaveOptions options;
+        options.retryDelayMs = 1;
+        options.beforeRetry = [&](int attempt) {
+            if (attempt == 2) {
+                blocker.release();
+                writeFile(path, external);
             }
         };
         const SaveResult result = saveAnnotationFile(path, loaded, options);
-        if (blocker != INVALID_HANDLE_VALUE)
-            CloseHandle(blocker);
-        QCOMPARE(result.status, SaveStatus::Saved);
-        QCOMPARE(result.attempts, 3);
-        QCOMPARE(fileState(path).bytes, loaded.file.toBytes());
-#endif
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::ExternallyModified));
+        QCOMPARE(result.attempts, 2);
+        QCOMPARE(fileState(path).bytes, external);
+        QVERIFY(loaded.file.needsWrite());
+    }
+
+    // A file that cannot be read for a moment is read again, and is not taken for a change.
+    void unreadableFileIsCheckedAgain()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+
+        test::FileBlocker blocker(path, test::FileBlocker::Mode::Read);
+        if (!blocker.isActive())
+            QSKIP("File permissions do not stop root");
+        SaveOptions options;
+        options.retryDelayMs = 1;
+        options.beforeRetry = [&blocker](int attempt) {
+            if (attempt == 2)
+                blocker.release();
+        };
+        const SaveResult result = saveAnnotationFile(path, loaded, options);
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Saved));
+        QCOMPARE(result.attempts, 2);
     }
 
     // When every attempt fails the result says so and the file keeps its old content.
+    void failedReplaceLeavesTheFile_data()
+    {
+        QTest::addColumn<int>("mode");
+        QTest::newRow("not replaceable") << int(test::FileBlocker::Mode::Replace);
+        QTest::newRow("not readable") << int(test::FileBlocker::Mode::Read);
+    }
+
     void failedReplaceLeavesTheFile()
     {
+        QFETCH(int, mode);
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
         const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
@@ -355,21 +400,13 @@ private slots:
         SaveOptions options;
         options.maxAttempts = 3;
         options.retryDelayMs = 1;
-#ifdef Q_OS_WIN
-        HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
-                                     GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        QVERIFY(blocker != INVALID_HANDLE_VALUE);
+        test::FileBlocker blocker(path, test::FileBlocker::Mode(mode));
+        if (!blocker.isActive())
+            QSKIP("File permissions do not stop root");
         const SaveResult result = saveAnnotationFile(path, loaded, options);
-        CloseHandle(blocker);
-#else
-        if (geteuid() == 0)
-            QSKIP("Directory permissions do not stop root");
-        QFile::Permissions permissions = QFile::permissions(dir.path());
-        QVERIFY(QFile::setPermissions(dir.path(), QFile::ReadOwner | QFile::ExeOwner));
-        const SaveResult result = saveAnnotationFile(path, loaded, options);
-        QFile::setPermissions(dir.path(), permissions);
-#endif
-        QCOMPARE(result.status, SaveStatus::Failed);
+        blocker.release();
+
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Failed));
         QCOMPARE(result.attempts, 3);
         QVERIFY(!result.error.isEmpty());
         QVERIFY(loaded.file.needsWrite());

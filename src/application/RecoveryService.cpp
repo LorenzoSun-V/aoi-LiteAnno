@@ -16,8 +16,21 @@ RecoveryService::RecoveryService(LocalDataPaths paths, ProjectLocation location)
 {
 }
 
+namespace {
+
+// Whether the record file still holds what was scanned.
+bool recordUnchanged(const RecoveryCandidate& candidate)
+{
+    QFile file(candidate.recordPath);
+    return file.open(QIODevice::ReadOnly) && formats::contentDigest(file.readAll()) == candidate.recordDigest;
+}
+
+} // namespace
+
 RecoveryState RecoveryService::classify(const RecoveryRecord& record, const FileStamp& current) const
 {
+    if (current.exists && current.digest.isEmpty())
+        return RecoveryState::TargetUnreadable;
     if (current.exists && current.digest == formats::contentDigest(record.annotation))
         return RecoveryState::AlreadySaved;
     const bool unchanged = record.baseDigest.isEmpty() ? !current.exists
@@ -37,7 +50,8 @@ RecoveryScan RecoveryService::scan() const
             result.unusable.append({recordPath, file.errorString()});
             continue;
         }
-        formats::RecoveryRecordResult parsed = formats::parseRecoveryRecord(file.readAll());
+        const QByteArray bytes = file.readAll();
+        formats::RecoveryRecordResult parsed = formats::parseRecoveryRecord(bytes);
         if (!parsed.record) {
             result.unusable.append({recordPath, parsed.error});
             continue;
@@ -55,6 +69,7 @@ RecoveryScan RecoveryService::scan() const
 
         RecoveryCandidate candidate;
         candidate.recordPath = recordPath;
+        candidate.recordDigest = formats::contentDigest(bytes);
         candidate.annotationPath = m_location.rootPath + QLatin1Char('/') + annotationPathForImage(record.imagePath);
         candidate.current = formats::readFileStamp(candidate.annotationPath);
         candidate.state = classify(record, candidate.current);
@@ -64,34 +79,65 @@ RecoveryScan RecoveryService::scan() const
     return result;
 }
 
-RestoreResult RecoveryService::restore(const RecoveryCandidate& candidate, bool overwriteConflict,
-                                       const formats::SaveOptions& options) const
+RecordResult RecoveryService::restore(const RecoveryCandidate& candidate, bool overwriteConflict,
+                                      const formats::SaveOptions& options) const
 {
-    // Check again: the file may have changed since the scan.
-    const FileStamp current = formats::readFileStamp(candidate.annotationPath);
-    const RecoveryState state = classify(candidate.record, current);
-    if (state == RecoveryState::Conflict && !overwriteConflict)
-        return {RestoreStatus::Conflict, QStringLiteral("the file was changed after the edit began")};
-    if (state != RecoveryState::AlreadySaved) {
-        const formats::SaveResult written =
-            formats::writeFileAtomically(candidate.annotationPath, candidate.record.annotation, options);
-        if (written.status != formats::SaveStatus::Saved)
-            return {RestoreStatus::Failed, written.error};
-    }
+    using formats::SaveResult;
+    using formats::SaveStatus;
+
+    // Run before every write attempt: the record and the file can change while a retry waits.
+    RecordStatus stopped = RecordStatus::Failed;
+    bool alreadySaved = false;
+    const formats::WriteCheck check = [&]() -> SaveResult {
+        if (!recordUnchanged(candidate)) {
+            stopped = RecordStatus::Stale;
+            return {SaveStatus::ReadOnly, QStringLiteral("the recovery record changed since the scan")};
+        }
+        switch (classify(candidate.record, formats::readFileStamp(candidate.annotationPath))) {
+        case RecoveryState::TargetUnreadable:
+            return {SaveStatus::Failed, QStringLiteral("the file cannot be read to check for changes")};
+        case RecoveryState::AlreadySaved:
+            alreadySaved = true;
+            return {SaveStatus::NotModified, QString()};
+        case RecoveryState::Conflict:
+            if (!overwriteConflict) {
+                stopped = RecordStatus::Conflict;
+                return {SaveStatus::ExternallyModified, QStringLiteral("the file was changed after the edit began")};
+            }
+            break;
+        case RecoveryState::Restorable:
+            break;
+        }
+        return {SaveStatus::Saved, QString()};
+    };
+
+    const SaveResult written =
+        formats::writeFileAtomically(candidate.annotationPath, candidate.record.annotation, options, check);
+    if (written.status != SaveStatus::Saved && !alreadySaved)
+        return {written.status == SaveStatus::Failed ? RecordStatus::Failed : stopped, written.error};
     QFile::remove(candidate.recordPath);
-    return {RestoreStatus::Restored, QString()};
+    return {RecordStatus::Done, QString()};
 }
 
-bool RecoveryService::discard(const RecoveryCandidate& candidate) const
+RecordResult RecoveryService::discard(const RecoveryCandidate& candidate) const
 {
-    return QFile::remove(candidate.recordPath);
+    if (!recordUnchanged(candidate))
+        return {RecordStatus::Stale, QStringLiteral("the recovery record changed since the scan")};
+    if (!QFile::remove(candidate.recordPath))
+        return {RecordStatus::Failed, QStringLiteral("the recovery record cannot be removed")};
+    return {RecordStatus::Done, QString()};
 }
 
 int RecoveryService::removeAlreadySaved(const RecoveryScan& scan) const
 {
     int removed = 0;
     for (const RecoveryCandidate& candidate : scan.candidates) {
-        if (candidate.state == RecoveryState::AlreadySaved && QFile::remove(candidate.recordPath))
+        // Checked again: since the scan a newer edit may have replaced the record, or the file.
+        if (candidate.state != RecoveryState::AlreadySaved || !recordUnchanged(candidate)
+            || classify(candidate.record, formats::readFileStamp(candidate.annotationPath))
+                   != RecoveryState::AlreadySaved)
+            continue;
+        if (QFile::remove(candidate.recordPath))
             ++removed;
     }
     return removed;
