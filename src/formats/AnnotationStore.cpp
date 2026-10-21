@@ -106,8 +106,18 @@ SaveResult saveAnnotationFile(const QString& jsonPath, LoadedAnnotation& annotat
 
     // A change made between this check and the rename below is not detected; the window is
     // one write of a small file.
-    if (!options.overwriteExternalChanges && !readFileStamp(jsonPath).sameContent(annotation.stamp))
-        return {SaveStatus::ExternallyModified, QStringLiteral("the file was changed by another program")};
+    if (!options.overwriteExternalChanges) {
+        // A scanner that opened the file exclusively blocks reading it too, for a moment.
+        FileStamp current = readFileStamp(jsonPath);
+        for (int attempt = 1; attempt < options.maxAttempts && current.exists && current.digest.isEmpty(); ++attempt) {
+            QThread::msleep(static_cast<unsigned long>(qMax(0, options.retryDelayMs)));
+            current = readFileStamp(jsonPath);
+        }
+        if (current.exists && current.digest.isEmpty())
+            return {SaveStatus::Failed, QStringLiteral("the file cannot be read to check for changes")};
+        if (!current.sameContent(annotation.stamp))
+            return {SaveStatus::ExternallyModified, QStringLiteral("the file was changed by another program")};
+    }
 
     const QByteArray bytes = file.toBytes();
     SaveResult result = writeFileAtomically(jsonPath, bytes, options);

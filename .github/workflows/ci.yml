@@ -42,7 +42,10 @@ jobs:
         run: cmake --build --preset windows-msvc --parallel
 
       - name: Test
-        run: ctest --preset windows-msvc
+        # On failure, run the failed tests again verbosely so their output is in the log.
+        run: |
+          ctest --preset windows-msvc
+          if ($LASTEXITCODE -ne 0) { ctest --preset windows-msvc --rerun-failed -V; exit 1 }
 
   linux:
     name: Linux x64 (GCC)
@@ -74,4 +77,4 @@ jobs:
         run: cmake --build --preset linux-gcc --parallel
 
       - name: Test
-        run: ctest --preset linux-gcc
+        run: ctest --preset linux-gcc || { ctest --preset linux-gcc --rerun-failed -V; exit 1; }

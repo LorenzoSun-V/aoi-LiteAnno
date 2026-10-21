@@ -320,9 +320,10 @@ private slots:
         LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
         QVERIFY(loaded.file.document().confirm());
 
-        // Opened without any sharing, as a scanner may do.
+        // Opened for reading without delete sharing, as a scanner may do: the file can be read
+        // but not replaced.
         HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
-                                     GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                     GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         QVERIFY(blocker != INVALID_HANDLE_VALUE);
         SaveOptions options;
         options.retryDelayMs = 10;
@@ -356,7 +357,7 @@ private slots:
         options.retryDelayMs = 1;
 #ifdef Q_OS_WIN
         HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
-                                     GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                     GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         QVERIFY(blocker != INVALID_HANDLE_VALUE);
         const SaveResult result = saveAnnotationFile(path, loaded, options);
         CloseHandle(blocker);
