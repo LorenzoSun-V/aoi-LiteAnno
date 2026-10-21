@@ -1,7 +1,9 @@
 // Listing the images of a data root (format spec 2, 9.1) and their order.
 
+#include "common/FolderBlocker.h"
 #include "dataset/DirectoryScanner.h"
 #include "dataset/NaturalSort.h"
+#include "formats/AnnotationStore.h"
 
 #include <QDir>
 #include <QDateTime>
@@ -150,13 +152,71 @@ private slots:
         QVERIFY(scanDirectory(dir.path()).complete);
     }
 
+    // The scan pairs the file the editor opens and saves (formats::existingAnnotationPath),
+    // also where several files differ only in the case of the extension.
+    void pairingMatchesTheEditor()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        for (const char* name : {"a.png", "a.json", "a.JSON", "b.png", "b.Json", "b.JSON", "c.png", "c.JSON"})
+            touch(root, QLatin1String(name));
+        if (QDir(dir.path()).entryList(QDir::Files).size() < 8)
+            QSKIP("this file system ignores case");
+        const ScanResult result = scanDirectory(dir.path());
+        QCOMPARE(result.images.size(), 3);
+        for (const ScannedImage& image : result.images) {
+            const QString stem = image.path.left(image.path.lastIndexOf(QLatin1Char('.')));
+            const QString editor = liteanno::formats::existingAnnotationPath(root.filePath(stem + QLatin1String(".json")));
+            QCOMPARE(image.annotationName, QFileInfo(editor).fileName());
+        }
+    }
+
+    // A folder that cannot be listed says nothing about its images: the scan is incomplete
+    // and names the folder.
+    void unreadableFolderMakesTheScanIncomplete()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("ok/a.png"));
+        touch(root, QStringLiteral("locked/b.png"));
+        liteanno::test::FolderBlocker blocker(root.filePath(QStringLiteral("locked")));
+        if (!blocker.isActive())
+            QSKIP("cannot take the right to list a folder away here (running as root?)");
+        const ScanResult result = scanDirectory(dir.path());
+        blocker.release();
+        QVERIFY(!result.complete);
+        QVERIFY(!result.cancelled);
+        QCOMPARE(paths(result), QStringList{QStringLiteral("ok/a.png")});
+        QCOMPARE(result.unreadable, QStringList{QStringLiteral("locked")});
+        QVERIFY(scanDirectory(dir.path()).complete);
+    }
+
+    // Format spec 2: the annotation file's path counts too; ".json" is longer than ".png".
+    void longAnnotationPaths()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const int rootLength = int(QDir::toNativeSeparators(root.absolutePath()).size());
+        // Image 259 characters, its annotation file 260.
+        const QString stem = QString(259 - rootLength - 1 - 4, QLatin1Char('a'));
+        if (stem.size() + 5 > 255)
+            QSKIP("the temporary folder is too short for a name of 255 characters at most");
+        touch(root, stem + QLatin1String(".png"));
+        ScanResult result = scanDirectory(dir.path());
+        QCOMPARE(result.longPaths, QStringList{stem + QLatin1String(".png")});
+        touch(root, stem + QLatin1String(".json"));
+        result = scanDirectory(dir.path());
+        QCOMPARE(result.longPaths, QStringList{stem + QLatin1String(".png")});
+    }
+
     // Format spec 2: absolute paths over 259 characters are reported.
     void longPaths()
     {
         QTemporaryDir dir;
         const QDir root(dir.path());
         const int rootLength = int(QDir::toNativeSeparators(root.absolutePath()).size());
-        const QString fits = QString(259 - rootLength - 1 - 4, QLatin1Char('a')) + QLatin1String(".png");
+        // The annotation file to be written ("<stem>.json") has 259 characters.
+        const QString fits = QString(259 - rootLength - 1 - 5, QLatin1Char('a')) + QLatin1String(".png");
         const QString over = QString(260 - rootLength - 1 - 4, QLatin1Char('b')) + QLatin1String(".png");
         if (over.size() > 255)
             QSKIP("the temporary folder is too short for a name of 255 characters at most");

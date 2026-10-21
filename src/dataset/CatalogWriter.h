@@ -43,8 +43,10 @@ public:
     // Starts a full scan and returns its generation (architecture 6.2). Waits for the writer.
     qint64 beginScan();
     // Images of the scan, in order: `firstPosition` is the natural position of the first one.
-    void addScanned(qint64 generation, QList<ScannedImage> images, int firstPosition);
-    // Only a complete scan marks the images it did not see as missing and replaces the reports.
+    // `listedAt` is a sequence taken before the folder was listed: what a save acknowledged
+    // after it says about the annotation file wins over the listing (architecture 6.3).
+    void addScanned(qint64 generation, QList<ScannedImage> images, int firstPosition, qint64 listedAt);
+    // Replaces the reports. Only a complete scan marks the images it did not see as missing.
     void finishScan(qint64 generation, bool complete, ScanReports reports);
     void record(StatusObservation observation);
     // Waits until everything sent so far is written.
@@ -59,6 +61,7 @@ private:
     bool transaction(const std::function<bool()>& work);
 
     sqlite3* m_db = nullptr;
+    QString m_rules;
     bool m_startedEmpty = false;
     std::atomic<qint64> m_sequence{0};
 

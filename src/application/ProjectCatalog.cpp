@@ -43,12 +43,35 @@ ProjectCatalog::ProjectCatalog(const ProjectSession& project, ImageInfoReader re
     : QObject(parent)
     , m_project(project)
     , m_readImageInfo(std::move(readImageInfo))
-    , m_databasePath(project.paths().cacheDir(project.config().projectId, project.location().bindingId)
-                     + QLatin1String("/catalog.sqlite"))
-    , m_writer(std::make_unique<dataset::CatalogWriter>(
-          m_databasePath, dataset::CatalogIdentity{project.config().projectId, project.location().bindingId}))
-    , m_reader(std::make_unique<dataset::CatalogReader>(m_databasePath))
 {
+    open(project.paths().cacheDir(project.config().projectId, project.location().bindingId)
+         + QLatin1String("/catalog.sqlite"));
+    if (m_writer->isOpen())
+        return;
+    // The catalog is only a cache: when the cache folder cannot hold it, a temporary one
+    // still lets the folder be scanned; it is not kept after the project closes.
+    const QString error = m_writer->error();
+    m_temporary = std::make_unique<QTemporaryDir>(QDir::tempPath() + QLatin1String("/liteanno-catalog-XXXXXX"));
+    if (m_temporary->isValid())
+        open(m_temporary->filePath(QStringLiteral("catalog.sqlite")));
+    if (!m_writer->isOpen()) {
+        m_writer.reset();
+        m_reader.reset();
+        m_temporary.reset();
+        m_databasePath.clear();
+        m_error = error;
+    }
+}
+
+void ProjectCatalog::open(const QString& databasePath)
+{
+    m_reader.reset();
+    m_writer.reset();
+    m_databasePath = databasePath;
+    m_writer = std::make_unique<dataset::CatalogWriter>(
+        databasePath, dataset::CatalogIdentity{m_project.config().projectId, m_project.location().bindingId,
+                                               m_project.configDigest()});
+    m_reader = std::make_unique<dataset::CatalogReader>(databasePath);
 }
 
 ProjectCatalog::~ProjectCatalog()
@@ -59,7 +82,7 @@ ProjectCatalog::~ProjectCatalog()
 void ProjectCatalog::start()
 {
     cancel();
-    if (!m_writer->isOpen())
+    if (!isOpen())
         return;
     m_cancelled = false;
     m_scanning = true;
@@ -85,15 +108,17 @@ bool ProjectCatalog::waitUntilIdle(int timeoutMs)
 {
     if (!waitFor(m_busy, timeoutMs))
         return false;
-    m_writer->flush();
+    if (m_writer)
+        m_writer->flush();
     return true;
 }
 
 void ProjectCatalog::work()
 {
-    const bool complete = scan();
+    const ScanOutcome outcome = scan();
     // Sent before the flag drops, so whoever waited for the flag finds the signal queued.
-    emit scanFinished(complete);
+    if (outcome != ScanOutcome::Cancelled)
+        emit scanFinished(outcome == ScanOutcome::Complete);
     m_scanning = false;
     if (!m_cancelled)
         check();
@@ -102,7 +127,7 @@ void ProjectCatalog::work()
     m_busy = false;
 }
 
-bool ProjectCatalog::scan()
+ProjectCatalog::ScanOutcome ProjectCatalog::scan()
 {
     QElapsedTimer sinceProgress;
     sinceProgress.start();
@@ -115,17 +140,24 @@ bool ProjectCatalog::scan()
         }
     };
     const qint64 generation = m_writer->beginScan();
+    // Saves acknowledged from here on are newer than the listing (architecture 6.3).
+    const qint64 listedAt = m_writer->nextSequence();
     dataset::ScanResult result = dataset::scanDirectory(m_project.rootPath(), options);
     emit scanProgress(int(result.images.size()));
+    if (m_afterListing)
+        m_afterListing();
     // A cancelled listing is partial: neither its positions nor what it did not see count.
-    if (!result.complete)
-        return false;
+    if (result.cancelled)
+        return ScanOutcome::Cancelled;
+    // A folder that could not be listed: what was listed is written, nothing is marked
+    // missing (architecture 6.2).
     for (qsizetype first = 0; first < result.images.size(); first += kWriteChunk)
-        m_writer->addScanned(generation, result.images.mid(first, kWriteChunk), int(first));
-    m_writer->finishScan(generation, true,
-                         {std::move(result.unsupported), std::move(result.orphanAnnotations), std::move(result.longPaths)});
+        m_writer->addScanned(generation, result.images.mid(first, kWriteChunk), int(first), listedAt);
+    m_writer->finishScan(generation, result.complete,
+                         {std::move(result.unsupported), std::move(result.orphanAnnotations),
+                          std::move(result.longPaths), std::move(result.unreadable)});
     m_writer->flush();
-    return true;
+    return result.complete ? ScanOutcome::Complete : ScanOutcome::Incomplete;
 }
 
 void ProjectCatalog::check()
@@ -175,6 +207,7 @@ AnnotationStatus ProjectCatalog::checkOne(const dataset::CatalogEntry& entry,
 {
     const QString imagePath = m_project.imageFilePath(entry.path);
     observation.image = versionOf(QFileInfo(imagePath));
+    observation.nameCollision = entry.nameCollision;
     if (entry.annotationName.isEmpty()) {
         observation.annotation = {};
         StatusFacts facts;
@@ -193,8 +226,11 @@ AnnotationStatus ProjectCatalog::checkOne(const dataset::CatalogEntry& entry,
     return statusOfFile(loaded.file, m_project.config(), entry.nameCollision, loaded.stamp.exists);
 }
 
-void ProjectCatalog::recordSaved(const QString& imagePath, AnnotationStatus status, const formats::FileStamp& written)
+void ProjectCatalog::recordSaved(const QString& imagePath, AnnotationStatus status, const formats::FileStamp& written,
+                                 bool nameCollision)
 {
+    if (!isOpen())
+        return;
     dataset::StatusObservation observation;
     observation.path = imagePath;
     observation.sequence = m_writer->nextSequence();
@@ -202,6 +238,7 @@ void ProjectCatalog::recordSaved(const QString& imagePath, AnnotationStatus stat
     observation.image = versionOf(QFileInfo(m_project.imageFilePath(imagePath)));
     observation.annotation = written.exists ? dataset::FileVersion{written.size, written.modified.toMSecsSinceEpoch()}
                                             : dataset::FileVersion{};
+    observation.nameCollision = nameCollision;
     observation.written = true;
     observation.annotationName = QFileInfo(m_project.annotationFilePath(imagePath)).fileName();
     m_writer->record(std::move(observation));

@@ -39,6 +39,8 @@ public:
     ~ProjectSession();
 
     const ProjectConfig& config() const { return m_config; }
+    // Of the project file as read: statuses derived under another one are not current.
+    const QString& configDigest() const { return m_configDigest; }
     const ProjectLocation& location() const { return m_location; }
     const LocalDataPaths& paths() const { return m_paths; }
     QString rootPath() const { return m_location.rootPath; }
@@ -48,10 +50,11 @@ public:
     QString annotationFilePath(const QString& imagePath) const;
 
 private:
-    ProjectSession(ProjectConfig config, ProjectLocation location, LocalDataPaths paths,
+    ProjectSession(ProjectConfig config, QString configDigest, ProjectLocation location, LocalDataPaths paths,
                    std::unique_ptr<ProjectLock> lock);
 
     ProjectConfig m_config;
+    QString m_configDigest;
     ProjectLocation m_location;
     LocalDataPaths m_paths;
     std::unique_ptr<ProjectLock> m_lock;

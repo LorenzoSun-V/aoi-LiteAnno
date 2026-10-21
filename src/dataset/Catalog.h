@@ -20,6 +20,9 @@ namespace liteanno::dataset {
 struct CatalogIdentity {
     QString projectId;
     QString bindingId;
+    // The project's rules (its project file, by digest). Not part of the identity: statuses
+    // derived under other rules are only no longer current (format spec 5.1).
+    QString rules;
 };
 
 // What the second scan stage (architecture 6.1) read for one image, or what a save of this
@@ -32,6 +35,7 @@ struct StatusObservation {
     AnnotationStatus status = AnnotationStatus::Unprocessed;
     FileVersion image;       // the versions the status was derived from
     FileVersion annotation;  // size -1: no annotation file
+    bool nameCollision = false;  // the status was derived with or without a name collision
     // A save of this program: the annotation file is now this one, whatever the last
     // scan listed.
     bool written = false;
@@ -46,8 +50,8 @@ struct CatalogEntry {
     FileVersion image;
     QString annotationName;      // empty when there is no annotation file
     FileVersion annotation;
-    // Status read from the files; empty until checked. It holds for the files as listed
-    // only when `verified`.
+    // Status read from the files; empty until checked. It holds for the files as listed, the
+    // project's rules and the name collision only when `verified`.
     std::optional<AnnotationStatus> status;
     bool verified = false;
 };
@@ -57,6 +61,7 @@ struct ScanReports {
     QStringList unsupported;
     QStringList orphanAnnotations;
     QStringList longPaths;
+    QStringList unreadable;  // folders that could not be listed
 };
 
 } // namespace liteanno::dataset

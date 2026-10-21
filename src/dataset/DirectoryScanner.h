@@ -33,8 +33,15 @@ struct ScanResult {
     QList<ScannedImage> images;  // in natural order
     QStringList unsupported;     // recognized but unsupported image types (format spec 9.3)
     QStringList orphanAnnotations;  // .json files without an image (format spec 2)
-    QStringList longPaths;       // images whose absolute path has more than 259 characters
-    bool complete = true;        // false when the scan was cancelled
+    // Images whose absolute path, or that of their annotation file (existing or to be
+    // written), has more than 259 characters.
+    QStringList longPaths;
+    // Folders that could not be listed. Their images are unknown, so the scan is incomplete.
+    QStringList unreadable;
+    bool cancelled = false;
+    // False when cancelled or when a folder could not be listed: what the scan did not see
+    // may still be there (architecture 6.2).
+    bool complete = true;
 };
 
 struct ScanOptions {

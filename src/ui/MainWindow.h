@@ -105,10 +105,15 @@ private:
     void edited();
     void refresh();
     void refreshImageItem(int index);
+    QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
     void reloadImages();
+    void setImages(QList<dataset::CatalogEntry> images);
     void reloadStatuses();
     void scanFinished(bool complete);
+    // Without a catalog: lists the folder here, on this thread, and shows no statuses.
+    void listWithoutCatalog();
+    void showScanReports(const QStringList& unsupported, const QStringList& unreadable);
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;

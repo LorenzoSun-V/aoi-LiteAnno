@@ -109,6 +109,9 @@ void MainWindow::buildUi()
     // Images.
     m_imageList = new QListWidget;
     m_imageList->setObjectName(QStringLiteral("imageList"));
+    // Every row is one line: without this the list measures each of its rows (seconds at
+    // 200 000 images).
+    m_imageList->setUniformItemSizes(true);
     connect(m_imageList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0 && row != m_current)
             goToImage(row);
@@ -331,28 +334,39 @@ bool MainWindow::openProject(const QString& root)
 
     // Architecture 6: the list the catalog has is shown at once; the scan brings it up to date.
     m_catalog = std::make_unique<application::ProjectCatalog>(*m_project, imaging::readImageInfo);
-    connect(m_catalog.get(), &application::ProjectCatalog::scanProgress, this, [this](int found) {
-        m_scanState->setText(QStringLiteral(u"正在扫描文件夹：已找到 %1 张").arg(found));
-    });
-    connect(m_catalog.get(), &application::ProjectCatalog::scanFinished, this, &MainWindow::scanFinished);
-    connect(m_catalog.get(), &application::ProjectCatalog::checkProgress, this, [this](int done, int total) {
-        m_scanState->setText(total > 0 ? QStringLiteral(u"正在核对标注状态：%1 / %2").arg(done).arg(total) : QString());
-    });
-    connect(m_catalog.get(), &application::ProjectCatalog::checkFinished, this, [this] {
-        m_scanState->clear();
-        reloadStatuses();
-    });
     if (!m_catalog->isOpen()) {
-        // Without the catalog the folder is still listed, only not remembered.
-        statusBar()->showMessage(QStringLiteral(u"无法建立本机目录索引（%1），每次打开都会重新扫描。").arg(m_catalog->error()),
-                                 15000);
-    }
-    reloadImages();
-    m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
-    m_catalog->start();
-    if (m_options.waitForScan) {
-        m_catalog->waitForScan(-1);
-        QCoreApplication::processEvents();
+        // The catalog is only a cache: without one the folder is listed here, every time.
+        statusBar()->showMessage(
+            QStringLiteral(u"无法建立本机目录索引（%1），每次打开和重新扫描都要完整列一遍文件夹，也不显示各图状态。")
+                .arg(m_catalog->error()),
+            15000);
+        m_catalog.reset();
+        listWithoutCatalog();
+    } else {
+        if (m_catalog->isTemporary()) {
+            statusBar()->showMessage(QStringLiteral(u"本机缓存文件夹不能用（%1），这次的目录索引放在临时文件夹，关闭项目后不保留。")
+                                         .arg(m_project->paths().cacheDir(m_project->config().projectId,
+                                                                          m_project->location().bindingId)),
+                                     15000);
+        }
+        connect(m_catalog.get(), &application::ProjectCatalog::scanProgress, this, [this](int found) {
+            m_scanState->setText(QStringLiteral(u"正在扫描文件夹：已找到 %1 张").arg(found));
+        });
+        connect(m_catalog.get(), &application::ProjectCatalog::scanFinished, this, &MainWindow::scanFinished);
+        connect(m_catalog.get(), &application::ProjectCatalog::checkProgress, this, [this](int done, int total) {
+            m_scanState->setText(total > 0 ? QStringLiteral(u"正在核对标注状态：%1 / %2").arg(done).arg(total) : QString());
+        });
+        connect(m_catalog.get(), &application::ProjectCatalog::checkFinished, this, [this] {
+            m_scanState->clear();
+            reloadStatuses();
+        });
+        reloadImages();
+        m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
+        m_catalog->start();
+        if (m_options.waitForScan) {
+            m_catalog->waitForScan(-1);
+            QCoreApplication::processEvents();
+        }
     }
     if (m_current < 0 && !m_images.isEmpty())
         goToImage(0);
@@ -363,44 +377,76 @@ bool MainWindow::openProject(const QString& root)
 
 void MainWindow::rescan()
 {
-    if (!m_catalog)
+    if (!m_project)
         return;
+    if (!m_catalog) {
+        listWithoutCatalog();
+        return;
+    }
     m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
     m_catalog->start();
 }
 
-void MainWindow::scanFinished(bool complete)
+void MainWindow::scanFinished(bool /*complete*/)
 {
     if (!m_catalog)
         return;
-    if (!complete)
-        return;
     reloadImages();
     const dataset::ScanReports reports = m_catalog->reader().reports();
-    if (!reports.unsupported.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
-                                     .arg(reports.unsupported.size())
-                                     .arg(reports.unsupported.first()),
-                                 15000);
-    }
+    showScanReports(reports.unsupported, reports.unreadable);
     if (m_current < 0 && !m_images.isEmpty())
         goToImage(0);
 }
 
+void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
+{
+    if (!unreadable.isEmpty()) {
+        // Architecture 6.2: their images stay as the last listing had them.
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件夹无法读取（例如 %2），里面的图片按上次的列表显示。请检查文件夹权限。")
+                                     .arg(unreadable.size())
+                                     .arg(unreadable.first()),
+                                 15000);
+    } else if (!unsupported.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
+                                     .arg(unsupported.size())
+                                     .arg(unsupported.first()),
+                                 15000);
+    }
+}
+
+void MainWindow::listWithoutCatalog()
+{
+    const dataset::ScanResult scan = dataset::scanDirectory(m_project->rootPath());
+    QList<dataset::CatalogEntry> images;
+    images.reserve(scan.images.size());
+    for (const dataset::ScannedImage& scanned : scan.images) {
+        dataset::CatalogEntry entry;
+        entry.path = scanned.path;
+        entry.position = int(images.size());
+        entry.nameCollision = scanned.nameCollision;
+        entry.image = scanned.image;
+        entry.annotationName = scanned.annotationName;
+        entry.annotation = scanned.annotation;
+        images.append(entry);
+    }
+    setImages(std::move(images));
+    showScanReports(scan.unsupported, scan.unreadable);
+}
+
 void MainWindow::reloadImages()
 {
-    if (!m_catalog)
-        return;
+    if (m_catalog)
+        setImages(m_catalog->reader().images());
+}
+
+void MainWindow::setImages(QList<dataset::CatalogEntry> images)
+{
     const QString currentPath = m_current >= 0 ? m_images[m_current].path : QString();
-    m_images = m_catalog->reader().images();
+    m_images = std::move(images);
     m_imageIndex.clear();
     m_imageIndex.reserve(m_images.size());
     for (int i = 0; i < m_images.size(); ++i)
         m_imageIndex.insert(m_images[i].path, i);
-    m_imageList->blockSignals(true);
-    m_imageList->clear();
-    for (const dataset::CatalogEntry& image : std::as_const(m_images))
-        m_imageList->addItem(image.path);
     if (!currentPath.isEmpty()) {
         const int found = m_imageIndex.value(currentPath, -1);
         if (found >= 0) {
@@ -411,14 +457,38 @@ void MainWindow::reloadImages()
             m_images.append(dataset::CatalogEntry{});
             m_images.last().path = currentPath;
             m_images.last().missing = true;
+            m_images.last().nameCollision = m_session && m_session->hasNameCollision();
             m_imageIndex.insert(currentPath, int(m_images.size()) - 1);
-            m_imageList->addItem(currentPath);
             m_current = int(m_images.size()) - 1;
         }
-        m_imageList->setCurrentRow(m_current);
     }
+    m_statuses.clear();
+    for (const dataset::CatalogEntry& entry : std::as_const(m_images)) {
+        if (entry.status && entry.verified)
+            m_statuses.insert(entry.path, *entry.status);
+    }
+    // Format spec 2: a name collision found while the image is shown makes it read-only at
+    // once; edits not saved yet stay on screen but are not written to the shared file.
+    if (m_session && m_current >= 0 && m_session->hasNameCollision() != m_images[m_current].nameCollision) {
+        m_session->setNameCollision(m_images[m_current].nameCollision);
+        if (m_images[m_current].nameCollision && m_session->needsSave()) {
+            statusBar()->showMessage(QStringLiteral(u"这张图片出现了同名图片，改为只能查看；还没保存的修改不会写入。"), 15000);
+        }
+    }
+    if (m_session && m_current >= 0)
+        m_statuses.insert(m_session->imagePath(), m_session->status());
+
+    m_imageList->blockSignals(true);
+    m_imageList->clear();
+    QStringList texts;
+    texts.reserve(m_images.size());
+    for (const dataset::CatalogEntry& image : std::as_const(m_images))
+        texts.append(imageItemText(image.path));
+    m_imageList->addItems(texts);
+    if (m_current >= 0)
+        m_imageList->setCurrentRow(m_current);
     m_imageList->blockSignals(false);
-    reloadStatuses();
+    refresh();
 }
 
 void MainWindow::reloadStatuses()
@@ -684,7 +754,7 @@ void MainWindow::processSaveResults()
                 const bool nameCollision = index >= 0 && m_images[index].nameCollision;
                 m_catalog->recordSaved(result.imagePath,
                                        application::statusOfFile(*result.saved, m_project->config(), nameCollision, true),
-                                       result.stamp);
+                                       result.stamp, nameCollision);
             }
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
@@ -882,14 +952,18 @@ void MainWindow::refreshImageItem(int index)
 {
     if (index < 0 || index >= m_imageList->count())
         return;
-    const QString path = m_images[index].path;
+    m_imageList->item(index)->setText(imageItemText(m_images[index].path));
+}
+
+QString MainWindow::imageItemText(const QString& path) const
+{
     QString text = path;
     const auto status = m_statuses.constFind(path);
     if (status != m_statuses.cend())
         text += QStringLiteral(u"  [%1]").arg(statusText(*status));
     if (m_unwritten.contains(path))
         text += QStringLiteral(u"  [未写入]");
-    m_imageList->item(index)->setText(text);
+    return text;
 }
 
 void MainWindow::refresh()

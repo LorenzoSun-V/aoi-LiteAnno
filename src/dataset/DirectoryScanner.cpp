@@ -3,6 +3,7 @@
 #include "dataset/NaturalSort.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QDateTime>
@@ -15,6 +16,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#else
+#include <dirent.h>
 #endif
 
 namespace liteanno::dataset {
@@ -69,7 +72,7 @@ FileVersion versionOf(const QFileInfo& entry)
 
 // Format spec 2: same directory, same stem, ".json" in any case. The stem follows the file
 // system: without case on Windows, with case elsewhere. Of several candidates (only possible
-// where case matters) the first by name wins, as in formats::existingAnnotationPath().
+// where case matters) preferredAnnotation() picks.
 QString stemKey(const QString& stem)
 {
 #ifdef Q_OS_WIN
@@ -77,6 +80,42 @@ QString stemKey(const QString& stem)
 #else
     return stem;
 #endif
+}
+
+// QDir lists nothing both for an empty folder and for one it cannot read; asked only when the
+// listing came back empty.
+bool cannotList(const QString& path)
+{
+#ifdef Q_OS_WIN
+    WIN32_FIND_DATAW data;
+    const QString pattern = QDir::toNativeSeparators(path) + QLatin1String("\\*");
+    const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(pattern.utf16()), FindExInfoBasic, &data,
+                                         FindExSearchNameMatch, nullptr, 0);
+    if (find == INVALID_HANDLE_VALUE)
+        return GetLastError() != ERROR_FILE_NOT_FOUND;
+    FindClose(find);
+    return false;
+#else
+    DIR* dir = opendir(QFile::encodeName(path).constData());
+    if (!dir)
+        return true;
+    closedir(dir);
+    return false;
+#endif
+}
+
+// Of two annotation files for one image, the one the editor opens and saves
+// (formats::existingAnnotationPath): the lower-case extension where case matters, otherwise
+// the first by name.
+bool preferredAnnotation(const QString& candidate, const QString& current)
+{
+#ifndef Q_OS_WIN
+    const bool candidateLower = candidate.endsWith(QLatin1String(".json"));
+    const bool currentLower = current.endsWith(QLatin1String(".json"));
+    if (candidateLower != currentLower)
+        return candidateLower;
+#endif
+    return candidate < current;
 }
 
 class Scanner
@@ -99,6 +138,10 @@ public:
         // Everything is listed and the attributes are checked below.
         const QFileInfoList entries =
             dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
+        if (entries.isEmpty() && cannotList(dir.path())) {
+            m_result.unreadable.append(relativeDir.isEmpty() ? QStringLiteral(".") : relativeDir);
+            return true;
+        }
         const QString prefix = relativeDir.isEmpty() ? QString() : relativeDir + QLatin1Char('/');
         QStringList directories;
         QList<qsizetype> images;  // indexes into m_result.images
@@ -125,15 +168,12 @@ public:
                 image.image = versionOf(entry);
                 images.append(m_result.images.size());
                 m_result.images.append(image);
-                // The root, a separator, and the identifier with native separators.
-                if (m_rootLength + 1 + image.path.size() > 259)
-                    m_result.longPaths.append(image.path);
             } else if (kUnsupportedSuffixes.contains(suffix)) {
                 m_result.unsupported.append(prefix + name);
             } else if (suffix == QLatin1String("json")) {
                 const QString key = stemKey(name.left(name.size() - 5));
                 const auto it = annotations.find(key);
-                if (it == annotations.end() || name < it->fileName())
+                if (it == annotations.end() || preferredAnnotation(name, it->fileName()))
                     annotations.insert(key, entry);
             }
         }
@@ -141,13 +181,20 @@ public:
         for (const qsizetype index : std::as_const(images)) {
             ScannedImage& image = m_result.images[index];
             const QString name = image.path.mid(prefix.size());
-            const QString key = stemKey(name.left(name.lastIndexOf(QLatin1Char('.'))));
+            const QString stem = name.left(name.lastIndexOf(QLatin1Char('.')));
+            const QString key = stemKey(stem);
             const auto it = annotations.constFind(key);
-            if (it == annotations.cend())
-                continue;
-            image.annotationName = it->fileName();
-            image.annotation = versionOf(*it);
-            paired.insert(key);
+            if (it != annotations.cend()) {
+                image.annotationName = it->fileName();
+                image.annotation = versionOf(*it);
+                paired.insert(key);
+            }
+            // The root, a separator, and the identifier with native separators; the
+            // annotation file counts too, also one still to be written.
+            const qsizetype jsonLength =
+                image.annotationName.isEmpty() ? stem.size() + 5 : image.annotationName.size();
+            if (m_rootLength + 1 + prefix.size() + std::max(name.size(), jsonLength) > 259)
+                m_result.longPaths.append(image.path);
         }
         for (auto it = annotations.cbegin(); it != annotations.cend(); ++it) {
             if (!paired.contains(it.key()))
@@ -179,7 +226,8 @@ bool isImageFileName(const QString& fileName)
 ScanResult scanDirectory(const QString& root, const ScanOptions& options)
 {
     ScanResult result;
-    result.complete = Scanner(QDir(root), options, result).scan(QString());
+    result.cancelled = !Scanner(QDir(root), options, result).scan(QString());
+    result.complete = !result.cancelled && result.unreadable.isEmpty();
 
     // STEM_COLLISION: images whose annotation files would be the same file.
     // NAME_COLLISION: different paths with the same comparison key.
@@ -200,6 +248,7 @@ ScanResult scanDirectory(const QString& root, const ScanOptions& options)
     sortNaturally(result.unsupported);
     sortNaturally(result.orphanAnnotations);
     sortNaturally(result.longPaths);
+    sortNaturally(result.unreadable);
     return result;
 }
 

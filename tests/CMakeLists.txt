@@ -19,7 +19,7 @@ target_include_directories(liteanno_test_helper PRIVATE "${CMAKE_CURRENT_SOURCE_
 target_link_libraries(liteanno_test_helper PRIVATE liteanno_application Qt6::Core)
 
 function(liteanno_add_test name)
-    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h)
+    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h common/FolderBlocker.h)
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(${name} PRIVATE
         liteanno_application liteanno_platform liteanno_formats liteanno_core liteanno_nlohmann_json Qt6::Test)
@@ -99,7 +99,7 @@ if(LITEANNO_BUILD_UI)
 
     # Architecture 14: catalog timings; CI runs it with larger folders and prints the table.
     add_executable(liteanno_catalog_benchmark tools/catalog_benchmark.cpp)
-    target_link_libraries(liteanno_catalog_benchmark PRIVATE liteanno_application liteanno_imaging Qt6::Gui)
+    target_link_libraries(liteanno_catalog_benchmark PRIVATE liteanno_ui_lib liteanno_application liteanno_imaging Qt6::Widgets)
     if(WIN32)
         target_link_libraries(liteanno_catalog_benchmark PRIVATE psapi)
     endif()

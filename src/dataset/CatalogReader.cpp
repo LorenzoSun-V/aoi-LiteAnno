@@ -2,7 +2,6 @@
 
 #include "dataset/Sqlite.h"
 
-#include <QFile>
 
 namespace liteanno::dataset {
 
@@ -13,11 +12,17 @@ const char* const kColumns =
     "annotation_size, annotation_mtime, status, "
     "status IS NOT NULL AND status_image_size IS image_size AND status_image_mtime IS image_mtime "
     "AND status_annotation_size IS annotation_size AND status_annotation_mtime IS annotation_mtime "
+    "AND status_name_collision IS name_collision "
+    "AND status_rules IS (SELECT value FROM meta WHERE key = 'rules') "
     "FROM images ";
 
+// A status is current only for the files, the name collision and the project rules it was
+// derived from.
 const char* const kUnchecked =
     "(status IS NULL OR status_image_size IS NOT image_size OR status_image_mtime IS NOT image_mtime "
-    "OR status_annotation_size IS NOT annotation_size OR status_annotation_mtime IS NOT annotation_mtime)";
+    "OR status_annotation_size IS NOT annotation_size OR status_annotation_mtime IS NOT annotation_mtime "
+    "OR status_name_collision IS NOT name_collision "
+    "OR status_rules IS NOT (SELECT value FROM meta WHERE key = 'rules'))";
 
 CatalogEntry entryOf(const sqlite::Statement& row)
 {
@@ -39,7 +44,7 @@ CatalogEntry entryOf(const sqlite::Statement& row)
 
 CatalogReader::CatalogReader(const QString& databasePath)
 {
-    const QByteArray file = QFile::encodeName(databasePath);
+    const QByteArray file = databasePath.toUtf8();  // SQLite takes UTF-8 names
     if (sqlite3_open_v2(file.constData(), &m_db, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
         sqlite3_close(m_db);
         m_db = nullptr;
@@ -120,6 +125,8 @@ ScanReports CatalogReader::reports() const
             reports.orphanAnnotations.append(select.text(1));
         else if (kind == QLatin1String("long"))
             reports.longPaths.append(select.text(1));
+        else if (kind == QLatin1String("unreadable"))
+            reports.unreadable.append(select.text(1));
     }
     return reports;
 }

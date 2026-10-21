@@ -19,6 +19,7 @@
 #include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
@@ -871,6 +872,80 @@ private slots:
         QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
         QVERIFY(w.window.goToImage(0));
         QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0000.png"));
+    }
+
+    // An image that gets a name collision while shown becomes read-only: saving would write
+    // the annotation file the other image shares (format spec 2).
+    void nameCollisionFoundWhileShown()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.document().shapes().isEmpty());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+
+        // The other image goes away again: editable again.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+    }
+
+    // Without any catalog (no cache folder, no temporary folder) the folder is still listed
+    // and the images can be labelled.
+    void noCatalogAtAll()
+    {
+        Project project;
+        writeFile(project.local.filePath(QStringLiteral("cache")), "not a folder");
+        QTemporaryDir other;
+        const QString blockedTemp = other.filePath(QStringLiteral("temp-is-a-file"));
+        writeFile(blockedTemp, "not a folder");
+        const QByteArray names[] = {"TMPDIR", "TMP", "TEMP"};
+        QList<QByteArray> saved;
+        for (const QByteArray& name : names) {
+            saved.append(qgetenv(name.constData()));
+            qputenv(name.constData(), QFile::encodeName(blockedTemp));
+        }
+        const auto restore = qScopeGuard([&] {
+            for (int i = 0; i < 3; ++i) {
+                if (saved[i].isEmpty())
+                    qunsetenv(names[i].constData());
+                else
+                    qputenv(names[i].constData(), saved[i]);
+            }
+        });
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(!w.window.catalog());
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(w.window.session());
+        QVERIFY(w.window.findChild<QLabel*>(QStringLiteral("scanState"))->text().isEmpty());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.nextImage());
+        w.window.flushSaves();
+        QVERIFY(QFile::exists(project.json(1)));
+
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0004.png"))));
+        w.window.rescan();
+        QCOMPARE(w.window.imageCount(), 4);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
     }
 
     // Opening again shows what the catalog knows before anything is read again.

@@ -1,6 +1,6 @@
 // Measures the catalog on a generated folder (architecture 6, 14): the first open with no
-// catalog, opening again, and a rescan after another program changed 1% of the annotation
-// files. Prints one Markdown table row per measurement.
+// catalog, opening again, a rescan after another program changed 1% of the annotation
+// files, and the window opening the project. Prints one Markdown table row per measurement.
 //
 //   liteanno_catalog_benchmark <folder for the test data> <image count>
 //
@@ -13,8 +13,10 @@
 #include "application/ProjectCatalog.h"
 #include "application/ProjectSession.h"
 #include "imaging/ImageLoader.h"
+#include "ui/MainWindow.h"
 
 #include <QBuffer>
+#include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -137,7 +139,9 @@ Times run(application::ProjectCatalog& catalog)
 
 int main(int argc, char** argv)
 {
-    QCoreApplication app(argc, argv);
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
     const QStringList args = app.arguments();
     if (args.size() != 3) {
         std::fprintf(stderr, "usage: liteanno_catalog_benchmark <folder for the test data> <image count>\n");
@@ -208,6 +212,28 @@ int main(int argc, char** argv)
             << " | | |\n";
         out << "| " << count << " | rescan after " << changed << " files changed: stage 2 | " << rescan.checkMs << " | "
             << rescan.checked << " | |\n";
+    }
+
+    // 4. The window opens the project again: the catalog is read, the list built, the first
+    // image shown; the scan then goes on in the background.
+    opened.session.reset();  // the window takes the project lock
+    {
+        ui::MainWindow::Options options;
+        options.localData = local;
+        ui::MainWindow window(options);
+        window.resize(1200, 800);
+        window.show();
+        QCoreApplication::processEvents();
+        timer.restart();
+        if (!window.openProject(root))
+            qFatal("the window cannot open the project");
+        QCoreApplication::processEvents();  // the list paints
+        const qint64 openMs = timer.elapsed();
+        if (window.imageCount() != count)
+            qFatal("the window lists %d images, expected %d", window.imageCount(), count);
+        out << "| " << count << " | window: open again until the list is shown | " << openMs << " | | "
+            << "catalog read, list built, first image shown |\n";
+        window.closeProject(true);
     }
 
     out << "| " << count << " | catalog file | | | " << QString::number(QFileInfo(database).size() / 1048576.0, 'f', 1)

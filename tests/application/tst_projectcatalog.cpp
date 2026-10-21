@@ -4,6 +4,7 @@
 
 #include "application/ProjectCatalog.h"
 #include "application/ProjectSession.h"
+#include "common/FolderBlocker.h"
 
 #include <QDir>
 #include <QFile>
@@ -67,6 +68,16 @@ struct Setup {
     }
 
     QString path(const char* relative) const { return data.filePath(QLatin1String(relative)); }
+
+    // Opens the project again, e.g. after its project file changed.
+    void reopen()
+    {
+        project.reset();
+        ProjectSession::OpenResult opened = ProjectSession::open(data.path(), LocalDataPaths(local.path()));
+        if (!opened.session)
+            qFatal("cannot open the project: %s", qPrintable(opened.message));
+        project = std::move(opened.session);
+    }
 };
 
 QMap<QString, QString> statuses(const ProjectCatalog& catalog)
@@ -171,7 +182,7 @@ private slots:
 
         writeFile(setup.path("line/1.json"), annotation("1.png", R"(, "checked": true)"));
         catalog.recordSaved(QStringLiteral("line/1.png"), AnnotationStatus::Confirmed,
-                            formats::readFileStamp(setup.path("line/1.json")));
+                            formats::readFileStamp(setup.path("line/1.json")), false);
         QVERIFY(catalog.waitUntilIdle(10000));
         dataset::CatalogEntry entry = *catalog.reader().image(QStringLiteral("line/1.png"));
         QCOMPARE(entry.status, AnnotationStatus::Confirmed);
@@ -186,6 +197,110 @@ private slots:
         entry = *catalog.reader().image(QStringLiteral("line/1.png"));
         QCOMPARE(entry.status, AnnotationStatus::Confirmed);
         QVERIFY(entry.verified);
+    }
+
+    // Architecture 6.3: a save acknowledged while the folder was being listed is newer than
+    // the listing; the listing must not take its annotation file away again.
+    void saveDuringTheListingIsKept()
+    {
+        Setup setup;
+        ProjectCatalog catalog(*setup.project, fakeImageInfo);
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        catalog.setAfterListing([&] {
+            writeFile(setup.path("line/1.json"), annotation("1.png", R"(, "checked": true)"));
+            catalog.recordSaved(QStringLiteral("line/1.png"), AnnotationStatus::Confirmed,
+                                formats::readFileStamp(setup.path("line/1.json")), false);
+        });
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        const dataset::CatalogEntry entry = *catalog.reader().image(QStringLiteral("line/1.png"));
+        QCOMPARE(entry.annotationName, QStringLiteral("1.json"));
+        QCOMPARE(entry.status, AnnotationStatus::Confirmed);
+        QVERIFY(entry.verified);
+
+        // The next listing sees the file and agrees.
+        catalog.setAfterListing({});
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        QCOMPARE(statuses(catalog).value(QStringLiteral("line/1.png")), QStringLiteral("confirmed"));
+    }
+
+    // A status holds for the project's rules it was derived under (format spec 5.1): new
+    // rules mean reading the files again.
+    void changedRulesAreCheckedAgain()
+    {
+        Setup setup;
+        {
+            ProjectCatalog catalog(*setup.project, fakeImageInfo);
+            catalog.start();
+            QVERIFY(catalog.waitUntilIdle(10000));
+        }
+        writeFile(setup.path("liteanno/project.json"),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", )"
+                  R"("shapeTypes": ["rectangle"], "classes": [{"id": 0, "name": "scratch"}], )"
+                  R"("attributes": {"scratch": [{"name": "severity", "required": true}]}})");
+        setup.reopen();
+        ProjectCatalog catalog(*setup.project, fakeImageInfo);
+        QVERIFY(!catalog.reader().image(QStringLiteral("line/2.png"))->verified);
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        QCOMPARE(statuses(catalog).value(QStringLiteral("line/2.png")), QStringLiteral("confirmed-with-problems"));
+    }
+
+    // A name collision that comes or goes changes the status without either file changing.
+    void nameCollisionsAreCheckedAgain()
+    {
+        Setup setup;
+        ProjectCatalog catalog(*setup.project, fakeImageInfo);
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        writeFile(setup.path("line/1.jpg"), "image");
+        QVERIFY(QFile::remove(setup.path("line/5.jpg")));
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        QMap<QString, QString> expected = kExpected;
+        expected.remove(QStringLiteral("line/5.jpg"));
+        expected[QStringLiteral("line/1.jpg")] = QStringLiteral("name-collision");
+        expected[QStringLiteral("line/1.png")] = QStringLiteral("name-collision");
+        expected[QStringLiteral("line/5.png")] = QStringLiteral("unprocessed");
+        QCOMPARE(statuses(catalog), expected);
+    }
+
+    // A folder that cannot be listed is not evidence that its images are gone.
+    void unreadableFolderIsNotMissing()
+    {
+        Setup setup;
+        ProjectCatalog catalog(*setup.project, fakeImageInfo);
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        const qint64 complete = catalog.reader().completeGeneration();
+        test::FolderBlocker blocker(setup.path("line"));
+        if (!blocker.isActive())
+            QSKIP("cannot take the right to list a folder away here (running as root?)");
+        QSignalSpy finished(&catalog, &ProjectCatalog::scanFinished);
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        blocker.release();
+        QCOMPARE(catalog.reader().images().size(), kExpected.size());
+        QCOMPARE(catalog.reader().completeGeneration(), complete);
+        QCOMPARE(catalog.reader().reports().unreadable, QStringList{QStringLiteral("line")});
+        QVERIFY(finished.size() == 1 || finished.wait(1000));
+        QCOMPARE(finished.first().first().toBool(), false);
+    }
+
+    // The catalog is only a cache: when its folder cannot be created the project still opens
+    // and is scanned, with the catalog in a temporary place.
+    void blockedCacheFolderStillScans()
+    {
+        Setup setup;
+        writeFile(setup.local.filePath(QStringLiteral("cache")), "not a folder");
+        ProjectCatalog catalog(*setup.project, fakeImageInfo);
+        QVERIFY2(catalog.isOpen(), qPrintable(catalog.error()));
+        QVERIFY(catalog.isTemporary());
+        catalog.start();
+        QVERIFY(catalog.waitUntilIdle(10000));
+        QCOMPARE(statuses(catalog), kExpected);
     }
 
     void cancelling()

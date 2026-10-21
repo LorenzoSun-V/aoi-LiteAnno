@@ -35,6 +35,10 @@ public:
     // decided on yet: saving would replace that record.
     void setBlocked(bool blocked) { m_blocked = blocked; }
     bool isBlocked() const { return m_blocked; }
+    // Another image with the same stem appeared or went away (format spec 2): with a
+    // collision the shared annotation file must not be written.
+    void setNameCollision(bool collision) { m_nameCollision = collision; }
+    bool hasNameCollision() const { return m_nameCollision; }
 
     // Edits. Each one that changes something becomes one undo step; read-only documents
     // refuse all of them.

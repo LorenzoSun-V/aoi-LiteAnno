@@ -13,7 +13,7 @@ namespace liteanno::dataset {
 namespace {
 
 // Raise when the tables change: an older catalog is then rebuilt, never migrated.
-const char* const kSchemaVersion = "1";
+const char* const kSchemaVersion = "2";
 
 const char* const kSchema = R"sql(
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -27,6 +27,7 @@ CREATE TABLE images(
     annotation_name TEXT NOT NULL,
     annotation_size INTEGER NOT NULL,
     annotation_mtime INTEGER NOT NULL,
+    annotation_sequence INTEGER NOT NULL,
     seen_generation INTEGER NOT NULL,
     missing INTEGER NOT NULL DEFAULT 0,
     status TEXT,
@@ -34,6 +35,8 @@ CREATE TABLE images(
     status_image_mtime INTEGER,
     status_annotation_size INTEGER,
     status_annotation_mtime INTEGER,
+    status_rules TEXT,
+    status_name_collision INTEGER,
     status_sequence INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX images_order ON images(missing, position);
@@ -63,6 +66,7 @@ bool setMeta(sqlite3* db, const char* key, const QString& value)
 } // namespace
 
 CatalogWriter::CatalogWriter(const QString& databasePath, const CatalogIdentity& identity)
+    : m_rules(identity.rules)
 {
     if (!open(databasePath, identity)) {
         // A damaged file is only a cache: start over once.
@@ -95,7 +99,8 @@ CatalogWriter::~CatalogWriter()
 bool CatalogWriter::open(const QString& path, const CatalogIdentity& identity)
 {
     QDir().mkpath(QFileInfo(path).absolutePath());
-    const QByteArray file = QFile::encodeName(path);
+    // SQLite takes UTF-8 names on every system, not the local 8-bit encoding.
+    const QByteArray file = path.toUtf8();
     if (sqlite3_open_v2(file.constData(), &m_db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nullptr) != SQLITE_OK) {
         setError(sqlite::lastError(m_db));
         return false;
@@ -117,14 +122,20 @@ bool CatalogWriter::open(const QString& path, const CatalogIdentity& identity)
             return sqlite::exec(m_db, kSchema) && setMeta(m_db, "schemaVersion", QLatin1String(kSchemaVersion))
                    && setMeta(m_db, "projectId", identity.projectId)
                    && setMeta(m_db, "bindingId", identity.bindingId) && setMeta(m_db, "generation", QStringLiteral("0"))
-                   && setMeta(m_db, "completeGeneration", QStringLiteral("0"));
+                   && setMeta(m_db, "completeGeneration", QStringLiteral("0"))
+                   && setMeta(m_db, "rules", identity.rules);
         });
         return created;
     }
     if (metaValue(m_db, "schemaVersion") != QLatin1String(kSchemaVersion)
         || metaValue(m_db, "projectId") != identity.projectId || metaValue(m_db, "bindingId") != identity.bindingId)
         return false;
-    sqlite::Statement last(m_db, "SELECT max(status_sequence) FROM images");
+    // Statuses derived under other rules stop being current (CatalogReader compares).
+    if (!setMeta(m_db, "rules", identity.rules)) {
+        setError(sqlite::lastError(m_db));
+        return false;
+    }
+    sqlite::Statement last(m_db, "SELECT max(max(status_sequence), max(annotation_sequence)) FROM images");
     if (last.step() != SQLITE_ROW) {
         setError(sqlite::lastError(m_db));
         return false;
@@ -214,19 +225,27 @@ qint64 CatalogWriter::beginScan()
     return result.get();
 }
 
-void CatalogWriter::addScanned(qint64 generation, QList<ScannedImage> images, int firstPosition)
+void CatalogWriter::addScanned(qint64 generation, QList<ScannedImage> images, int firstPosition, qint64 listedAt)
 {
-    post([this, generation, images = std::move(images), firstPosition] {
+    post([this, generation, images = std::move(images), firstPosition, listedAt] {
         transaction([&] {
+            // The annotation columns change only when the listing is newer than what the
+            // catalog last learnt about the file, e.g. from a save during the listing.
             sqlite::Statement upsert(
                 m_db,
                 "INSERT INTO images(path, position, name_collision, image_size, image_mtime, annotation_name, "
-                "annotation_size, annotation_mtime, seen_generation, missing) "
-                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0) "
+                "annotation_size, annotation_mtime, annotation_sequence, seen_generation, missing) "
+                "VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?10, ?9, 0) "
                 "ON CONFLICT(path) DO UPDATE SET position = excluded.position, "
                 "name_collision = excluded.name_collision, image_size = excluded.image_size, "
-                "image_mtime = excluded.image_mtime, annotation_name = excluded.annotation_name, "
-                "annotation_size = excluded.annotation_size, annotation_mtime = excluded.annotation_mtime, "
+                "image_mtime = excluded.image_mtime, "
+                "annotation_name = CASE WHEN annotation_sequence < ?10 THEN excluded.annotation_name "
+                "ELSE annotation_name END, "
+                "annotation_size = CASE WHEN annotation_sequence < ?10 THEN excluded.annotation_size "
+                "ELSE annotation_size END, "
+                "annotation_mtime = CASE WHEN annotation_sequence < ?10 THEN excluded.annotation_mtime "
+                "ELSE annotation_mtime END, "
+                "annotation_sequence = max(annotation_sequence, ?10), "
                 "seen_generation = excluded.seen_generation, missing = 0");
             int position = firstPosition;
             for (const ScannedImage& image : images) {
@@ -238,7 +257,8 @@ void CatalogWriter::addScanned(qint64 generation, QList<ScannedImage> images, in
                     .bind(6, image.annotationName)
                     .bind(7, image.annotation.size)
                     .bind(8, image.annotation.modifiedMs)
-                    .bind(9, generation);
+                    .bind(9, generation)
+                    .bind(10, listedAt);
                 if (!upsert.run())
                     return false;
             }
@@ -249,23 +269,26 @@ void CatalogWriter::addScanned(qint64 generation, QList<ScannedImage> images, in
 
 void CatalogWriter::finishScan(qint64 generation, bool complete, ScanReports reports)
 {
-    if (!complete)
-        return;  // architecture 6.2: an incomplete scan says nothing about what is gone
-    post([this, generation, reports = std::move(reports)] {
+    post([this, generation, complete, reports = std::move(reports)] {
         transaction([&] {
-            sqlite::Statement missing(m_db, "UPDATE images SET missing = 1 WHERE seen_generation < ?1");
-            if (!missing.bind(1, generation).run() || !sqlite::exec(m_db, "DELETE FROM reports"))
+            if (!sqlite::exec(m_db, "DELETE FROM reports"))
                 return false;
             sqlite::Statement insert(m_db, "INSERT INTO reports(kind, path) VALUES(?1, ?2)");
             for (const auto& [kind, paths] : {std::pair{"unsupported", &reports.unsupported},
                                               std::pair{"orphan", &reports.orphanAnnotations},
-                                              std::pair{"long", &reports.longPaths}}) {
+                                              std::pair{"long", &reports.longPaths},
+                                              std::pair{"unreadable", &reports.unreadable}}) {
                 for (const QString& path : *paths) {
                     if (!insert.bind(1, QString::fromLatin1(kind)).bind(2, path).run())
                         return false;
                 }
             }
-            return setMeta(m_db, "completeGeneration", QString::number(generation));
+            // Architecture 6.2: an incomplete scan says nothing about what is gone.
+            if (!complete)
+                return true;
+            sqlite::Statement missing(m_db, "UPDATE images SET missing = 1 WHERE seen_generation < ?1");
+            return missing.bind(1, generation).run()
+                   && setMeta(m_db, "completeGeneration", QString::number(generation));
         });
     });
 }
@@ -280,10 +303,13 @@ void CatalogWriter::record(StatusObservation observation)
                 m_db, observation.written
                           ? "UPDATE images SET status = ?2, status_image_size = ?3, status_image_mtime = ?4, "
                             "status_annotation_size = ?5, status_annotation_mtime = ?6, status_sequence = ?7, "
-                            "annotation_size = ?5, annotation_mtime = ?6, annotation_name = ?8 "
+                            "status_rules = ?9, status_name_collision = ?10, "
+                            "annotation_size = ?5, annotation_mtime = ?6, annotation_name = ?8, "
+                            "annotation_sequence = ?7 "
                             "WHERE path = ?1 AND status_sequence < ?7"
                           : "UPDATE images SET status = ?2, status_image_size = ?3, status_image_mtime = ?4, "
-                            "status_annotation_size = ?5, status_annotation_mtime = ?6, status_sequence = ?7 "
+                            "status_annotation_size = ?5, status_annotation_mtime = ?6, status_sequence = ?7, "
+                            "status_rules = ?9, status_name_collision = ?10 "
                             "WHERE path = ?1 AND status_sequence < ?7");
             update.bind(1, observation.path)
                 .bind(2, QString::fromLatin1(annotationStatusName(observation.status)))
@@ -291,7 +317,9 @@ void CatalogWriter::record(StatusObservation observation)
                 .bind(4, observation.image.modifiedMs)
                 .bind(5, observation.annotation.size)
                 .bind(6, observation.annotation.modifiedMs)
-                .bind(7, observation.sequence);
+                .bind(7, observation.sequence)
+                .bind(9, m_rules)
+                .bind(10, observation.nameCollision ? 1 : 0);
             if (observation.written)
                 update.bind(8, observation.annotationName);
             return update.run();

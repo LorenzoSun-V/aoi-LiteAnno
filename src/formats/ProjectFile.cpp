@@ -3,6 +3,7 @@
 #include "core/FormatVersion.h"
 #include "formats/JsonText.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QFile>
 #include <QRegularExpression>
@@ -275,11 +276,12 @@ ProjectFileResult parseProjectFile(const QByteArray& bytes)
 {
     const JsonParseResult parsed = parseJson(bytes);
     if (!parsed.ok)
-        return {std::nullopt, QString(), QStringLiteral("not valid JSON: ") + parsed.error};
+        return {std::nullopt, QString(), QStringLiteral("not valid JSON: ") + parsed.error, QString()};
     try {
-        return {readProject(parsed.value), QString(), QString()};
+        return {readProject(parsed.value), QString(), QString(),
+                QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex())};
     } catch (const FieldError& error) {
-        return {std::nullopt, error.field, error.error};
+        return {std::nullopt, error.field, error.error, QString()};
     }
 }
 
@@ -287,7 +289,7 @@ ProjectFileResult readProjectFile(const QString& path)
 {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
-        return {std::nullopt, QString(), file.errorString()};
+        return {std::nullopt, QString(), file.errorString(), QString()};
     return parseProjectFile(file.readAll());
 }
 

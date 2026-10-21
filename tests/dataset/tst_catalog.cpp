@@ -5,6 +5,7 @@
 #include "dataset/CatalogReader.h"
 #include "dataset/CatalogWriter.h"
 
+#include <QDir>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
@@ -14,7 +15,8 @@ using namespace liteanno::dataset;
 
 namespace {
 
-const CatalogIdentity kIdentity{QStringLiteral("3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33"), QStringLiteral("binding-a")};
+const CatalogIdentity kIdentity{QStringLiteral("3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33"), QStringLiteral("binding-a"),
+                                QStringLiteral("rules-a")};
 
 ScannedImage scanned(const QString& path, qint64 annotationSize = -1)
 {
@@ -33,7 +35,7 @@ ScannedImage scanned(const QString& path, qint64 annotationSize = -1)
 void fullScan(CatalogWriter& writer, const QList<ScannedImage>& images)
 {
     const qint64 generation = writer.beginScan();
-    writer.addScanned(generation, images, 0);
+    writer.addScanned(generation, images, 0, writer.nextSequence());
     writer.finishScan(generation, true, {});
     writer.flush();
 }
@@ -73,10 +75,11 @@ private slots:
         QVERIFY(writer.startedEmpty());
         const qint64 generation = writer.beginScan();
         QCOMPARE(generation, qint64(1));
-        writer.addScanned(generation, {scanned(QStringLiteral("a/1.png")), scanned(QStringLiteral("a/2.png"), 120)}, 0);
-        writer.addScanned(generation, {scanned(QStringLiteral(u"中文/10.png"))}, 2);
+        writer.addScanned(generation, {scanned(QStringLiteral("a/1.png")), scanned(QStringLiteral("a/2.png"), 120)}, 0,
+                          writer.nextSequence());
+        writer.addScanned(generation, {scanned(QStringLiteral(u"中文/10.png"))}, 2, writer.nextSequence());
         writer.finishScan(generation, true,
-                          {{QStringLiteral("x.heic")}, {QStringLiteral("lonely.json")}, {QStringLiteral("long.png")}});
+                          {{QStringLiteral("x.heic")}, {QStringLiteral("lonely.json")}, {QStringLiteral("long.png")}, {}});
         writer.flush();
 
         const CatalogReader reader(db);
@@ -95,6 +98,24 @@ private slots:
         QCOMPARE(reader.reports().longPaths, QStringList{QStringLiteral("long.png")});
     }
 
+    // SQLite takes UTF-8 file names; Windows code pages cannot spell every folder name.
+    void chineseCachePath()
+    {
+        QTemporaryDir dir;
+        const QString db = dir.filePath(QStringLiteral(u"本机缓存/目录索引.sqlite"));
+        {
+            CatalogWriter writer(db, kIdentity);
+            QVERIFY2(writer.isOpen(), qPrintable(writer.error()));
+            fullScan(writer, {scanned(QStringLiteral(u"产线/1.png"))});
+        }
+        QVERIFY(QFile::exists(db));
+        QCOMPARE(QDir(dir.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot),
+                 QStringList{QStringLiteral(u"本机缓存")});
+        const CatalogReader reader(db);
+        QVERIFY(reader.isOpen());
+        QCOMPARE(paths(reader.images()), QStringList{QStringLiteral(u"产线/1.png")});
+    }
+
     // Architecture 6.2: only a complete scan marks what it did not see.
     void missingOnlyAfterACompleteScan()
     {
@@ -104,7 +125,7 @@ private slots:
         fullScan(writer, {scanned(QStringLiteral("1.png")), scanned(QStringLiteral("2.png"))});
 
         qint64 generation = writer.beginScan();
-        writer.addScanned(generation, {scanned(QStringLiteral("1.png"))}, 0);
+        writer.addScanned(generation, {scanned(QStringLiteral("1.png"))}, 0, writer.nextSequence());
         writer.finishScan(generation, false, {});
         writer.flush();
         const CatalogReader reader(db);
@@ -112,7 +133,7 @@ private slots:
         QCOMPARE(reader.completeGeneration(), qint64(1));
 
         generation = writer.beginScan();
-        writer.addScanned(generation, {scanned(QStringLiteral("1.png"))}, 0);
+        writer.addScanned(generation, {scanned(QStringLiteral("1.png"))}, 0, writer.nextSequence());
         writer.finishScan(generation, true, {});
         writer.flush();
         QCOMPARE(paths(reader.images()), QStringList{QStringLiteral("1.png")});
