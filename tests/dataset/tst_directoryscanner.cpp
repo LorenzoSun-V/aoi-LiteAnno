@@ -4,6 +4,7 @@
 #include "dataset/NaturalSort.h"
 
 #include <QDir>
+#include <QDateTime>
 #include <QFile>
 #include <QTemporaryDir>
 #include <QTest>
@@ -79,6 +80,91 @@ private slots:
         QVERIFY(result.images[2].nameCollision);
         QVERIFY(result.images[3].nameCollision);
         QCOMPARE(result.unsupported, QStringList{QStringLiteral("line2/raw.dng")});
+    }
+
+    // Architecture 6.1: the same listing pairs the annotation files (format spec 2) and
+    // gives the sizes and times of both files.
+    void annotationsFromTheSameListing()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("d/a.png"));
+        touch(root, QStringLiteral("d/a.JSON"));
+        touch(root, QStringLiteral("d/b.c.jpg"));
+        touch(root, QStringLiteral("d/b.c.json"));
+        touch(root, QStringLiteral("d/b.json"));  // stem "b" has no image
+        touch(root, QStringLiteral("d/c.png"));
+        touch(root, QStringLiteral("e/c.json"));  // another directory
+        {
+            QFile file(root.filePath(QStringLiteral("d/b.c.json")));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write("{}");
+        }
+        const ScanResult result = scanDirectory(dir.path());
+        QVERIFY(result.complete);
+        QCOMPARE(paths(result), QStringList({QStringLiteral("d/a.png"), QStringLiteral("d/b.c.jpg"), QStringLiteral("d/c.png")}));
+        QCOMPARE(result.images[0].annotationName, QStringLiteral("a.JSON"));
+        QCOMPARE(result.images[1].annotationName, QStringLiteral("b.c.json"));
+        QCOMPARE(result.images[1].annotation.size, qint64(2));
+        QCOMPARE(result.images[1].annotation.modifiedMs,
+                 QFileInfo(root.filePath(QStringLiteral("d/b.c.json"))).lastModified().toMSecsSinceEpoch());
+        QCOMPARE(result.images[1].image.size, qint64(0));
+        QVERIFY(result.images[2].annotationName.isEmpty());
+        QVERIFY(!result.images[2].annotation.exists());
+        QCOMPARE(result.orphanAnnotations, QStringList({QStringLiteral("d/b.json"), QStringLiteral("e/c.json")}));
+    }
+
+    // Format spec 2: the stem follows the file system, the extension never matters.
+    void stemCaseFollowsTheFileSystem()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("a.png"));
+        touch(root, QStringLiteral("A.json"));
+        const ScanResult result = scanDirectory(dir.path());
+        QCOMPARE(result.images.size(), 1);
+#ifdef Q_OS_WIN
+        QCOMPARE(result.images[0].annotationName, QStringLiteral("A.json"));
+        QVERIFY(result.orphanAnnotations.isEmpty());
+#else
+        QVERIFY(result.images[0].annotationName.isEmpty());
+        QCOMPARE(result.orphanAnnotations, QStringList{QStringLiteral("A.json")});
+#endif
+    }
+
+    void cancelledScanIsIncomplete()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        for (int i = 0; i < 5; ++i)
+            touch(root, QStringLiteral("d%1/a.png").arg(i));
+        int directories = 0;
+        QList<int> progress;
+        ScanOptions options;
+        options.cancelled = [&directories] { return ++directories > 3; };
+        options.progress = [&progress](int found) { progress.append(found); };
+        const ScanResult result = scanDirectory(dir.path(), options);
+        QVERIFY(!result.complete);
+        QVERIFY(result.images.size() < 5);
+        QVERIFY(!progress.isEmpty());
+        QVERIFY(scanDirectory(dir.path()).complete);
+    }
+
+    // Format spec 2: absolute paths over 259 characters are reported.
+    void longPaths()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const int rootLength = int(QDir::toNativeSeparators(root.absolutePath()).size());
+        const QString fits = QString(259 - rootLength - 1 - 4, QLatin1Char('a')) + QLatin1String(".png");
+        const QString over = QString(260 - rootLength - 1 - 4, QLatin1Char('b')) + QLatin1String(".png");
+        if (over.size() > 255)
+            QSKIP("the temporary folder is too short for a name of 255 characters at most");
+        touch(root, fits);
+        touch(root, over);
+        const ScanResult result = scanDirectory(dir.path());
+        QCOMPARE(result.images.size(), 2);
+        QCOMPARE(result.longPaths, QStringList{over});
     }
 
     // Format spec 3, 11: names are kept as they are on disk; Chinese names scan like others,

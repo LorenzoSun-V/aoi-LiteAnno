@@ -16,6 +16,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QTemporaryDir>
@@ -176,6 +177,7 @@ struct Project {
         MainWindow::Options o;
         o.localData = application::LocalDataPaths(local.path());
         o.idleSaveMs = 60 * 60 * 1000;  // saves happen when the tests ask for them
+        o.waitForScan = true;
         return o;
     }
 };
@@ -818,6 +820,78 @@ private slots:
         QTest::newRow("40000x100") << QSize(40000, 100);
         QTest::newRow("1x1") << QSize(1, 1);
         QTest::newRow("200x100") << QSize(200, 100);
+    }
+
+    // Architecture 6: the list and its statuses come from the catalog; saves update it, and
+    // "重新扫描" finds files added or removed by other programs without losing the image shown.
+    void catalogListAndRescan()
+    {
+        Project project;
+        writeFile(project.json(2),
+                  R"({"version": "2.4.0", "flags": {}, "shapes": [], "imagePath": "0002.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200, "checked": true})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY2(list->item(1)->text().contains(QStringLiteral(u"[已确认]")), qPrintable(list->item(1)->text()));
+        QVERIFY(list->item(2)->text().contains(QStringLiteral(u"[未处理]")));
+
+        // A save of the first image goes into the catalog as written.
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.goToImage(2));
+        w.window.flushSaves();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        dataset::CatalogEntry first = *w.window.catalog()->reader().image(QStringLiteral("line1/0001.png"));
+        QCOMPARE(first.status, AnnotationStatus::Confirmed);
+        QVERIFY(first.verified);
+
+        // Another program adds one image and removes another; the image shown stays shown.
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0000.png"))));
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0002.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.imageCount(), 3);
+        QCOMPARE(list->item(0)->text(), QStringLiteral(u"line1/0000.png  [未处理]"));
+        QCOMPARE(w.window.currentIndex(), 2);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QVERIFY(list->item(1)->text().contains(QStringLiteral(u"[已确认]")));
+
+        // The image shown is removed: it stays in the list until it is left.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0003.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.imageCount(), 3);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QVERIFY(w.window.goToImage(0));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0000.png"));
+    }
+
+    // Opening again shows what the catalog knows before anything is read again.
+    void reopenedProjectUsesTheCatalog()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            QVERIFY(w.window.confirmCurrent());
+            QVERIFY(w.window.closeProject());
+        }
+        MainWindow::Options options = project.options();
+        options.waitForScan = false;
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(list->item(0)->text().contains(QStringLiteral(u"[已确认]")));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
     }
 
     void zoomNeverTurnsTheOtherWay()

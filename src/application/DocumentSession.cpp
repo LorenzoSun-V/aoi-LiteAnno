@@ -1,5 +1,7 @@
 #include "application/DocumentSession.h"
 
+#include "application/FileStatus.h"
+
 #include <algorithm>
 #include <atomic>
 #include <utility>
@@ -133,20 +135,7 @@ QList<ConfirmBlocker> DocumentSession::confirmBlockers() const
 
 AnnotationStatus DocumentSession::status() const
 {
-    using formats::ReadOnlyReason;
-    const formats::AnnotationFile& file = m_annotation.file;
-    StatusFacts facts;
-    facts.nameCollision = m_nameCollision;
-    facts.jsonError = file.readOnlyReason() == ReadOnlyReason::JsonError
-                      || file.readOnlyReason() == ReadOnlyReason::Unreadable;
-    facts.orientationPending = file.readOnlyReason() == ReadOnlyReason::ExifOrientationUnconfirmed;
-    facts.hasJson = !file.isNew() || needsSave();
-    facts.review = document().review();
-    facts.hasContent = !document().shapes().isEmpty();
-    for (const ImageLabel& label : document().imageLabels())
-        facts.hasContent = facts.hasContent || label.value.value_or(false);
-    facts.confirmable = confirmBlockers().isEmpty();
-    return deriveStatus(facts);
+    return statusOfFile(m_annotation.file, m_project, m_nameCollision, !m_annotation.file.isNew() || needsSave());
 }
 
 SaveSnapshot DocumentSession::snapshot()

@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "application/FileStatus.h"
 #include "application/RecoveryService.h"
 #include "imaging/ImageLoader.h"
 #include "ui/Texts.h"
@@ -10,6 +11,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -177,6 +179,9 @@ void MainWindow::buildUi()
     panelDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, panelDock);
 
+    m_scanState = new QLabel;
+    m_scanState->setObjectName(QStringLiteral("scanState"));
+    statusBar()->addPermanentWidget(m_scanState);
     m_saveState = new QLabel;
     statusBar()->addPermanentWidget(m_saveState);
 
@@ -192,6 +197,8 @@ void MainWindow::buildUi()
     QAction* save = named(fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow), "save");
     save->setShortcut(QKeySequence(QStringLiteral("Ctrl+S")));
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
+    // No shortcut: X-AnyLabeling has no such action.
+    fileMenu->addAction(QStringLiteral(u"重新扫描文件夹"), this, &MainWindow::rescan);
     fileMenu->addSeparator();
     QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
     quit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
@@ -319,27 +326,114 @@ bool MainWindow::openProject(const QString& root)
 
     handleRecoveryRecords();
 
-    const dataset::ScanResult scan = dataset::scanDirectory(m_project->rootPath());
-    m_images = scan.images;
-    m_statuses.clear();
-    m_imageList->blockSignals(true);
-    m_imageList->clear();
-    for (const dataset::ScannedImage& image : std::as_const(m_images))
-        m_imageList->addItem(image.path);
-    m_imageList->blockSignals(false);
     const QString name = m_project->config().name.isEmpty() ? m_project->rootPath() : m_project->config().name;
     setWindowTitle(QStringLiteral("%1 - aoi-LiteAnno").arg(name));
-    if (!scan.unsupported.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
-                                     .arg(scan.unsupported.size())
-                                     .arg(scan.unsupported.first()),
+
+    // Architecture 6: the list the catalog has is shown at once; the scan brings it up to date.
+    m_catalog = std::make_unique<application::ProjectCatalog>(*m_project, imaging::readImageInfo);
+    connect(m_catalog.get(), &application::ProjectCatalog::scanProgress, this, [this](int found) {
+        m_scanState->setText(QStringLiteral(u"正在扫描文件夹：已找到 %1 张").arg(found));
+    });
+    connect(m_catalog.get(), &application::ProjectCatalog::scanFinished, this, &MainWindow::scanFinished);
+    connect(m_catalog.get(), &application::ProjectCatalog::checkProgress, this, [this](int done, int total) {
+        m_scanState->setText(total > 0 ? QStringLiteral(u"正在核对标注状态：%1 / %2").arg(done).arg(total) : QString());
+    });
+    connect(m_catalog.get(), &application::ProjectCatalog::checkFinished, this, [this] {
+        m_scanState->clear();
+        reloadStatuses();
+    });
+    if (!m_catalog->isOpen()) {
+        // Without the catalog the folder is still listed, only not remembered.
+        statusBar()->showMessage(QStringLiteral(u"无法建立本机目录索引（%1），每次打开都会重新扫描。").arg(m_catalog->error()),
                                  15000);
     }
-    if (!m_images.isEmpty())
+    reloadImages();
+    m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
+    m_catalog->start();
+    if (m_options.waitForScan) {
+        m_catalog->waitForScan(-1);
+        QCoreApplication::processEvents();
+    }
+    if (m_current < 0 && !m_images.isEmpty())
         goToImage(0);
     else
         refresh();
     return true;
+}
+
+void MainWindow::rescan()
+{
+    if (!m_catalog)
+        return;
+    m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
+    m_catalog->start();
+}
+
+void MainWindow::scanFinished(bool complete)
+{
+    if (!m_catalog)
+        return;
+    if (!complete)
+        return;
+    reloadImages();
+    const dataset::ScanReports reports = m_catalog->reader().reports();
+    if (!reports.unsupported.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
+                                     .arg(reports.unsupported.size())
+                                     .arg(reports.unsupported.first()),
+                                 15000);
+    }
+    if (m_current < 0 && !m_images.isEmpty())
+        goToImage(0);
+}
+
+void MainWindow::reloadImages()
+{
+    if (!m_catalog)
+        return;
+    const QString currentPath = m_current >= 0 ? m_images[m_current].path : QString();
+    m_images = m_catalog->reader().images();
+    m_imageIndex.clear();
+    m_imageIndex.reserve(m_images.size());
+    for (int i = 0; i < m_images.size(); ++i)
+        m_imageIndex.insert(m_images[i].path, i);
+    m_imageList->blockSignals(true);
+    m_imageList->clear();
+    for (const dataset::CatalogEntry& image : std::as_const(m_images))
+        m_imageList->addItem(image.path);
+    if (!currentPath.isEmpty()) {
+        const int found = m_imageIndex.value(currentPath, -1);
+        if (found >= 0) {
+            m_current = found;
+        } else {
+            // The image shown was deleted or renamed by another program. Its edits are kept
+            // as a new image would be; the next image is the one after it.
+            m_images.append(dataset::CatalogEntry{});
+            m_images.last().path = currentPath;
+            m_images.last().missing = true;
+            m_imageIndex.insert(currentPath, int(m_images.size()) - 1);
+            m_imageList->addItem(currentPath);
+            m_current = int(m_images.size()) - 1;
+        }
+        m_imageList->setCurrentRow(m_current);
+    }
+    m_imageList->blockSignals(false);
+    reloadStatuses();
+}
+
+void MainWindow::reloadStatuses()
+{
+    if (!m_catalog)
+        return;
+    m_statuses.clear();
+    for (const dataset::CatalogEntry& entry : m_catalog->reader().images()) {
+        if (entry.status && entry.verified)
+            m_statuses.insert(entry.path, *entry.status);
+    }
+    if (m_session && m_current >= 0)
+        m_statuses.insert(m_session->imagePath(), m_session->status());
+    for (int i = 0; i < m_imageList->count(); ++i)
+        refreshImageItem(i);
 }
 
 bool MainWindow::closeProject(bool force)
@@ -365,8 +459,11 @@ bool MainWindow::closeProject(bool force)
     }
     dropSession();
     m_saver.reset();
+    m_catalog.reset();
+    m_scanState->clear();
     m_project.reset();
     m_images.clear();
+    m_imageIndex.clear();
     m_statuses.clear();
     m_unwritten.clear();
     m_deferredRecords.clear();
@@ -444,15 +541,19 @@ bool MainWindow::goToImage(int index)
         refresh();
         return true;
     }
+    const QString path = m_images[index].path;
     m_idleTimer.stop();
     commitCurrent();
     // Architecture 8.2: at the limit, wait for saves before showing the next image.
     if (m_saver->atLimit())
         waitForSaver([this](int ms) { return m_saver->waitUntilBelowLimit(ms); });
-    const QString path = m_images[index].path;
     // A save of that image may still be running; its file is read after it.
     if (m_saver->isPending(path))
         waitForSaver([this, path](int ms) { return m_saver->waitUntilIdle(path, ms); });
+    // A scan that finished during the waits may have reordered the list.
+    index = m_imageIndex.value(path, -1);
+    if (index < 0)
+        return false;
     // The session goes first: a save of the image being left that already finished is
     // reported like any other image's, not taken as the state of an image still shown.
     dropSession();
@@ -484,7 +585,7 @@ void MainWindow::loadCurrentImage()
     m_saveError.clear();
     m_submittedVersion = -1;
     m_externalChangeDeferred = false;
-    const dataset::ScannedImage& scanned = m_images[m_current];
+    const dataset::CatalogEntry& scanned = m_images[m_current];
     const imaging::LoadedImage image = imaging::loadImage(m_project->imageFilePath(scanned.path));
     m_canvas->setImage(image.image);
     if (image.image.isNull()) {
@@ -577,6 +678,14 @@ void MainWindow::processSaveResults()
         if (status == SaveStatus::Saved || status == SaveStatus::NotModified) {
             m_unwritten.remove(result.imagePath);
             m_heldEdits.remove(result.imagePath);
+            if (status == SaveStatus::Saved && m_catalog && result.saved) {
+                // Format spec 5.4: what this program wrote counts without reading it again.
+                const int index = m_imageIndex.value(result.imagePath, -1);
+                const bool nameCollision = index >= 0 && m_images[index].nameCollision;
+                m_catalog->recordSaved(result.imagePath,
+                                       application::statusOfFile(*result.saved, m_project->config(), nameCollision, true),
+                                       result.stamp);
+            }
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
                 m_saveError.clear();

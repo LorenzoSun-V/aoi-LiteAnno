@@ -45,6 +45,8 @@ liteanno_add_test(tst_reliablesave application/tst_reliablesave.cpp common/Relia
 add_dependencies(tst_reliablesave liteanno_test_helper)
 liteanno_add_test(tst_documentsession application/tst_documentsession.cpp common/ReliableSaveTestData.h)
 liteanno_add_test(tst_directoryscanner dataset/tst_directoryscanner.cpp)
+liteanno_add_test(tst_catalog dataset/tst_catalog.cpp)
+liteanno_add_test(tst_projectcatalog application/tst_projectcatalog.cpp)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions
@@ -94,6 +96,16 @@ if(LITEANNO_BUILD_UI)
         set_property(TEST upstream_compat_catches_changed_types PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         liteanno_set_test_environment(upstream_compat_catches_changed_types)
     endif()
+
+    # Architecture 14: catalog timings; CI runs it with larger folders and prints the table.
+    add_executable(liteanno_catalog_benchmark tools/catalog_benchmark.cpp)
+    target_link_libraries(liteanno_catalog_benchmark PRIVATE liteanno_application liteanno_imaging Qt6::Gui)
+    if(WIN32)
+        target_link_libraries(liteanno_catalog_benchmark PRIVATE psapi)
+    endif()
+    add_test(NAME catalog_benchmark_runs
+        COMMAND liteanno_catalog_benchmark "${CMAKE_CURRENT_BINARY_DIR}/benchmark" 2000)
+    liteanno_set_test_environment(catalog_benchmark_runs)
 
     liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
     target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)

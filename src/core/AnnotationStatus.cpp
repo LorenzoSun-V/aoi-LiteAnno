@@ -64,4 +64,17 @@ const char* annotationStatusName(AnnotationStatus status)
     return "unknown";
 }
 
+std::optional<AnnotationStatus> annotationStatusFromName(const QString& name)
+{
+    for (const AnnotationStatus status :
+         {AnnotationStatus::Missing, AnnotationStatus::NameCollision, AnnotationStatus::Corrupt,
+          AnnotationStatus::OrientationPending, AnnotationStatus::StateConflict, AnnotationStatus::Skipped,
+          AnnotationStatus::Confirmed, AnnotationStatus::ConfirmedWithProblems,
+          AnnotationStatus::PendingConfirmation, AnnotationStatus::Unprocessed}) {
+        if (name == QLatin1String(annotationStatusName(status)))
+            return status;
+    }
+    return std::nullopt;
+}
+
 } // namespace liteanno

@@ -3,8 +3,9 @@
 #include "application/BackgroundSaver.h"
 #include "application/DocumentSession.h"
 #include "application/LocalDataPaths.h"
+#include "application/ProjectCatalog.h"
 #include "application/ProjectSession.h"
-#include "dataset/DirectoryScanner.h"
+#include "dataset/Catalog.h"
 #include "ui/Canvas.h"
 #include "ui/Prompts.h"
 
@@ -31,6 +32,8 @@ struct MainWindowOptions {
     int idleSaveMs = 800;  // save this long after the last edit
     // Tests slow saves down with it.
     std::function<void(application::SaveStage)> saveStageHook;
+    // Opening a project waits until its folder is listed (tests).
+    bool waitForScan = false;
 };
 
 // The editing window: one project, one image at a time (milestone 2).
@@ -61,6 +64,9 @@ public:
     void flushSaves();
     // "处理未写入的编辑…": asks again about every recovery record, then reopens the image.
     void resolveRecoveryRecords();
+    // "重新扫描": lists the folder again and checks what changed (architecture 6.1).
+    void rescan();
+    application::ProjectCatalog* catalog() const { return m_catalog.get(); }
 
     // For tests and status displays.
     int imageCount() const { return int(m_images.size()); }
@@ -99,6 +105,10 @@ private:
     void edited();
     void refresh();
     void refreshImageItem(int index);
+    // The image list from the catalog; the current image stays current.
+    void reloadImages();
+    void reloadStatuses();
+    void scanFinished(bool complete);
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;
@@ -107,7 +117,9 @@ private:
     Prompts m_prompts;
     std::unique_ptr<application::ProjectSession> m_project;
     std::unique_ptr<application::BackgroundSaver> m_saver;
-    QList<dataset::ScannedImage> m_images;
+    std::unique_ptr<application::ProjectCatalog> m_catalog;
+    QList<dataset::CatalogEntry> m_images;
+    QHash<QString, int> m_imageIndex;
     QHash<QString, AnnotationStatus> m_statuses;
     int m_current = -1;
     std::unique_ptr<application::DocumentSession> m_session;
@@ -140,6 +152,7 @@ private:
     QLabel* m_readOnlyNote = nullptr;
     QLabel* m_blockers = nullptr;
     QLabel* m_saveState = nullptr;
+    QLabel* m_scanState = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_skipButton = nullptr;
     QPushButton* m_unskipButton = nullptr;

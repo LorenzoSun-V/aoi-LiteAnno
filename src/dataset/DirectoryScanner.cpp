@@ -5,6 +5,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QHash>
+#include <QDateTime>
+#include <QSet>
 
 #include <algorithm>
 
@@ -60,33 +62,112 @@ bool hasHiddenOrSystemAttribute(const QFileInfo& entry)
 #endif
 }
 
-void scanInto(const QDir& root, const QString& relativeDir, ScanResult& result)
+FileVersion versionOf(const QFileInfo& entry)
 {
-    const QDir dir(relativeDir.isEmpty() ? root.path() : root.filePath(relativeDir));
-    // Everything is listed and the attributes are checked below.
-    const QFileInfoList entries =
-        dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
-    for (const QFileInfo& entry : entries) {
-        const QString name = entry.fileName();
-        if (name.startsWith(QLatin1Char('.')) || entry.isHidden() || hasHiddenOrSystemAttribute(entry))
-            continue;
-        if (!entry.isDir() && !entry.isFile())
-            continue;  // sockets, devices, broken links
-        const QString relative = relativeDir.isEmpty() ? name : relativeDir + QLatin1Char('/') + name;
-        if (entry.isDir()) {
-            if (entry.isSymLink())
-                continue;
-            if ((relativeDir.isEmpty() && name == QLatin1String("liteanno"))
-                || name == QLatin1String("x-anylabeling-exif-backup"))
-                continue;
-            scanInto(root, relative, result);
-        } else if (isImageFileName(name)) {
-            result.images.append({relative, false});
-        } else if (kUnsupportedSuffixes.contains(suffixOf(name))) {
-            result.unsupported.append(relative);
-        }
-    }
+    return {entry.size(), entry.lastModified().toMSecsSinceEpoch()};
 }
+
+// Format spec 2: same directory, same stem, ".json" in any case. The stem follows the file
+// system: without case on Windows, with case elsewhere. Of several candidates (only possible
+// where case matters) the first by name wins, as in formats::existingAnnotationPath().
+QString stemKey(const QString& stem)
+{
+#ifdef Q_OS_WIN
+    return stem.toCaseFolded();
+#else
+    return stem;
+#endif
+}
+
+class Scanner
+{
+public:
+    Scanner(const QDir& root, const ScanOptions& options, ScanResult& result)
+        : m_root(root)
+        , m_rootLength(QDir::toNativeSeparators(root.absolutePath()).size())
+        , m_options(options)
+        , m_result(result)
+    {
+    }
+
+    // False when cancelled.
+    bool scan(const QString& relativeDir)
+    {
+        if (m_options.cancelled && m_options.cancelled())
+            return false;
+        const QDir dir(relativeDir.isEmpty() ? m_root.path() : m_root.filePath(relativeDir));
+        // Everything is listed and the attributes are checked below.
+        const QFileInfoList entries =
+            dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
+        const QString prefix = relativeDir.isEmpty() ? QString() : relativeDir + QLatin1Char('/');
+        QStringList directories;
+        QList<qsizetype> images;  // indexes into m_result.images
+        QHash<QString, QFileInfo> annotations;  // by stem key
+        for (const QFileInfo& entry : entries) {
+            const QString name = entry.fileName();
+            if (name.startsWith(QLatin1Char('.')) || entry.isHidden() || hasHiddenOrSystemAttribute(entry))
+                continue;
+            if (!entry.isDir() && !entry.isFile())
+                continue;  // sockets, devices, broken links
+            if (entry.isDir()) {
+                if (entry.isSymLink())
+                    continue;
+                if ((relativeDir.isEmpty() && name == QLatin1String("liteanno"))
+                    || name == QLatin1String("x-anylabeling-exif-backup"))
+                    continue;
+                directories.append(prefix + name);
+                continue;
+            }
+            const QString suffix = suffixOf(name);
+            if (kImageSuffixes.contains(suffix)) {
+                ScannedImage image;
+                image.path = prefix + name;
+                image.image = versionOf(entry);
+                images.append(m_result.images.size());
+                m_result.images.append(image);
+                // The root, a separator, and the identifier with native separators.
+                if (m_rootLength + 1 + image.path.size() > 259)
+                    m_result.longPaths.append(image.path);
+            } else if (kUnsupportedSuffixes.contains(suffix)) {
+                m_result.unsupported.append(prefix + name);
+            } else if (suffix == QLatin1String("json")) {
+                const QString key = stemKey(name.left(name.size() - 5));
+                const auto it = annotations.find(key);
+                if (it == annotations.end() || name < it->fileName())
+                    annotations.insert(key, entry);
+            }
+        }
+        QSet<QString> paired;
+        for (const qsizetype index : std::as_const(images)) {
+            ScannedImage& image = m_result.images[index];
+            const QString name = image.path.mid(prefix.size());
+            const QString key = stemKey(name.left(name.lastIndexOf(QLatin1Char('.'))));
+            const auto it = annotations.constFind(key);
+            if (it == annotations.cend())
+                continue;
+            image.annotationName = it->fileName();
+            image.annotation = versionOf(*it);
+            paired.insert(key);
+        }
+        for (auto it = annotations.cbegin(); it != annotations.cend(); ++it) {
+            if (!paired.contains(it.key()))
+                m_result.orphanAnnotations.append(prefix + it->fileName());
+        }
+        if (m_options.progress)
+            m_options.progress(int(m_result.images.size()));
+        for (const QString& sub : std::as_const(directories)) {
+            if (!scan(sub))
+                return false;
+        }
+        return true;
+    }
+
+private:
+    const QDir m_root;
+    const qsizetype m_rootLength;
+    const ScanOptions& m_options;
+    ScanResult& m_result;
+};
 
 } // namespace
 
@@ -95,10 +176,10 @@ bool isImageFileName(const QString& fileName)
     return kImageSuffixes.contains(suffixOf(fileName));
 }
 
-ScanResult scanDirectory(const QString& root)
+ScanResult scanDirectory(const QString& root, const ScanOptions& options)
 {
     ScanResult result;
-    scanInto(QDir(root), QString(), result);
+    result.complete = Scanner(QDir(root), options, result).scan(QString());
 
     // STEM_COLLISION: images whose annotation files would be the same file.
     // NAME_COLLISION: different paths with the same comparison key.
@@ -115,9 +196,10 @@ ScanResult scanDirectory(const QString& root)
                               || keys.value(comparisonKey(image.path)) > 1;
     }
 
-    std::sort(result.images.begin(), result.images.end(),
-              [](const ScannedImage& a, const ScannedImage& b) { return naturalLess(a.path, b.path); });
-    std::sort(result.unsupported.begin(), result.unsupported.end(), naturalLess);
+    sortNaturally(result.images, [](const ScannedImage& image) -> const QString& { return image.path; });
+    sortNaturally(result.unsupported);
+    sortNaturally(result.orphanAnnotations);
+    sortNaturally(result.longPaths);
     return result;
 }
 

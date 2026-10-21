@@ -75,4 +75,30 @@ LoadedImage loadImage(const QString& path)
     return result;
 }
 
+std::optional<ImageInfo> readImageInfo(const QString& path)
+{
+    QImageReader reader(path);
+    reader.setDecideFormatFromContent(true);
+    reader.setAutoTransform(true);
+    ImageInfo info;
+    info.fileName = QFileInfo(path).fileName();
+    info.exifOrientation = exifOrientation(reader.transformation());
+    QSize size = reader.size();
+    if (!size.isValid()) {
+        // Some readers know the size only after decoding.
+        const QImage image = reader.read();
+        if (image.isNull())
+            return std::nullopt;
+        info.width = image.width();
+        info.height = image.height();
+        return info;
+    }
+    // The header gives the stored size; turned by a quarter, width and height swap.
+    if (info.exifOrientation >= 5)
+        size.transpose();
+    info.width = size.width();
+    info.height = size.height();
+    return info;
+}
+
 } // namespace liteanno::imaging
