@@ -1,0 +1,28 @@
+{
+  "shapes": [
+    {
+      "label": "scratch",
+      "points": [
+        [
+          1,
+          2
+        ],
+        [
+          3,
+          2
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          1,
+          4
+        ]
+      ],
+      "shape_type": "rectangle"
+    }
+  ],
+  "imagePath": "0004.png",
+  "imageData": null
+}

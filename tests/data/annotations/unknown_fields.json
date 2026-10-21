@@ -1,0 +1,73 @@
+{
+  "version": "0.1.0",
+  "flags": {
+    "OK": false,
+    "NG": true,
+    "legacy_tag": true
+  },
+  "checked": false,
+  "shapes": [
+    {
+      "label": "scratch",
+      "score": null,
+      "points": [
+        [
+          10.0,
+          20.0
+        ],
+        [
+          30.0,
+          20.0
+        ],
+        [
+          30.0,
+          40.0
+        ],
+        [
+          10.0,
+          40.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "rectangle",
+      "flags": {
+        "occluded": true
+      },
+      "attributes": {
+        "severity": "轻",
+        "length_mm": 12.5
+      },
+      "kie_linking": [],
+      "track_id": 17,
+      "model_meta": {
+        "name": "det-v3",
+        "thresholds": [
+          0.25,
+          0.5
+        ]
+      }
+    }
+  ],
+  "imagePath": "0005.bmp",
+  "imageData": null,
+  "imageHeight": 768,
+  "imageWidth": 768,
+  "liteanno": {
+    "formatVersion": "1.0",
+    "reviewer_note": "keep me"
+  },
+  "camera": {
+    "id": "line1-cam2",
+    "exposure_us": 1200,
+    "gain": 1.5e-07,
+    "serial": 18446744073709551615,
+    "offset": -9223372036854775808
+  },
+  "tags": [
+    "day",
+    "ng"
+  ],
+  "description": "备注\t含制表符"
+}

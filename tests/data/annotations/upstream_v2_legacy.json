@@ -1,0 +1,48 @@
+{
+  "version": "2.3.6",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "scratch",
+      "points": [
+        [
+          260.0,
+          150.25
+        ],
+        [
+          120.5,
+          80.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "shape_type": "rectangle",
+      "flags": {}
+    },
+    {
+      "label": "dent",
+      "text": "",
+      "points": [
+        [
+          10.0,
+          10.0
+        ],
+        [
+          50.0,
+          12.5
+        ],
+        [
+          40.0,
+          60.0
+        ]
+      ],
+      "group_id": null,
+      "shape_type": "polygon",
+      "flags": {}
+    }
+  ],
+  "imagePath": "0002.jpg",
+  "imageData": null,
+  "imageHeight": 480,
+  "imageWidth": 640
+}

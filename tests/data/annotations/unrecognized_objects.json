@@ -1,0 +1,221 @@
+{
+  "version": "4.2.0",
+  "flags": {},
+  "checked": false,
+  "shapes": [
+    {
+      "label": "ok",
+      "score": null,
+      "points": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          10.0,
+          0.0
+        ],
+        [
+          10.0,
+          10.0
+        ]
+      ],
+      "group_id": null,
+      "description": "",
+      "difficult": false,
+      "shape_type": "polygon",
+      "flags": {},
+      "attributes": {},
+      "kie_linking": []
+    },
+    {
+      "label": "x",
+      "points": [
+        [
+          1,
+          2
+        ],
+        [
+          3,
+          4
+        ]
+      ],
+      "shape_type": "ellipse"
+    },
+    {
+      "points": [
+        [
+          1,
+          2
+        ]
+      ],
+      "shape_type": "point"
+    },
+    {
+      "label": "y",
+      "points": [
+        [
+          1,
+          "2"
+        ]
+      ],
+      "shape_type": "point"
+    },
+    {
+      "label": "z",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "shape_type": "line",
+      "kie_linking": [
+        [
+          1,
+          2.0
+        ]
+      ]
+    },
+    {
+      "label": "r",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1,
+          0
+        ],
+        [
+          1,
+          1
+        ]
+      ],
+      "shape_type": "rectangle"
+    },
+    "not an object",
+    {
+      "label": "q",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          10,
+          0
+        ],
+        [
+          10,
+          10
+        ],
+        [
+          0,
+          10
+        ]
+      ],
+      "shape_type": "quadrilateral"
+    },
+    {
+      "label": "c",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          4,
+          0
+        ],
+        [
+          4,
+          4
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          1,
+          1
+        ],
+        [
+          5,
+          1
+        ],
+        [
+          5,
+          5
+        ],
+        [
+          1,
+          5
+        ]
+      ],
+      "shape_type": "cuboid",
+      "cuboid3d": {
+        "depth": [
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "label": 5,
+      "points": [
+        [
+          1,
+          1
+        ]
+      ],
+      "shape_type": "point"
+    },
+    {
+      "label": "w",
+      "points": [],
+      "shape_type": "polygon"
+    },
+    {
+      "label": "t",
+      "points": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "shape_type": "polygon"
+    },
+    {
+      "label": "u",
+      "points": [
+        [
+          1,
+          1
+        ],
+        [
+          2,
+          2
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "shape_type": null
+    }
+  ],
+  "imagePath": "0006.jpg",
+  "imageData": null,
+  "imageHeight": 100,
+  "imageWidth": 100
+}

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must equal LITEANNO_PINNED_QT_VERSION in cmake/LiteAnnoToolchainPin.cmake;
+  # the configure step fails otherwise.
+  QT_VERSION: "6.8.3"
+
+jobs:
+  windows:
+    name: Windows x64 (MSVC v143)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          aqtversion: "==3.3.0"
+          cache: true
+
+      - name: Configure
+        run: cmake --preset windows-msvc
+
+      - name: Build
+        run: cmake --build --preset windows-msvc --parallel
+
+      - name: Test
+        run: ctest --preset windows-msvc
+
+  linux:
+    name: Linux x64 (GCC)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          # Ninja and OpenGL headers to build; EGL, OpenGL, xkbcommon and fontconfig to run the
+          # offscreen start-up test.
+          sudo apt-get install -y ninja-build libgl1-mesa-dev libegl1 libopengl0 libxkbcommon-dev libfontconfig1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          aqtversion: "==3.3.0"
+          cache: true
+
+      - name: Configure
+        run: cmake --preset linux-gcc
+
+      - name: Build
+        run: cmake --build --preset linux-gcc --parallel
+
+      - name: Test
+        run: ctest --preset linux-gcc

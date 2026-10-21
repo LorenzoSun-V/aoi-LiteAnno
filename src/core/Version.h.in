@@ -1,0 +1,9 @@
+#pragma once
+
+namespace liteanno {
+
+// Application version. Every annotation file this program saves carries it in the
+// top-level "version" field (format spec 4.1).
+inline constexpr char kAppVersion[] = "@PROJECT_VERSION@";
+
+} // namespace liteanno

@@ -1,0 +1,5 @@
+add_subdirectory(core)
+add_subdirectory(formats)
+if(LITEANNO_BUILD_UI)
+    add_subdirectory(ui)
+endif()
