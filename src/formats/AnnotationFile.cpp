@@ -138,6 +138,11 @@ Json newShapeObject(const Shape& shape)
 
 void applyShapeEdits(Json& object, const Shape& before, const Shape& after)
 {
+    // Format spec 4.5: a save completes missing required keys. A missing or null shape_type
+    // was read as a polygon (13.5).
+    const auto typeIt = object.find("shape_type");
+    if (typeIt == object.end() || typeIt->is_null())
+        object["shape_type"] = toJson(shapeTypeName(after.type));
     if (after.label != before.label)
         object["label"] = toJson(after.label);
     // Format spec 4.5: rectangles are written as four corner points, also when only another

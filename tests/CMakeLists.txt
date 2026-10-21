@@ -27,6 +27,10 @@ liteanno_add_test(tst_annotationwrite formats/tst_annotationwrite.cpp)
 liteanno_add_test(tst_annotationstore formats/tst_annotationstore.cpp)
 liteanno_add_test(tst_worksetfiles formats/tst_worksetfiles.cpp)
 
+# Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
+add_test(NAME toolchain_pin_rejects_other_versions
+    COMMAND "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchain_pin_test.cmake")
+
 # Format spec 13.5: the bytes this program writes must equal Python's
 # json.dumps(value, ensure_ascii=False, indent=2) for the same value.
 add_executable(liteanno_json_reformat tools/json_reformat.cpp)

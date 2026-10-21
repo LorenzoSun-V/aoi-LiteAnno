@@ -139,7 +139,7 @@ private slots:
         QTest::addColumn<QString>("file");
         for (const char* name : {"nan_coordinate.json", "infinity.json", "overflow_float.json", "huge_integer.json",
                                  "invalid_utf8.json", "lone_surrogate.json", "trailing_comma.json",
-                                 "truncated.json", "empty.json"}) {
+                                 "truncated.json", "empty.json", "nul_suffix.json", "nul_in_string.json"}) {
             QTest::newRow(name) << QString::fromLatin1(name);
         }
     }

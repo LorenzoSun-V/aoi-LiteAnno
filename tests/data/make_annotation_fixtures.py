@@ -192,6 +192,9 @@ write("shapes_not_array.json", canonical({"version": "4.0.0", "flags": {}, "shap
 (broken / "trailing_comma.json").write_bytes(b'{"shapes": [], "imagePath": "a.jpg", "imageData": null,}')
 (broken / "truncated.json").write_bytes(b'{"shapes": [{"label": "a", "points": [[1.0, ')
 (broken / "empty.json").write_bytes(b"")
+# Content after a NUL byte; the NUL ends the input for nlohmann's lexer.
+(broken / "nul_suffix.json").write_bytes(b'{"shapes": [{"label": "a", "points": [[1.0, 2.0]], "shape_type": "point"}], "imagePath": "a.jpg", "imageData": null}\x00{"shapes": []}')
+(broken / "nul_in_string.json").write_bytes(b'{"shapes": [], "imagePath": "a\x00.jpg", "imageData": null}')
 
 
 # The exact bytes tst_annotationwrite expects for a new file: one rectangle, image labels

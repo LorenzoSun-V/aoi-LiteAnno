@@ -1,6 +1,7 @@
 #include "core/Geometry.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace liteanno {
 
@@ -9,6 +10,12 @@ bool exactlyEqual(const PointList& a, const PointList& b)
     return std::equal(a.cbegin(), a.cend(), b.cbegin(), b.cend(), [](const QPointF& p, const QPointF& q) {
         return p.x() == q.x() && p.y() == q.y();
     });
+}
+
+bool allFinite(const PointList& points)
+{
+    return std::all_of(points.cbegin(), points.cend(),
+                       [](const QPointF& point) { return std::isfinite(point.x()) && std::isfinite(point.y()); });
 }
 
 PointList canonicalRectangle(const PointList& points)

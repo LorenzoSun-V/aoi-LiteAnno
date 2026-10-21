@@ -138,6 +138,9 @@ private slots:
         QTest::addColumn<int>("expectedReason");
         QTest::newRow("JSON error") << QByteArray("broken/nan_coordinate.json") << 1
                                     << int(ReadOnlyReason::JsonError);
+        // A complete object followed by a NUL byte and more content (format spec 4.6).
+        QTest::newRow("content after NUL") << QByteArray("broken/nul_suffix.json") << 1
+                                           << int(ReadOnlyReason::JsonError);
         QTest::newRow("future version") << QByteArray("future_version.json") << 1
                                         << int(ReadOnlyReason::UnsupportedFormatVersion);
         QTest::newRow("EXIF orientation") << QByteArray("upstream_v4.json") << 6

@@ -214,6 +214,13 @@ void appendValue(std::string& out, const Json& value, int depth)
 JsonParseResult parseJson(const QByteArray& bytes)
 {
     JsonParseResult result;
+    // nlohmann's lexer takes a NUL byte for the end of the input and would ignore whatever
+    // follows it. JSON allows no raw NUL anywhere, so such a file is broken (format spec 4.6).
+    if (const qsizetype nul = bytes.indexOf('\0'); nul >= 0) {
+        result.error = QStringLiteral("NUL byte at offset %1").arg(nul);
+        result.byteOffset = nul;
+        return result;
+    }
     DomBuilder builder(result.value);
     const char* begin = bytes.constData();
     const char* end = begin + bytes.size();

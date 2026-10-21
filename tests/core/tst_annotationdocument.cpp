@@ -2,6 +2,7 @@
 
 #include <QTest>
 
+#include <limits>
 #include <utility>
 
 using namespace liteanno;
@@ -198,6 +199,30 @@ private slots:
         QCOMPARE(document.addShape(editableShape(0, ShapeType::Rotation, square())), qsizetype(-1));
         QCOMPARE(document.addShape(editableShape(0, ShapeType::Line, {QPointF(1, 1)})), qsizetype(-1));
         QVERIFY(!document.isModified());
+    }
+
+    // JSON cannot hold NaN or infinity, so such points would make the saved file unreadable.
+    void nonFinitePointsAreRejected()
+    {
+        AnnotationDocument document({editableShape(1, ShapeType::Polygon, square())}, {}, {});
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double infinity = std::numeric_limits<double>::infinity();
+        QVERIFY(!document.setShapePoints(0, {QPointF(0, 0), QPointF(nan, 1), QPointF(2, 2)}));
+        QVERIFY(!document.setShapePoints(0, {QPointF(0, 0), QPointF(1, -infinity), QPointF(2, 2)}));
+        QCOMPARE(document.addShape(editableShape(0, ShapeType::Point, {QPointF(infinity, 0)})), qsizetype(-1));
+        QVERIFY(!document.isModified());
+        QVERIFY(exactlyEqual(document.shapes().at(0).points, square()));
+    }
+
+    // Upstream keeps the angle of a rotated box in "direction"; until the rotation tool keeps
+    // it in step, the corners of existing rotated boxes stay as they are.
+    void rotatedBoxCornersAreNotEditable()
+    {
+        AnnotationDocument document({editableShape(1, ShapeType::Rotation, square())}, {}, {});
+        const PointList turned = {QPointF(5, -2), QPointF(12, 5), QPointF(5, 12), QPointF(-2, 5)};
+        QVERIFY(!document.setShapePoints(0, turned));
+        QVERIFY(!document.isModified());
+        QVERIFY(document.setShapeLabel(0, QStringLiteral("dent")));
     }
 
     void markSavedResetsTracking()

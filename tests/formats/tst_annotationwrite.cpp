@@ -59,6 +59,14 @@ bool isReadableRectangle(const Json& shape)
            });
 }
 
+bool hasReadablePoints(const Json& shape)
+{
+    return shape.contains("points") && shape["points"].is_array() && !shape["points"].empty()
+        && std::all_of(shape["points"].begin(), shape["points"].end(), [](const Json& point) {
+               return point.is_array() && point.size() == 2 && point[0].is_number() && point[1].is_number();
+           });
+}
+
 // What format spec 4.5 changes in any saved file, stated independently of the writer.
 Json expectedNormalizations(Json value, const ImageInfo& image)
 {
@@ -81,6 +89,12 @@ Json expectedNormalizations(Json value, const ImageInfo& image)
         value["liteanno"] = Json::object();
     value["liteanno"]["formatVersion"] = "1.0";
     for (Json& shape : value["shapes"]) {
+        // A shape read as a polygon because its shape_type is missing or null gets the
+        // required key (13.5).
+        if (shape.is_object() && shape.contains("label") && shape["label"].is_string() && hasReadablePoints(shape)
+            && (!shape.contains("shape_type") || shape["shape_type"].is_null())) {
+            shape["shape_type"] = "polygon";
+        }
         if (!isReadableRectangle(shape))
             continue;
         double xmin = shape["points"][0][0].get<double>();
@@ -184,15 +198,37 @@ private slots:
         const Json before = test::parseOrFail(original);
         const Json after = saved(annotation);
         QCOMPARE(after["shapes"].size(), before["shapes"].size());
+        // Shapes 1 to 11 are unrecognized or preserve-only; shape 12 is a polygon with a null
+        // shape_type, which a save completes (format spec 4.5, 13.5).
         for (std::size_t i = 1; i < before["shapes"].size(); ++i) {
+            Json expected = before["shapes"][i];
+            if (i == 12)
+                expected["shape_type"] = "polygon";
             // Same value and the same text, number forms included.
-            QCOMPARE(serializeJson(after["shapes"][i]), serializeJson(before["shapes"][i]));
+            QCOMPARE(serializeJson(after["shapes"][i]), serializeJson(expected));
         }
         QCOMPARE(after["shapes"][0]["label"].get<std::string>(), std::string("renamed"));
 
         // The user can remove them explicitly.
         QVERIFY(annotation.document().removeShape(1));
         QCOMPARE(saved(annotation)["shapes"].size(), before["shapes"].size() - 1);
+    }
+
+    // Format spec 4.2, 4.5: shape_type is required. A shape without it is read as a polygon,
+    // and a save adds the key after the existing ones.
+    void missingShapeTypeIsCompleted()
+    {
+        const QByteArray original = R"({"shapes": [{"label": "a", "points": [[1, 1], [5, 1], [5, 5]]}],
+            "imagePath": "0007.png", "imageData": null, "imageHeight": 10, "imageWidth": 10})";
+        AnnotationFile annotation = AnnotationFile::fromBytes(original, imageInfo("0007.png", 10, 10));
+        QVERIFY(!annotation.isReadOnly());
+        QCOMPARE(annotation.document().shapes().at(0).type, ShapeType::Polygon);
+        QVERIFY(annotation.document().setShapeLabel(0, QStringLiteral("b")));
+
+        const Json shape = saved(annotation)["shapes"][0];
+        const std::vector<std::string> expectedKeys{"label", "points", "shape_type"};
+        QCOMPARE(keys(shape), expectedKeys);
+        LITEANNO_COMPARE_JSON(shape, json(R"({"label": "b", "points": [[1, 1], [5, 1], [5, 5]], "shape_type": "polygon"})"));
     }
 
     void embeddedImageDataIsKept()

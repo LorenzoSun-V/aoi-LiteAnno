@@ -26,7 +26,7 @@
 发布和 CI 只用一套固定的工具链（见 `cmake/LiteAnnoToolchainPin.cmake`）：
 
 - Qt 6.8.3
-- Windows：Visual Studio 2022（MSVC 工具集 v143），x64
+- Windows：Visual Studio 2022 17.14（MSVC 工具集 v143，编译器 cl.exe 19.44.35229），x64。Visual Studio 小版本更新换了编译器也算升级，需要改 `cmake/LiteAnnoToolchainPin.cmake` 并重新在最低系统上验收
 - CMake 3.22 或更高；运行测试还需要 Python 3
 
 Windows，在装有 Visual Studio 2022 的机器上：
@@ -45,7 +45,7 @@ cmake --build --preset linux-gcc
 ctest --preset linux-gcc
 ```
 
-找到的 Qt 版本或 MSVC 工具集与固定版本不一致时，配置会直接报错。本地开发如果只有别的 Qt 6（6.4 或更高，例如 Linux 发行版自带的），可以用 `dev` 预设，它关掉这项检查，构建产物不能用于发布：
+找到的 Qt 版本或 MSVC 编译器版本与固定版本不一致时，配置会直接报错。本地开发如果只有别的 Qt 6（6.4 或更高，例如 Linux 发行版自带的），可以用 `dev` 预设，它关掉这项检查，构建产物不能用于发布：
 
 ```
 cmake --preset dev

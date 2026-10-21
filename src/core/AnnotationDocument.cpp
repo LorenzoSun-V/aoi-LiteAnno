@@ -32,7 +32,11 @@ bool AnnotationDocument::setShapePoints(qsizetype index, const PointList& points
     if (!isEditable(index))
         return false;
     Shape& shape = m_shapes[index];
-    if (!acceptsPointCount(shape.type, points.size()))
+    if (!acceptsPointCount(shape.type, points.size()) || !allFinite(points))
+        return false;
+    // Moving the corners of a rotated box would leave upstream's stored angle ("direction")
+    // stale; corner edits come with the rotation tool, like new rotated boxes.
+    if (shape.type == ShapeType::Rotation)
         return false;
     const PointList normalized = shape.type == ShapeType::Rectangle ? canonicalRectangle(points) : points;
     if (exactlyEqual(shape.points, normalized))
@@ -54,7 +58,7 @@ bool AnnotationDocument::setShapeLabel(qsizetype index, const QString& label)
 qsizetype AnnotationDocument::addShape(Shape shape)
 {
     if (shape.kind != ShapeKind::Editable || !isEditableShapeType(shape.type)
-        || !acceptsPointCount(shape.type, shape.points.size())) {
+        || !acceptsPointCount(shape.type, shape.points.size()) || !allFinite(shape.points)) {
         return -1;
     }
     // Upstream stores a rotation angle ("direction") next to the corners. New rotated boxes
