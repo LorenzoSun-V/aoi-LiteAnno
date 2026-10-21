@@ -555,6 +555,25 @@ private slots:
         QCOMPARE(w.answers.discardAsked, 1);
     }
 
+    // CI on d154c9e: a failed save that finished before the switch to the next image was
+    // taken as the shown image's state, so leaving it gave no message.
+    void failedSaveFinishedBeforeSwitchingIsReported()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QThread::msleep(300);  // the save fails meanwhile; its result waits for the event loop
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(w.answers.messages.size(), 1);
+        QVERIFY(w.answers.messages[0].contains(QStringLiteral(u"修改还在程序里")));
+        QVERIFY(w.window.previousImage());
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.window.session()->needsSave());
+    }
+
     void closingCanGiveUpUnsavedEdits()
     {
         Project project;

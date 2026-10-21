@@ -453,9 +453,11 @@ bool MainWindow::goToImage(int index)
     // A save of that image may still be running; its file is read after it.
     if (m_saver->isPending(path))
         waitForSaver([this, path](int ms) { return m_saver->waitUntilIdle(path, ms); });
+    // The session goes first: a save of the image being left that already finished is
+    // reported like any other image's, not taken as the state of an image still shown.
+    dropSession();
     processSaveResults();
 
-    dropSession();
     m_current = index;
     // A record the user already put off is not asked about again; the image stays read-only.
     if (m_unwritten.contains(path) && !m_deferredRecords.contains(path))
