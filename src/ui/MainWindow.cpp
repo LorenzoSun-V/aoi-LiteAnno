@@ -468,6 +468,18 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
         if (entry.status && entry.verified)
             m_statuses.insert(entry.path, *entry.status);
     }
+    // The list follows the images at once: everything below may open a question, and the
+    // event loop of a question may refresh the list.
+    m_imageList->blockSignals(true);
+    m_imageList->clear();
+    QStringList texts;
+    texts.reserve(m_images.size());
+    for (const dataset::CatalogEntry& image : std::as_const(m_images))
+        texts.append(imageItemText(image.path));
+    m_imageList->addItems(texts);
+    if (m_current >= 0)
+        m_imageList->setCurrentRow(m_current);
+    m_imageList->blockSignals(false);
     // Format spec 2: a name collision found while the image is shown makes it read-only at
     // once; edits not saved yet stay on screen but are not written to the shared file.
     if (m_session && m_current >= 0 && m_session->hasNameCollision() != m_images[m_current].nameCollision) {
@@ -495,25 +507,30 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
         m_deferredRecords.remove(*it);
         it = m_collisionRecords.erase(it);
     }
-    if (m_session && m_current >= 0 && m_session->isBlocked() && !m_deferredRecords.contains(m_session->imagePath())
-        && !m_session->needsSave()) {
-        handleRecoveryRecords(m_session->imagePath());
-        reloadCurrent();
-    }
     if (m_session && m_current >= 0)
         m_statuses.insert(m_session->imagePath(), m_session->status());
+    refreshImageItem(m_current);
+    // Asked after this update is complete: the question runs an event loop, in which a
+    // status check or another scan may update the list again.
+    if (m_session && m_current >= 0 && m_session->isBlocked() && !m_deferredRecords.contains(m_session->imagePath()))
+        QMetaObject::invokeMethod(this, &MainWindow::offerUnblockedRecords, Qt::QueuedConnection);
 
-    m_imageList->blockSignals(true);
-    m_imageList->clear();
-    QStringList texts;
-    texts.reserve(m_images.size());
-    for (const dataset::CatalogEntry& image : std::as_const(m_images))
-        texts.append(imageItemText(image.path));
-    m_imageList->addItems(texts);
-    if (m_current >= 0)
-        m_imageList->setCurrentRow(m_current);
-    m_imageList->blockSignals(false);
     refresh();
+}
+
+void MainWindow::offerUnblockedRecords()
+{
+    // Checked again: the image shown may have changed since this was queued.
+    if (!m_session || m_current < 0 || !m_session->isBlocked() || m_deferredRecords.contains(m_session->imagePath()))
+        return;
+    const QString path = m_session->imagePath();
+    dropSession();
+    handleRecoveryRecords(path);
+    const int index = m_imageIndex.value(path, -1);
+    if (index < 0)
+        return;
+    m_current = index;
+    loadCurrentImage();
 }
 
 void MainWindow::reloadStatuses()
@@ -622,8 +639,14 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         }
         if (result.status == application::RecordStatus::Done) {
-            if (!m_heldEdits.contains(candidate.record.imagePath))
+            const auto held = m_heldEdits.find(candidate.record.imagePath);
+            if (held == m_heldEdits.end()) {
                 m_unwritten.remove(candidate.record.imagePath);
+            } else if (choice == RecoveryChoice::Restore) {
+                // The held edits are newer than the record and go on from the file this
+                // program just wrote, not from an external change.
+                held->stamp = formats::readFileStamp(candidate.annotationPath);
+            }
             m_deferredRecords.remove(candidate.record.imagePath);
         } else {
             m_deferredRecords.insert(candidate.record.imagePath);
@@ -667,11 +690,18 @@ bool MainWindow::goToImage(int index)
 
     m_current = index;
     // A record the user already put off is not asked about again; the image stays read-only.
-    if (m_unwritten.contains(path) && !m_deferredRecords.contains(path))
+    if (m_unwritten.contains(path) && !m_deferredRecords.contains(path)) {
         handleRecoveryRecords(path);
+        // The question's event loop may have brought a new list.
+        m_current = m_imageIndex.value(path, -1);
+        if (m_current < 0) {
+            refresh();
+            return false;
+        }
+    }
     loadCurrentImage();
     m_imageList->blockSignals(true);
-    m_imageList->setCurrentRow(index);
+    m_imageList->setCurrentRow(m_current);
     m_imageList->blockSignals(false);
     return true;
 }
@@ -1025,7 +1055,7 @@ QString MainWindow::saveStateText() const
 
 void MainWindow::refreshImageItem(int index)
 {
-    if (index < 0 || index >= m_imageList->count())
+    if (index < 0 || index >= m_imageList->count() || index >= m_images.size())
         return;
     m_imageList->item(index)->setText(imageItemText(m_images[index].path));
 }

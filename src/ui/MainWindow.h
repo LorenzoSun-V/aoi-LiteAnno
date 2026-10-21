@@ -155,6 +155,8 @@ private:
     };
     QHash<QString, HeldEdit> m_heldEdits;
     // Whether edits held for the image are newer than the save of (sessionId, version).
+    // Offers the recovery records of the image shown once nothing holds them back.
+    void offerUnblockedRecords();
     bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
     QTimer m_idleTimer;
