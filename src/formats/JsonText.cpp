@@ -1,5 +1,6 @@
 #include "formats/JsonText.h"
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 #include <stdexcept>
@@ -341,6 +342,23 @@ bool jsonValuesEqual(const Json& a, const Json& b)
     default:
         return a == b;
     }
+}
+
+int formatMajorVersion(const std::string& text)
+{
+    const auto isDigits = [](std::string_view part) {
+        return !part.empty() && std::all_of(part.begin(), part.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+    };
+    const std::size_t dot = text.find('.');
+    if (dot == std::string::npos)
+        return -1;
+    const std::string_view major(text.data(), dot);
+    const std::string_view minor(text.data() + dot + 1, text.size() - dot - 1);
+    if (!isDigits(major) || !isDigits(minor))
+        return -1;
+    int value = 0;
+    const auto parsed = std::from_chars(major.data(), major.data() + major.size(), value);
+    return parsed.ec == std::errc() ? value : -1;
 }
 
 } // namespace liteanno::formats

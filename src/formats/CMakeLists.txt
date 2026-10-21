@@ -5,6 +5,8 @@ add_library(liteanno_formats STATIC
     AnnotationStore.h
     JsonText.cpp
     JsonText.h
+    ProjectFile.cpp
+    ProjectFile.h
     WorksetFiles.cpp
     WorksetFiles.h
 )

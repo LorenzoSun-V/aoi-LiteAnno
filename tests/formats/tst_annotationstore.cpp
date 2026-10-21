@@ -1,5 +1,6 @@
-// Loading and saving files on disk: "unedited files are not written" (format spec section 1)
-// and read-only files are never touched.
+// Loading and saving files on disk: "unedited files are not written" (format spec section 1),
+// read-only files are never touched, changes by other programs are not overwritten
+// (architecture section 8.3) and a blocked replace is retried (8.1).
 
 #include "common/TestData.h"
 #include "formats/AnnotationStore.h"
@@ -11,6 +12,12 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimeZone>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#else
+#include <unistd.h>
+#endif
 
 using namespace liteanno;
 using namespace liteanno::formats;
@@ -47,6 +54,31 @@ QString placeFixture(const QTemporaryDir& dir, const char* fixture, const char* 
     return target;
 }
 
+void writeFile(const QString& path, const QByteArray& bytes)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || file.write(bytes) != bytes.size())
+        qFatal("cannot write %s", qPrintable(path));
+}
+
+void setModified(const QString& path, const QDateTime& time)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadWrite) || !file.setFileTime(time, QFileDevice::FileModificationTime))
+        qFatal("cannot set the modification time of %s", qPrintable(path));
+}
+
+Shape rectangle(double x)
+{
+    Shape shape;
+    shape.type = ShapeType::Rectangle;
+    shape.label = QStringLiteral("scratch");
+    shape.points = {QPointF(x, 10.0), QPointF(x + 20.0, 30.0)};
+    return shape;
+}
+
+const ImageInfo kImage{QStringLiteral("0002.jpg"), 640, 480, 1};
+
 } // namespace
 
 class TestAnnotationStore : public QObject
@@ -73,9 +105,9 @@ private slots:
         const QString path = placeFixture(dir, fixture.constData(), "image.json");
         const FileState before = fileState(path);
 
-        AnnotationFile file = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.png"), 0, 0, 1});
-        QVERIFY(!file.isReadOnly());
-        const SaveResult result = saveAnnotationFile(path, file);
+        LoadedAnnotation loaded = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.png"), 0, 0, 1});
+        QVERIFY(!loaded.file.isReadOnly());
+        const SaveResult result = saveAnnotationFile(path, loaded);
         QCOMPARE(result.status, SaveStatus::NotModified);
 
         const FileState after = fileState(path);
@@ -91,24 +123,24 @@ private slots:
         const QString path = dir.filePath(QStringLiteral("0001.json"));
         const ImageInfo image{QStringLiteral("0001.bmp"), 768, 768, 1};
 
-        AnnotationFile file = loadAnnotationFile(path, image, {QStringLiteral("OK"), QStringLiteral("NG")});
-        QVERIFY(file.isNew());
-        QCOMPARE(saveAnnotationFile(path, file).status, SaveStatus::NotModified);
+        LoadedAnnotation loaded = loadAnnotationFile(path, image, {QStringLiteral("OK"), QStringLiteral("NG")});
+        QVERIFY(loaded.file.isNew());
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::NotModified);
         QVERIFY(!QFile::exists(path));
 
         Shape rectangle;
         rectangle.type = ShapeType::Rectangle;
         rectangle.label = QStringLiteral("scratch");
         rectangle.points = {QPointF(120.5, 80.0), QPointF(260.0, 150.25)};
-        QVERIFY(file.document().addShape(rectangle) >= 0);
-        QVERIFY(file.document().setImageLabel(QStringLiteral("NG"), true));
-        const SaveResult result = saveAnnotationFile(path, file);
+        QVERIFY(loaded.file.document().addShape(rectangle) >= 0);
+        QVERIFY(loaded.file.document().setImageLabel(QStringLiteral("NG"), true));
+        const SaveResult result = saveAnnotationFile(path, loaded);
         QCOMPARE(result.status, SaveStatus::Saved);
         QCOMPARE(fileState(path).bytes, test::readTestData(QStringLiteral("annotations/golden_new_file.json")));
 
         // Saved content is the new base: saving again writes nothing.
-        QVERIFY(!file.needsWrite());
-        QCOMPARE(saveAnnotationFile(path, file).status, SaveStatus::NotModified);
+        QVERIFY(!loaded.file.needsWrite());
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::NotModified);
     }
 
     void editedFilesAreWritten()
@@ -118,14 +150,14 @@ private slots:
         const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
         const ImageInfo image{QStringLiteral("0002.jpg"), 640, 480, 1};
 
-        AnnotationFile file = loadAnnotationFile(path, image);
-        QVERIFY(file.document().confirm());
-        QCOMPARE(saveAnnotationFile(path, file).status, SaveStatus::Saved);
+        LoadedAnnotation loaded = loadAnnotationFile(path, image);
+        QVERIFY(loaded.file.document().confirm());
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::Saved);
 
         const FileState after = fileState(path);
         QVERIFY(after.modified != kOldTime);
-        QCOMPARE(after.bytes, file.toBytes());
-        AnnotationFile reread = loadAnnotationFile(path, image);
+        QCOMPARE(after.bytes, loaded.file.toBytes());
+        AnnotationFile reread = loadAnnotationFile(path, image).file;
         QVERIFY(reread.document().review().checked);
         QVERIFY(reread.diagnostics().isEmpty());
         QCOMPARE(QDir(dir.path()).entryList(QDir::Files), QStringList{QStringLiteral("0002.json")});
@@ -157,10 +189,10 @@ private slots:
         const QString path = placeFixture(dir, fixture.constData(), "image.json");
         const FileState before = fileState(path);
 
-        AnnotationFile file = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.jpg"), 0, 0, exifOrientation});
-        QCOMPARE(int(file.readOnlyReason()), expectedReason);
-        file.document().confirm();
-        QCOMPARE(saveAnnotationFile(path, file).status, SaveStatus::ReadOnly);
+        LoadedAnnotation loaded = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.jpg"), 0, 0, exifOrientation});
+        QCOMPARE(int(loaded.file.readOnlyReason()), expectedReason);
+        loaded.file.document().confirm();
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::ReadOnly);
 
         const FileState after = fileState(path);
         QCOMPARE(after.bytes, before.bytes);
@@ -175,10 +207,173 @@ private slots:
         const QString path = dir.filePath(QStringLiteral("image.json"));
         QVERIFY(QDir(dir.path()).mkdir(QStringLiteral("image.json")));
 
-        AnnotationFile file = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.png"), 1, 1, 1});
-        QCOMPARE(file.readOnlyReason(), ReadOnlyReason::Unreadable);
-        QVERIFY(!file.isNew());
-        QCOMPARE(saveAnnotationFile(path, file).status, SaveStatus::ReadOnly);
+        LoadedAnnotation loaded = loadAnnotationFile(path, ImageInfo{QStringLiteral("image.png"), 1, 1, 1});
+        QCOMPARE(loaded.file.readOnlyReason(), ReadOnlyReason::Unreadable);
+        QVERIFY(!loaded.file.isNew());
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::ReadOnly);
+    }
+    // Architecture section 8.3: another program's change is detected before saving and the
+    // file is left as that program wrote it.
+    void externalChangeIsNotOverwritten()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().addShape(rectangle(1.0)) >= 0);
+
+        const QByteArray external = test::readTestData(QStringLiteral("annotations/upstream_v4.json"));
+        writeFile(path, external);
+        const SaveResult result = saveAnnotationFile(path, loaded);
+        QCOMPARE(result.status, SaveStatus::ExternallyModified);
+        QCOMPARE(fileState(path).bytes, external);
+        QVERIFY(loaded.file.needsWrite());
+
+        // "Use my version" (format spec 5.2).
+        SaveOptions overwrite;
+        overwrite.overwriteExternalChanges = true;
+        QCOMPARE(saveAnnotationFile(path, loaded, overwrite).status, SaveStatus::Saved);
+        QCOMPARE(fileState(path).bytes, loaded.file.toBytes());
+    }
+
+    // A rewrite with the same size and the same modification time, as can happen within the
+    // 2-second time granularity of FAT32, is still detected.
+    void sameSizeRewriteInSameSecondIsDetected()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+
+        QByteArray rewritten = fileState(path).bytes;
+        const qsizetype at = rewritten.indexOf("\"label\": \"");
+        QVERIFY(at >= 0);
+        rewritten[at + 10] = rewritten[at + 10] == 'x' ? 'y' : 'x';
+        writeFile(path, rewritten);
+        setModified(path, kOldTime);
+        QCOMPARE(QFileInfo(path).size(), loaded.stamp.size);
+        QCOMPARE(QFileInfo(path).lastModified(), loaded.stamp.modified);
+
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::ExternallyModified);
+        QCOMPARE(fileState(path).bytes, rewritten);
+    }
+
+    void externalCreateAndDeleteAreDetected()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        // A file created by another program while this one edited a new document.
+        const QString created = dir.filePath(QStringLiteral("new.json"));
+        LoadedAnnotation fresh = loadAnnotationFile(created, kImage);
+        QVERIFY(fresh.file.document().addShape(rectangle(1.0)) >= 0);
+        writeFile(created, "{}");
+        QCOMPARE(saveAnnotationFile(created, fresh).status, SaveStatus::ExternallyModified);
+        QCOMPARE(fileState(created).bytes, QByteArray("{}"));
+
+        // A file deleted by another program.
+        const QString deleted = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(deleted, kImage);
+        QVERIFY(loaded.file.document().confirm());
+        QVERIFY(QFile::remove(deleted));
+        QCOMPARE(saveAnnotationFile(deleted, loaded).status, SaveStatus::ExternallyModified);
+        QVERIFY(!QFile::exists(deleted));
+    }
+
+    // Rewriting the same bytes (a copy, a touch) is not a change.
+    void sameBytesWithNewTimeAreNotAChange()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+        setModified(path, QDateTime::currentDateTimeUtc());
+        QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::Saved);
+    }
+
+    // After a save the stamp describes this program's own write, so the next save goes through.
+    void ownSavesAreNotExternalChanges()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("0001.json"));
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        for (int i = 0; i < 3; ++i) {
+            QVERIFY(loaded.file.document().addShape(rectangle(10.0 * i)) >= 0);
+            QCOMPARE(saveAnnotationFile(path, loaded).status, SaveStatus::Saved);
+            QCOMPARE(loaded.stamp.digest, contentDigest(fileState(path).bytes));
+        }
+    }
+
+    // Architecture section 8.1: on Windows a virus scanner or the search indexer can keep the
+    // file open for a moment, so the replace fails; it is retried and then succeeds.
+    void blockedReplaceIsRetried()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Renaming over an open file only fails on Windows");
+#else
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+
+        // Opened without any sharing, as a scanner may do.
+        HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
+                                     GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        QVERIFY(blocker != INVALID_HANDLE_VALUE);
+        SaveOptions options;
+        options.retryDelayMs = 10;
+        options.beforeRetry = [&blocker](int attempt) {
+            if (attempt == 3 && blocker != INVALID_HANDLE_VALUE) {
+                CloseHandle(blocker);
+                blocker = INVALID_HANDLE_VALUE;
+            }
+        };
+        const SaveResult result = saveAnnotationFile(path, loaded, options);
+        if (blocker != INVALID_HANDLE_VALUE)
+            CloseHandle(blocker);
+        QCOMPARE(result.status, SaveStatus::Saved);
+        QCOMPARE(result.attempts, 3);
+        QCOMPARE(fileState(path).bytes, loaded.file.toBytes());
+#endif
+    }
+
+    // When every attempt fails the result says so and the file keeps its old content.
+    void failedReplaceLeavesTheFile()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = placeFixture(dir, "upstream_v2_legacy.json", "0002.json");
+        const FileState before = fileState(path);
+        LoadedAnnotation loaded = loadAnnotationFile(path, kImage);
+        QVERIFY(loaded.file.document().confirm());
+
+        SaveOptions options;
+        options.maxAttempts = 3;
+        options.retryDelayMs = 1;
+#ifdef Q_OS_WIN
+        HANDLE blocker = CreateFileW(reinterpret_cast<const wchar_t*>(QDir::toNativeSeparators(path).utf16()),
+                                     GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        QVERIFY(blocker != INVALID_HANDLE_VALUE);
+        const SaveResult result = saveAnnotationFile(path, loaded, options);
+        CloseHandle(blocker);
+#else
+        if (geteuid() == 0)
+            QSKIP("Directory permissions do not stop root");
+        QFile::Permissions permissions = QFile::permissions(dir.path());
+        QVERIFY(QFile::setPermissions(dir.path(), QFile::ReadOwner | QFile::ExeOwner));
+        const SaveResult result = saveAnnotationFile(path, loaded, options);
+        QFile::setPermissions(dir.path(), permissions);
+#endif
+        QCOMPARE(result.status, SaveStatus::Failed);
+        QCOMPARE(result.attempts, 3);
+        QVERIFY(!result.error.isEmpty());
+        QVERIFY(loaded.file.needsWrite());
+        QCOMPARE(fileState(path).bytes, before.bytes);
+        QCOMPARE(fileState(path).modified, before.modified);
     }
 };
 

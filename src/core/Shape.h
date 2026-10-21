@@ -3,6 +3,7 @@
 #include "core/Geometry.h"
 #include "core/ShapeType.h"
 
+#include <QHash>
 #include <QString>
 
 namespace liteanno {
@@ -24,6 +25,9 @@ struct Shape {
     QString label;
     PointList points;
     QString description;
+    // String values of the "attributes" object, for the confirm conditions (format spec 5.3).
+    // Not written back: the object on disk stays as it is.
+    QHash<QString, QString> attributes;
     bool locked = false;
 };
 

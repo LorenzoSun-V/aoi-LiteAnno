@@ -9,10 +9,15 @@ add_library(liteanno_core STATIC
     Geometry.cpp
     Geometry.h
     ImageInfo.h
+    ProjectConfig.h
     ReviewState.h
     Shape.h
     ShapeType.cpp
     ShapeType.h
+    Validation.cpp
+    Validation.h
+    AnnotationStatus.cpp
+    AnnotationStatus.h
     "${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h"
 )
 target_include_directories(liteanno_core PUBLIC
