@@ -47,7 +47,13 @@ endif()
 # same layer (dataset, imaging, formats, platform) depend only on core, never on each other.
 liteanno_forbid_dependencies(liteanno_core
     FORBIDDEN Qt6::Gui Qt6::Widgets
-              liteanno_formats liteanno_dataset liteanno_imaging liteanno_platform)
+              liteanno_formats liteanno_dataset liteanno_imaging liteanno_platform liteanno_application)
 liteanno_forbid_dependencies(liteanno_formats
     FORBIDDEN Qt6::Gui Qt6::Widgets
-              liteanno_dataset liteanno_imaging liteanno_platform)
+              liteanno_dataset liteanno_imaging liteanno_platform liteanno_application)
+liteanno_forbid_dependencies(liteanno_platform
+    FORBIDDEN Qt6::Gui Qt6::Widgets
+              liteanno_dataset liteanno_imaging liteanno_formats liteanno_application)
+# application organizes the flows across modules; it does not need the GUI.
+liteanno_forbid_dependencies(liteanno_application
+    FORBIDDEN Qt6::Gui Qt6::Widgets)

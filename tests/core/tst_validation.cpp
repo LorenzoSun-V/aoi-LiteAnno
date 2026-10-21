@@ -40,6 +40,8 @@ QList<ConfirmBlockerCode> codes(const QList<ConfirmBlocker>& blockers)
 
 } // namespace
 
+Q_DECLARE_METATYPE(liteanno::StatusFacts)
+
 class TestValidation : public QObject
 {
     Q_OBJECT
@@ -235,8 +237,6 @@ private slots:
         }
     }
 };
-
-Q_DECLARE_METATYPE(liteanno::StatusFacts)
 
 QTEST_GUILESS_MAIN(TestValidation)
 #include "tst_validation.moc"

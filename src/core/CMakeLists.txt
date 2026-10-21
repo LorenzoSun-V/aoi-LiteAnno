@@ -9,6 +9,8 @@ add_library(liteanno_core STATIC
     Geometry.cpp
     Geometry.h
     ImageInfo.h
+    ImagePath.cpp
+    ImagePath.h
     ProjectConfig.h
     ReviewState.h
     Shape.h

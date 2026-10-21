@@ -7,6 +7,8 @@ add_library(liteanno_formats STATIC
     JsonText.h
     ProjectFile.cpp
     ProjectFile.h
+    RecoveryRecord.cpp
+    RecoveryRecord.h
     WorksetFiles.cpp
     WorksetFiles.h
 )

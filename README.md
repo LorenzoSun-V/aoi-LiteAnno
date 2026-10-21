@@ -4,18 +4,22 @@
 
 ## 当前状态
 
-第一个里程碑：工程骨架。
+第二个里程碑进行中：单图编辑与可靠保存。已完成可靠保存部分，标注界面还没有开始做。
 
-- `core`：标注文档模型（形状、图片级标签、确认与跳过状态），只依赖 Qt Core。
-- `formats`：读写 X-AnyLabeling 的逐图 JSON。未知字段和无法识别的对象原样保留，未编辑的文件不写盘；写出的字节与 X-AnyLabeling 保存时（Python `json.dump(..., ensure_ascii=False, indent=2)`）一致。
-- `ui`：只有一个空窗口，标注界面还没有开始做。
+- `core`：标注文档模型（形状、图片级标签、确认与跳过状态）、项目配置、确认条件和派生状态（格式规范第 5 节），只依赖 Qt Core。
+- `formats`：读写 X-AnyLabeling 的逐图 JSON。未知字段和无法识别的对象原样保留，未编辑的文件不写盘；写出的字节与 X-AnyLabeling 保存时（Python `json.dump(..., ensure_ascii=False, indent=2)`）一致。保存前比对文件内容，别的程序改过就不覆盖；替换失败时短暂重试。还负责项目文件和恢复记录的读写。
+- `platform`：数据根目录所在卷的标识，用于计算 `bindingId`。
+- `application`：保存流程（先写本机恢复记录，再替换标注文件，再删记录）、崩溃后的恢复、项目锁。
+- `ui`：只有一个空窗口。
 
 ## 目录
 
 | 目录 | 内容 |
 | --- | --- |
 | `src/core` | 文档模型，不依赖 Qt Gui 和 Widgets |
-| `src/formats` | 标注文件读写、工作批次文件 |
+| `src/formats` | 标注文件读写与保存、项目文件、恢复记录、工作批次文件 |
+| `src/platform` | 与操作系统有关的部分：卷标识 |
+| `src/application` | 跨模块的流程：保存、恢复、项目锁 |
 | `src/ui` | 桌面程序 |
 | `tests` | Qt Test 单元测试、测试数据、与 Python json 模块的字节对照 |
 | `third_party` | 随仓库附带的第三方代码：nlohmann/json 3.12.0（MIT） |
