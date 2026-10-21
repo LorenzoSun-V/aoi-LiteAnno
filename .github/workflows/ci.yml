@@ -54,7 +54,7 @@ jobs:
         run: |
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
           foreach ($count in 5000, 200000) {
-            & build/windows-msvc/tests/Release/liteanno_catalog_benchmark.exe "$env:RUNNER_TEMP" $count | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            & build/windows-msvc/Release/liteanno_catalog_benchmark.exe "$env:RUNNER_TEMP" $count | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
