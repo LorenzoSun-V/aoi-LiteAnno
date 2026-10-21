@@ -117,6 +117,24 @@ private slots:
         QCOMPARE(labels[2].value, std::optional<bool>(true));
     }
 
+    // String attribute values are read for the confirm conditions (format spec 5.3); other
+    // values do not count as filled in.
+    void shapeAttributes()
+    {
+        const QByteArray json = R"({"version": "3.3.1", "flags": {}, "shapes": [
+            {"label": "scratch", "points": [[1, 1], [5, 5]], "shape_type": "rectangle",
+             "attributes": {"severity": "重", "count": 3, "note": null, "empty": ""}},
+            {"label": "dent", "points": [[1, 1], [5, 5]], "shape_type": "rectangle", "attributes": null}],
+            "imagePath": "a.png", "imageData": null, "imageHeight": 10, "imageWidth": 10})";
+        const AnnotationFile file = AnnotationFile::fromBytes(json, imageInfo("a.png", 10, 10));
+        QVERIFY2(file.diagnostics().isEmpty(), diagnosticsText(file).constData());
+        const QHash<QString, QString>& attributes = file.document().shapes()[0].attributes;
+        QCOMPARE(attributes.size(), 2);
+        QCOMPARE(attributes.value(QStringLiteral("severity")), QStringLiteral("重"));
+        QVERIFY(attributes.contains(QStringLiteral("empty")));
+        QVERIFY(file.document().shapes()[1].attributes.isEmpty());
+    }
+
     // Format spec 4.2 and 13.5: what cannot be understood is kept as an unrecognized object.
     void unrecognizedObjects()
     {

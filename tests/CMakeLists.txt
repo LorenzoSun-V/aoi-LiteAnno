@@ -21,11 +21,13 @@ function(liteanno_add_test name)
 endfunction()
 
 liteanno_add_test(tst_annotationdocument core/tst_annotationdocument.cpp)
+liteanno_add_test(tst_validation core/tst_validation.cpp)
 liteanno_add_test(tst_jsontext formats/tst_jsontext.cpp)
 liteanno_add_test(tst_annotationread formats/tst_annotationread.cpp)
 liteanno_add_test(tst_annotationwrite formats/tst_annotationwrite.cpp)
 liteanno_add_test(tst_annotationstore formats/tst_annotationstore.cpp)
 liteanno_add_test(tst_worksetfiles formats/tst_worksetfiles.cpp)
+liteanno_add_test(tst_projectfile formats/tst_projectfile.cpp)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions
