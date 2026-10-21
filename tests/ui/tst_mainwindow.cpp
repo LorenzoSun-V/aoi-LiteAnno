@@ -809,6 +809,53 @@ private slots:
         QCOMPARE(canvas->imageToWidget(QPointF(0, 0)), before + QPointF(30, 20));
         QCOMPARE(w.document().shapes().size(), 1);
     }
+
+    // Review of 6f5f547: fitting can go beyond the zoom limits; zooming from there must not
+    // turn the other way (a very wide image grew on Ctrl+-, a 1x1 image shrank on Ctrl++).
+    void zoomNeverTurnsTheOtherWay_data()
+    {
+        QTest::addColumn<QSize>("size");
+        QTest::newRow("40000x100") << QSize(40000, 100);
+        QTest::newRow("1x1") << QSize(1, 1);
+        QTest::newRow("200x100") << QSize(200, 100);
+    }
+
+    void zoomNeverTurnsTheOtherWay()
+    {
+        QFETCH(QSize, size);
+        Canvas canvas;
+        canvas.resize(660, 480);
+        QImage image(size, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        canvas.setImage(image);
+        canvas.fitToWindow();
+        const double fitted = canvas.zoom();
+        const QPointF middle(canvas.width() / 2.0, canvas.height() / 2.0);
+        const auto wheel = [&](int delta) {
+            QWheelEvent event(middle, canvas.mapToGlobal(middle), QPoint(), QPoint(0, delta), Qt::NoButton,
+                              Qt::ControlModifier, Qt::NoScrollPhase, false);
+            QApplication::sendEvent(&canvas, &event);
+        };
+        for (const auto& [zoom, factor] : QList<std::pair<std::function<void()>, double>>{
+                 {[&] { canvas.zoomBy(1.1); }, 1.1},
+                 {[&] { canvas.zoomBy(1 / 1.1); }, 1 / 1.1},
+                 {[&] { wheel(120); }, 1.1},
+                 {[&] { wheel(-120); }, 1 / 1.1}}) {
+            canvas.fitToWindow();
+            for (int i = 0; i < 3; ++i) {
+                const double before = canvas.zoom();
+                zoom();
+                if (factor > 1)
+                    QVERIFY2(canvas.zoom() >= before, qPrintable(QString::number(before) + QLatin1String(" -> ") + QString::number(canvas.zoom())));
+                else
+                    QVERIFY2(canvas.zoom() <= before, qPrintable(QString::number(before) + QLatin1String(" -> ") + QString::number(canvas.zoom())));
+            }
+        }
+        // Within the limits a step still zooms.
+        canvas.fitToWindow();
+        canvas.zoomBy(fitted > 1 ? 1 / 1.1 : 1.1);
+        QVERIFY(canvas.zoom() != fitted);
+    }
 };
 
 QTEST_MAIN(TestMainWindow)

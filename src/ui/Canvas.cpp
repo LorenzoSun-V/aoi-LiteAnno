@@ -132,7 +132,9 @@ void Canvas::zoomAround(const QPointF& anchor, double factor)
     if (m_image.isNull())
         return;
     const QPointF imagePoint = widgetToImage(anchor);
-    m_scale = std::clamp(m_scale * factor, 0.02, 64.0);
+    // Fitting a very wide or a tiny image can go beyond the limits; from there a step may
+    // stay where it is, but never go the other way.
+    m_scale = std::clamp(m_scale * factor, std::min(0.02, m_scale), std::max(64.0, m_scale));
     m_offset = anchor - imagePoint * m_scale;
     m_fitPending = false;
     update();
