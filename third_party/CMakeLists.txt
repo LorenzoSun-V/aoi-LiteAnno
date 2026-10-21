@@ -29,7 +29,11 @@ else()
     # The archive has no CMakeLists.txt, so this only downloads, checks and unpacks it.
     FetchContent_MakeAvailable(liteanno_sqlite_source)
     add_library(liteanno_sqlite3 STATIC "${liteanno_sqlite_source_SOURCE_DIR}/sqlite3.c")
-    target_include_directories(liteanno_sqlite3 SYSTEM PUBLIC "${liteanno_sqlite_source_SOURCE_DIR}")
+    # Only the header is put on the include path: the archive also has a file named VERSION,
+    # which <version> finds on file systems that ignore case.
+    configure_file("${liteanno_sqlite_source_SOURCE_DIR}/sqlite3.h"
+                   "${CMAKE_CURRENT_BINARY_DIR}/sqlite-include/sqlite3.h" COPYONLY)
+    target_include_directories(liteanno_sqlite3 SYSTEM PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/sqlite-include")
     # One write connection on its own thread, read connections elsewhere: serialized mode
     # is not needed, multi-thread mode is. No extensions are loaded.
     target_compile_definitions(liteanno_sqlite3 PRIVATE
