@@ -62,6 +62,8 @@ public:
 
     // Finished saves, oldest first. Call on the thread that owns the documents.
     std::vector<SaveJobResult> takeResults();
+    // Finished saves not taken yet. A save leaves pendingCount() and arrives here at once.
+    bool hasResults() const;
 
     const SaveCoordinator& coordinator() const { return m_coordinator; }
 

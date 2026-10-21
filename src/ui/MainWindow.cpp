@@ -471,8 +471,16 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
     // once; edits not saved yet stay on screen but are not written to the shared file.
     if (m_session && m_current >= 0 && m_session->hasNameCollision() != m_images[m_current].nameCollision) {
         m_session->setNameCollision(m_images[m_current].nameCollision);
-        if (m_images[m_current].nameCollision && m_session->needsSave()) {
-            statusBar()->showMessage(QStringLiteral(u"这张图片出现了同名图片，改为只能查看；还没保存的修改不会写入。"), 15000);
+        if (m_session->needsSave()) {
+            if (m_images[m_current].nameCollision) {
+                statusBar()->showMessage(
+                    QStringLiteral(u"这张图片出现了同名图片，改为只能查看。还没保存的修改留在这台电脑的内存里，不写入标注文件；"
+                                   u"关闭项目前会再询问。"),
+                    15000);
+                commitCurrent();
+            } else {
+                m_idleTimer.start();  // the held edits can be written now
+            }
         }
     }
     if (m_session && m_current >= 0)
@@ -694,6 +702,21 @@ void MainWindow::reloadCurrent()
 
 void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
 {
+    // Format spec 2: edits made before a name collision was found must not go into the
+    // annotation file the images share, nor be lost. They are held like edits whose save
+    // failed: shown again when the image is opened, written once the collision is gone,
+    // and closing the project asks before giving them up.
+    if (m_session && m_session->hasNameCollision() && m_session->needsSave()) {
+        formats::LoadedAnnotation copy = m_session->copy();
+        m_heldEdits.insert(m_session->imagePath(),
+                           HeldEdit{std::make_shared<formats::AnnotationFile>(std::move(copy.file)), copy.stamp,
+                                    QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件")});
+        if (!m_unwritten.contains(m_session->imagePath())) {
+            m_unwritten.insert(m_session->imagePath());
+            refreshImageItem(m_current);
+        }
+        return;
+    }
     if (!m_session || !m_saver || m_session->isReadOnly() || !m_session->needsSave())
         return;
     if (!force && m_session->version() == m_submittedVersion)
@@ -728,12 +751,13 @@ void MainWindow::flushSaves()
     if (!m_saver)
         return;
     commitCurrent();
-    // Answering a prompt can hand over another save ("用我的版本覆盖").
+    // Answering a prompt can hand over another save ("用我的版本覆盖"). That save may already
+    // be finished when the loop checks again; its result still has to be handled.
     do {
         if (m_saver->pendingCount() > 0)
             waitForSaver([this](int ms) { return m_saver->waitUntilAllDone(ms); });
         processSaveResults();
-    } while (m_saver->pendingCount() > 0);
+    } while (m_saver->pendingCount() > 0 || (!m_handlingResults && m_saver->hasResults()));
 }
 
 void MainWindow::processSaveResults()

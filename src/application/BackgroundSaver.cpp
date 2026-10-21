@@ -121,6 +121,12 @@ bool BackgroundSaver::waitUntilAllDone(int timeoutMs)
     return waitFor(timeoutMs, [this] { return m_queue.empty() && m_running.isEmpty(); });
 }
 
+bool BackgroundSaver::hasResults() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return !m_results.empty();
+}
+
 std::vector<SaveJobResult> BackgroundSaver::takeResults()
 {
     std::lock_guard<std::mutex> lock(m_mutex);

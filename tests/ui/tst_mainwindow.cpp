@@ -906,6 +906,57 @@ private slots:
         QCOMPARE(w.document().shapes().size(), 1);
     }
 
+    // Edits not saved yet when the collision is found are neither written to the shared file
+    // nor lost: they stay with the image, and closing asks before giving them up.
+    void unsavedEditsSurviveANameCollision()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(w.window.session()->isReadOnly());
+
+        // Away and back: the rectangle is still there, still not written. The list is now
+        // 0001.jpg, 0001.png, 0002.png, 0003.png.
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(w.window.goToImage(3));
+        w.window.flushSaves();
+        QVERIFY(w.window.goToImage(1));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.window.session()->isReadOnly());
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+
+        // Closing asks; declined, the project stays open with the edits.
+        w.answers.discardUnsaved = false;
+        QVERIFY(!w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        // The other image is renamed away: the edits are saved after all.
+        QVERIFY(QFile::rename(project.data.filePath(QStringLiteral("line1/0001.jpg")),
+                              project.data.filePath(QStringLiteral("line1/0009.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+    }
+
     // Without any catalog (no cache folder, no temporary folder) the folder is still listed
     // and the images can be labelled.
     void noCatalogAtAll()
