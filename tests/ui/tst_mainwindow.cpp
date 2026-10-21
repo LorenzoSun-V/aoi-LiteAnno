@@ -111,8 +111,10 @@ struct Answers {
     ExternalChangeChoice externalChange = ExternalChangeChoice::Reload;
     RecoveryChoice recovery = RecoveryChoice::Restore;
     bool discardUnsaved = false;
-    // Runs while the recovery question is shown, like a repaint behind a dialog.
+    // Run while the recovery question or a message is shown, like the event loop behind a
+    // dialog.
     std::function<void()> duringRecovery;
+    std::function<void()> duringMessage;
 
     int externalChangeAsked = 0;
     QList<application::RecoveryState> recoveryAsked;
@@ -142,7 +144,11 @@ struct Answers {
             ++discardAsked;
             return discardUnsaved;
         };
-        p.message = [this](const QString& title, const QString& text) { messages.append(title + QLatin1Char('\n') + text); };
+        p.message = [this](const QString& title, const QString& text) {
+            messages.append(title + QLatin1Char('\n') + text);
+            if (duringMessage)
+                duringMessage();
+        };
         return p;
     }
 };
@@ -1183,6 +1189,72 @@ private slots:
         QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 2);
         QVERIFY(w.window.closeProject());
         QCOMPARE(w.answers.discardAsked, 0);
+    }
+
+    // Review of 30af45f: switching images shows "修改没有写入" for an earlier failed save. While
+    // it is shown, a rescan finds the second image deleted and the list gets shorter. The
+    // switch goes to the image that was asked for, found by its path.
+    void listShrinksDuringAMessageWhileSwitching()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QVERIFY(w.window.saver()->waitUntilAllDone(10000));  // its result is not handled yet
+
+        auto* list = w.window.findChild<QListWidget*>();
+        QVERIFY(list);
+        w.answers.duringMessage = [&] {
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0002.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.goToImage(2));
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(w.window.imageCount(), 2);
+        QCOMPARE(list->count(), 2);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QCOMPARE(w.window.currentIndex(), 1);
+        QCOMPARE(list->currentRow(), 1);
+        unblockRecoveryFolder(project.local.path());
+    }
+
+    // The image asked for is deleted while the message is shown: it is handled like an image
+    // deleted while shown, and the list and the image shown still agree.
+    void targetDeletedDuringAMessageWhileSwitching()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QVERIFY(w.window.saver()->waitUntilAllDone(10000));
+
+        auto* list = w.window.findChild<QListWidget*>();
+        w.answers.duringMessage = [&] {
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0003.png"))));
+        w.window.rescan();
+        w.window.goToImage(2);
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(list->count(), w.window.imageCount());
+        QVERIFY(w.window.currentIndex() >= 0 && w.window.currentIndex() < w.window.imageCount());
+        QCOMPARE(list->currentRow(), w.window.currentIndex());
+        QCOMPARE(list->currentItem()->text(), QStringLiteral("line1/0003.png"));
+        QVERIFY(!w.window.session());
+        // The other images are still there to go to.
+        QVERIFY(w.window.goToImage(0));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 1);
+        unblockRecoveryFolder(project.local.path());
     }
 
     // Without any catalog (no cache folder, no temporary folder) the folder is still listed

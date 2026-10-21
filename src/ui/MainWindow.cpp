@@ -71,8 +71,8 @@ QString openErrorText(const ProjectSession::OpenResult& result, const QString& r
 MainWindow::MainWindow(Options options, QWidget* parent)
     : QMainWindow(parent)
     , m_options(std::move(options))
-    , m_prompts(Prompts::dialogs(this))
 {
+    setPrompts(Prompts::dialogs(this));
     m_idleTimer.setSingleShot(true);
     m_idleTimer.setInterval(m_options.idleSaveMs);
     connect(&m_idleTimer, &QTimer::timeout, this, [this] { commitCurrent(); });
@@ -440,8 +440,45 @@ void MainWindow::reloadImages()
         setImages(m_catalog->reader().images());
 }
 
+MainWindow::ListHold::ListHold(MainWindow* window)
+    : m_window(window)
+{
+    ++m_window->m_listHolds;
+}
+
+MainWindow::ListHold::~ListHold()
+{
+    if (--m_window->m_listHolds > 0 || !m_window->m_pendingImages)
+        return;
+    QList<dataset::CatalogEntry> images = std::move(*m_window->m_pendingImages);
+    m_window->m_pendingImages.reset();
+    if (m_window->m_project)
+        m_window->setImages(std::move(images));
+}
+
+void MainWindow::setPrompts(Prompts prompts)
+{
+    // Each question runs an event loop; the list waits until it is answered.
+    auto held = [this](auto ask) {
+        return [this, ask](auto&&... args) {
+            ListHold hold(this);
+            return ask(std::forward<decltype(args)>(args)...);
+        };
+    };
+    m_prompts.chooseLabel = held(std::move(prompts.chooseLabel));
+    m_prompts.skipReason = held(std::move(prompts.skipReason));
+    m_prompts.externalChange = held(std::move(prompts.externalChange));
+    m_prompts.recovery = held(std::move(prompts.recovery));
+    m_prompts.message = held(std::move(prompts.message));
+    m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
+}
+
 void MainWindow::setImages(QList<dataset::CatalogEntry> images)
 {
+    if (m_listHolds > 0) {
+        m_pendingImages = std::move(images);
+        return;
+    }
     const QString currentPath = m_current >= 0 ? m_images[m_current].path : QString();
     m_images = std::move(images);
     m_imageIndex.clear();
@@ -580,6 +617,7 @@ bool MainWindow::closeProject(bool force)
     m_unwritten.clear();
     m_deferredRecords.clear();
     m_collisionRecords.clear();
+    m_pendingImages.reset();
     m_heldEdits.clear();
     m_current = -1;
     m_imageList->clear();
@@ -666,6 +704,9 @@ bool MainWindow::goToImage(int index)
 {
     if (!m_project || index < 0 || index >= m_images.size())
         return false;
+    // `index` and the rows below stay valid to the end: a list a scan brings meanwhile is
+    // applied after the switch, which maps the image shown to its new row.
+    const ListHold hold(this);
     if (index == m_current && m_session) {
         refresh();
         return true;
@@ -795,6 +836,7 @@ void MainWindow::saveNow()
 
 bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
 {
+    const ListHold hold(this);
     ++m_savingWaits;
     m_saveState->setText(QStringLiteral(u"正在保存…"));
     // Results are handled after the wait, not in the middle of switching images.
@@ -831,6 +873,7 @@ void MainWindow::processSaveResults()
 {
     if (!m_saver || m_handlingResults)
         return;
+    const ListHold hold(this);
     m_handlingResults = true;
     for (application::SaveJobResult& result : m_saver->takeResults()) {
         const SaveStatus status = result.outcome.result.status;

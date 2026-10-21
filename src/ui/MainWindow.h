@@ -47,7 +47,8 @@ public:
     explicit MainWindow(Options options = Options(), QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    void setPrompts(Prompts prompts) { m_prompts = std::move(prompts); }
+    // Every question holds the image list while it is shown; see ListHold.
+    void setPrompts(Prompts prompts);
 
     // Opens the project whose data root is `root`. Reports problems through the prompts.
     bool openProject(const QString& root);
@@ -155,6 +156,22 @@ private:
     };
     QHash<QString, HeldEdit> m_heldEdits;
     // Whether edits held for the image are newer than the save of (sessionId, version).
+    // While a question is shown or saves are waited for, an event loop runs and a scan may
+    // finish. Code around those calls keeps rows of the image list; so a new list is kept
+    // aside while any hold exists and applied when the last one ends.
+    class ListHold
+    {
+    public:
+        explicit ListHold(MainWindow* window);
+        ~ListHold();
+        ListHold(const ListHold&) = delete;
+        ListHold& operator=(const ListHold&) = delete;
+
+    private:
+        MainWindow* m_window;
+    };
+    int m_listHolds = 0;
+    std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
     // Offers the recovery records of the image shown once nothing holds them back.
     void offerUnblockedRecords();
     bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
