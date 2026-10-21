@@ -6,6 +6,7 @@
 #include "ui/MainWindow.h"
 
 #include <QAbstractButton>
+#include <QAction>
 #include <QApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -20,6 +21,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
+#include <QWheelEvent>
 
 using namespace liteanno;
 using namespace liteanno::ui;
@@ -661,6 +663,132 @@ private slots:
         mouse(canvas, QEvent::MouseButtonRelease, inside + QPointF(15, 10), Qt::LeftButton, Qt::NoButton);
         QVERIFY(w.document().shapes().isEmpty());
         QCOMPARE(canvas->selectedShape(), qsizetype(-1));
+    }
+
+    // The shortcuts are X-AnyLabeling 4.2.0's defaults (anylabeling/configs/xanylabeling_config.yaml).
+    void shortcutsMatchXAnyLabeling_data()
+    {
+        QTest::addColumn<QString>("action");
+        QTest::addColumn<QString>("keys");
+        const QList<std::pair<const char*, const char*>> upstream = {
+            {"open_dir", "Ctrl+U"},           {"save", "Ctrl+S"},
+            {"quit", "Ctrl+Q"},               {"open_next", "D"},
+            {"open_prev", "A"},               {"toggle_annotation_checked", "Ctrl+Alt+K"},
+            {"zoom_in", "Ctrl++"},            {"zoom_out", "Ctrl+-"},
+            {"zoom_to_original", "Ctrl+="},   {"fit_window", "Ctrl+F"},
+            {"create_polygon", "P"},          {"create_rectangle", "R"},
+            {"edit_polygon", "Ctrl+J"},       {"delete_polygon", "Delete"},
+            {"undo", "Ctrl+Z"},               {"edit_label", "Ctrl+E"},
+        };
+        for (const auto& [action, keys] : upstream)
+            QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
+    }
+
+    void shortcutsMatchXAnyLabeling()
+    {
+        QFETCH(QString, action);
+        QFETCH(QString, keys);
+        Project project;
+        Window w(project.options());
+        const QAction* found = w.window.findChild<QAction*>(action);
+        QVERIFY2(found, qPrintable(action));
+        QCOMPARE(found->shortcuts(), QList<QKeySequence>{QKeySequence(keys)});
+    }
+
+    // No shortcut of this program may take a key X-AnyLabeling uses for something else.
+    void noShortcutTakesAnotherUpstreamKey()
+    {
+        Project project;
+        Window w(project.options());
+        const QSet<QString> upstreamElsewhere = {QStringLiteral("Ctrl+Y"), QStringLiteral("Ctrl+O"),
+                                                 QStringLiteral("Ctrl+I"), QStringLiteral("V")};
+        for (const QAction* action : w.window.findChildren<QAction*>()) {
+            for (const QKeySequence& keys : action->shortcuts())
+                QVERIFY2(!upstreamElsewhere.contains(keys.toString()), qPrintable(action->text() + QLatin1Char(' ') + keys.toString()));
+        }
+    }
+
+    void keyboardAndMouseLikeXAnyLabeling()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+
+        // P draws polygons; Ctrl+Z while drawing takes back the last point.
+        QTest::keyClick(canvas, Qt::Key_P);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Polygon);
+        click(canvas, QPointF(10, 10));
+        click(canvas, QPointF(90, 15));
+        click(canvas, QPointF(150, 90));
+        QTest::keyClick(canvas, Qt::Key_Z, Qt::ControlModifier);
+        click(canvas, QPointF(50, 80));
+        QTest::keyClick(canvas, Qt::Key_Return);
+        QCOMPARE(w.document().shapes().size(), 1);
+        const PointList drawn = w.document().shapes()[0].points;
+        QCOMPARE(drawn.size(), 3);
+        QVERIFY(qAbs(drawn[2].x() - 50) < 1);
+
+        // Ctrl+J selects; arrow keys move the selected shape one pixel.
+        QTest::keyClick(canvas, Qt::Key_J, Qt::ControlModifier);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        canvas->setSelectedShape(0);
+        QTest::keyClick(canvas, Qt::Key_Right);
+        QTest::keyClick(canvas, Qt::Key_Down);
+        QCOMPARE(w.document().shapes()[0].points[0], drawn[0] + QPointF(1, 1));
+        // Not out of the image: the shape stays where it is.
+        for (int i = 0; i < 20; ++i)
+            QTest::keyClick(canvas, Qt::Key_Up);
+        QCOMPARE(w.document().shapes()[0].points[0].y(), 0.0);
+
+        // Ctrl+E changes the class.
+        w.answers.label = QStringLiteral("dent");
+        QTest::keyClick(canvas, Qt::Key_E, Qt::ControlModifier);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("dent"));
+        // Ctrl+Z undoes it, Ctrl+Shift+Z redoes it, Ctrl+Y does nothing.
+        QTest::keyClick(canvas, Qt::Key_Z, Qt::ControlModifier);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("scratch"));
+        QTest::keyClick(canvas, Qt::Key_Y, Qt::ControlModifier);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("scratch"));
+        QTest::keyClick(canvas, Qt::Key_Z, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("dent"));
+
+        // Ctrl+Alt+K confirms the image.
+        QTest::keyClick(canvas, Qt::Key_K, Qt::ControlModifier | Qt::AltModifier);
+        QVERIFY(w.document().review().checked);
+
+        // The wheel scrolls, Ctrl + wheel zooms; Ctrl+= is the original size, Ctrl+F fits.
+        const double fitted = canvas->zoom();
+        const QPointF origin = canvas->imageToWidget(QPointF(0, 0));
+        const QPointF middle(canvas->width() / 2.0, canvas->height() / 2.0);
+        QWheelEvent scroll(middle, canvas->mapToGlobal(middle), QPoint(), QPoint(0, -120), Qt::NoButton,
+                           Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(canvas, &scroll);
+        QCOMPARE(canvas->zoom(), fitted);
+        QVERIFY(canvas->imageToWidget(QPointF(0, 0)).y() < origin.y());
+        QWheelEvent zoom(middle, canvas->mapToGlobal(middle), QPoint(), QPoint(0, 120), Qt::NoButton,
+                         Qt::ControlModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(canvas, &zoom);
+        QVERIFY(qAbs(canvas->zoom() - fitted * 1.1) < 1e-9);
+        QTest::keyClick(canvas, Qt::Key_Equal, Qt::ControlModifier);
+        QCOMPARE(canvas->zoom(), 1.0);
+        QTest::keyClick(canvas, Qt::Key_F, Qt::ControlModifier);
+        QCOMPARE(canvas->zoom(), fitted);
+
+        // Space + left drag pans and draws nothing, also with the rectangle tool.
+        QTest::keyClick(canvas, Qt::Key_R);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Rectangle);
+        const QPointF before = canvas->imageToWidget(QPointF(0, 0));
+        QTest::keyPress(canvas, Qt::Key_Space);
+        const QPointF from = canvas->imageToWidget(QPointF(100, 50));
+        mouse(canvas, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseMove, from + QPointF(30, 20), Qt::NoButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, from + QPointF(30, 20), Qt::LeftButton, Qt::NoButton);
+        QTest::keyRelease(canvas, Qt::Key_Space);
+        QCOMPARE(canvas->imageToWidget(QPointF(0, 0)), before + QPointF(30, 20));
+        QCOMPARE(w.document().shapes().size(), 1);
     }
 };
 

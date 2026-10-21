@@ -127,6 +127,50 @@ void Canvas::fitToWindow()
     update();
 }
 
+void Canvas::zoomAround(const QPointF& anchor, double factor)
+{
+    if (m_image.isNull())
+        return;
+    const QPointF imagePoint = widgetToImage(anchor);
+    m_scale = std::clamp(m_scale * factor, 0.02, 64.0);
+    m_offset = anchor - imagePoint * m_scale;
+    m_fitPending = false;
+    update();
+}
+
+void Canvas::zoomBy(double factor)
+{
+    zoomAround(QPointF(width() / 2.0, height() / 2.0), factor);
+}
+
+void Canvas::zoomToOriginalSize()
+{
+    if (m_scale > 0)
+        zoomBy(1.0 / m_scale);
+}
+
+bool Canvas::removeLastPolygonPoint()
+{
+    if (m_polygonPoints.isEmpty())
+        return false;
+    m_polygonPoints.removeLast();
+    update();
+    return true;
+}
+
+void Canvas::moveSelectedBy(const QPointF& delta)
+{
+    if (!canEdit(m_selected) || m_drag != Drag::None)
+        return;
+    PointList points = m_document->shapes()[m_selected].points;
+    for (QPointF& point : points) {
+        point += delta;
+        if (point.x() < 0 || point.y() < 0 || point.x() > m_image.width() || point.y() > m_image.height())
+            return;
+    }
+    emit shapePointsChanged(m_selected, points);
+}
+
 void Canvas::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
@@ -236,7 +280,8 @@ void Canvas::mousePressEvent(QMouseEvent* event)
     m_pressImage = widgetToImage(widgetPoint);
     m_currentImage = m_pressImage;
 
-    if (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton) {
+    if (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton
+        || (event->button() == Qt::LeftButton && m_spaceHeld)) {
         m_drag = Drag::Pan;
         return;
     }
@@ -388,20 +433,44 @@ void Canvas::wheelEvent(QWheelEvent* event)
 {
     if (m_image.isNull())
         return;
-    const double steps = event->angleDelta().y() / 120.0;
-    if (steps == 0)
+    event->accept();
+    // As in X-AnyLabeling: Ctrl + wheel zooms, the wheel alone scrolls.
+    if (event->modifiers() & Qt::ControlModifier) {
+        const double steps = event->angleDelta().y() / 120.0;
+        if (steps != 0)
+            zoomAround(event->position(), std::pow(1.1, steps));
         return;
-    const QPointF anchor = event->position();
-    const QPointF imagePoint = widgetToImage(anchor);
-    m_scale = std::clamp(m_scale * std::pow(1.2, steps), 0.02, 64.0);
-    m_offset = anchor - imagePoint * m_scale;
+    }
+    const QPoint pixels = event->pixelDelta();
+    const QPointF step = pixels.isNull() ? QPointF(event->angleDelta()) / 2.0 : QPointF(pixels);
+    if (step.isNull())
+        return;
+    m_offset += step;
     m_fitPending = false;
     update();
 }
 
 void Canvas::keyPressEvent(QKeyEvent* event)
 {
+    // Ctrl+Z also reaches here when the undo action is off because nothing is to undo yet.
+    if (event->matches(QKeySequence::Undo) && removeLastPolygonPoint())
+        return;
     switch (event->key()) {
+    case Qt::Key_Space:
+        if (!event->isAutoRepeat())
+            m_spaceHeld = true;
+        return;
+    case Qt::Key_Left:
+    case Qt::Key_Right:
+    case Qt::Key_Up:
+    case Qt::Key_Down:
+        if (m_tool == Tool::Select && m_selected >= 0) {
+            const int key = event->key();
+            moveSelectedBy(QPointF(key == Qt::Key_Left ? -1 : key == Qt::Key_Right ? 1 : 0,
+                                   key == Qt::Key_Up ? -1 : key == Qt::Key_Down ? 1 : 0));
+            return;
+        }
+        break;
     case Qt::Key_Escape:
         if (!m_polygonPoints.isEmpty() || m_drag != Drag::None)
             cancelDrawing();
@@ -419,11 +488,8 @@ void Canvas::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_Backspace:
-        if (!m_polygonPoints.isEmpty()) {
-            m_polygonPoints.removeLast();
-            update();
+        if (removeLastPolygonPoint())
             return;
-        }
         break;
     case Qt::Key_Delete:
         if (m_selected >= 0 && !m_readOnly) {
@@ -435,6 +501,21 @@ void Canvas::keyPressEvent(QKeyEvent* event)
         break;
     }
     QWidget::keyPressEvent(event);
+}
+
+void Canvas::keyReleaseEvent(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        m_spaceHeld = false;
+        return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
+void Canvas::focusOutEvent(QFocusEvent* event)
+{
+    m_spaceHeld = false;
+    QWidget::focusOutEvent(event);
 }
 
 QColor Canvas::colorFor(const QString& label) const
