@@ -172,15 +172,64 @@ def field_samples(directory, field_dir):
 
 
 def same(a, b):
-    """Equal, with numbers compared as numbers (1 == 1.0)."""
+    """Equal, with numbers compared as numbers (1 == 1.0) but true and false never equal to 1 and 0."""
     if isinstance(a, dict) and isinstance(b, dict):
         return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
     if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
         return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) \
-            and not isinstance(b, bool):
-        return a == b
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
     return a == b
+
+
+def check_same():
+    """The comparison itself: a field turning from true into 1 must not pass."""
+    for a, b, expected in [(1, 1.0, True), (0, 0.0, True), (True, True, True), (False, False, True),
+                           (True, 1, False), (1, True, False), (False, 0, False), (0.0, False, False),
+                           ({"good": False, "ng": True}, {"good": 0, "ng": 1}, False),
+                           ([True, 2], [1, 2.0], False), ([True, 2], [True, 2.0], True),
+                           (None, False, False), ("1", 1, False)]:
+        if same(a, b) != expected:
+            sys.exit(f"same({a!r}, {b!r}) is {not expected}, expected {expected}")
+
+
+def booleans_to_numbers(value, skip_last_shape=False):
+    """For --tamper: every true/false becomes 1/0, as a writer bug would do it. Returns how many."""
+    count = 0
+
+    def walk(v):
+        nonlocal count
+        if isinstance(v, dict):
+            for k, x in v.items():
+                if isinstance(x, bool):
+                    v[k] = int(x)
+                    count += 1
+                else:
+                    walk(x)
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                if isinstance(x, bool):
+                    v[i] = int(x)
+                    count += 1
+                else:
+                    walk(x)
+
+    for key, v in value.items():
+        if key == "checked":  # written by this program, checked on its own
+            continue
+        if key == "flags":
+            for name, flag in v.items():
+                if name != ADDED_FLAG and isinstance(flag, bool):
+                    v[name] = int(flag)
+                    count += 1
+        elif key == "shapes":
+            walk(v[:-1] if skip_last_shape else v)  # the last shape is the one this program added
+        elif isinstance(v, bool):
+            value[key] = int(v)
+            count += 1
+        else:
+            walk(v)
+    return count
 
 
 def corners(points):
@@ -196,7 +245,9 @@ def run_tool(tool, image_path, json_path, out_path):
     return json.loads(result.stdout)
 
 
-def check_sample(tool, label, json_path, image_path):
+def check_sample(tool, label, json_path, image_path, tamper=False):
+    """Returns how many original values --tamper changed (0 without it)."""
+    failures_before = len(failures)
     with open(json_path, "rb") as f:
         original_bytes = f.read()
     raw_in = json.loads(original_bytes.decode("utf-8-sig"))
@@ -204,7 +255,7 @@ def check_sample(tool, label, json_path, image_path):
         before = LabelFile(json_path)
     except Exception as e:  # the sample itself must be valid upstream
         fail(label, f"X-AnyLabeling cannot read the sample: {e}")
-        return
+        return 0
 
     edited_dir = os.path.join(os.path.dirname(json_path), "edited")
     os.makedirs(edited_dir, exist_ok=True)
@@ -214,27 +265,35 @@ def check_sample(tool, label, json_path, image_path):
         report = run_tool(tool, image_path, json_path, out_path)
     except RuntimeError as e:
         fail(label, f"liteanno_compat_roundtrip failed: {e}")
-        return
+        return 0
     with open(json_path, "rb") as f:
         if f.read() != original_bytes:
             fail(label, "the sample was changed by reading it")
     if report["readOnly"] != "None":
         fail(label, f"read-only for this program: {report['readOnly']}")
-        return
+        return 0
     if report["uneditedNeedsWrite"]:
         fail(label, "unedited, it would be written")
     if report["shapes"] != len(before.shapes):
         fail(label, f"{report['shapes']} shapes read, X-AnyLabeling reads {len(before.shapes)}")
+
+    tampered = 0
+    if tamper:
+        with open(out_path, encoding="utf-8") as f:
+            broken = json.load(f)
+        tampered = booleans_to_numbers(broken, skip_last_shape=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(broken, f, ensure_ascii=False, indent=2)
 
     # 3. X-AnyLabeling reads the edited file.
     try:
         after = LabelFile(out_path)
     except Exception as e:
         fail(label, f"X-AnyLabeling cannot read the edited file: {e}")
-        return
+        return tampered
     if len(after.shapes) != len(before.shapes) + 1:
         fail(label, f"{len(after.shapes)} shapes after editing, expected {len(before.shapes) + 1}")
-        return
+        return tampered
     relabeled = report["relabeled"]
     for i, (old, new) in enumerate(zip(before.shapes, after.shapes)):
         expected = old.to_dict()
@@ -296,7 +355,9 @@ def check_sample(tool, label, json_path, image_path):
     if again["readOnly"] != "None" or again["uneditedNeedsWrite"] or again["shapes"] != len(after.shapes):
         fail(label, f"reading X-AnyLabeling's save of the edited file: {again}")
 
-    print(f"ok   {label} ({len(before.shapes)} shapes)", flush=True)
+    if len(failures) == failures_before:
+        print(f"ok   {label} ({len(before.shapes)} shapes)", flush=True)
+    return tampered
 
 
 def main():
@@ -305,8 +366,12 @@ def main():
     parser.add_argument("fixtures", help="tests/data/annotations")
     parser.add_argument("work", help="an empty folder for the samples")
     parser.add_argument("--field-dir", help="a folder of real annotation files with their images")
+    parser.add_argument("--tamper", action="store_true",
+                        help="checks the checks: turns every original true/false of the edited files into 1/0 "
+                             "and passes only when each sample with such a value fails")
     args = parser.parse_args()
 
+    check_same()
     check_upstream_version()
     if os.path.exists(args.work):
         shutil.rmtree(args.work)
@@ -328,6 +393,21 @@ def main():
     samples += fixture_samples(os.path.join(args.work, "fixtures"), args.fixtures)
     if args.field_dir:
         samples += field_samples(os.path.join(args.work, "field"), args.field_dir)
+
+    if args.tamper:
+        tampered_samples = 0
+        missed = []
+        for label, json_path, image_path in samples:
+            before = len(failures)
+            if check_sample(args.tool, label, json_path, image_path, tamper=True):
+                tampered_samples += 1
+                if len(failures) == before:
+                    missed.append(label)
+        print(f"{len(samples)} samples, {tampered_samples} with true/false values turned into 1/0, "
+              f"{len(missed)} of them not caught")
+        for label in missed:
+            print(f"MISSED {label}")
+        return 1 if missed or tampered_samples == 0 else 0
 
     for label, json_path, image_path in samples:
         check_sample(args.tool, label, json_path, image_path)

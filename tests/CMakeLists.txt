@@ -85,6 +85,14 @@ if(LITEANNO_BUILD_UI)
                     "${CMAKE_CURRENT_BINARY_DIR}/upstream_compat")
         set_property(TEST upstream_compat PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         liteanno_set_test_environment(upstream_compat)
+        # The checks must catch a writer that turns original true/false values into 1/0.
+        add_test(NAME upstream_compat_catches_changed_types
+            COMMAND "${LITEANNO_UPSTREAM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/python/upstream_compat.py"
+                    "$<TARGET_FILE:liteanno_compat_roundtrip>"
+                    "${LITEANNO_TEST_DATA_DIR}/annotations"
+                    "${CMAKE_CURRENT_BINARY_DIR}/upstream_compat_tamper" --tamper)
+        set_property(TEST upstream_compat_catches_changed_types PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        liteanno_set_test_environment(upstream_compat_catches_changed_types)
     endif()
 
     liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
