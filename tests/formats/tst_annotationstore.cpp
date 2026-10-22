@@ -14,6 +14,13 @@
 #include <QTest>
 #include <QTimeZone>
 
+#ifndef Q_OS_WIN
+#include <csignal>
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 
 using namespace liteanno;
 using namespace liteanno::formats;
@@ -412,6 +419,38 @@ private slots:
         QVERIFY(loaded.file.needsWrite());
         QCOMPARE(fileState(path).bytes, before.bytes);
         QCOMPARE(fileState(path).modified, before.modified);
+    }
+
+    // A disk that fills up part way through a write (here: a file size limit) must not leave
+    // the first part of the new file in place of the old one.
+    void writeCutShortIsNotCommitted()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("the file size limit is set with setrlimit on Unix only");
+#else
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("0001.json"));
+        const QByteArray old(50, 'o');
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly) && file.write(old) == old.size());
+        file.close();
+        const pid_t child = ::fork();
+        QVERIFY(child >= 0);
+        if (child == 0) {
+            ::signal(SIGXFSZ, SIG_IGN);  // the write fails instead of ending the process
+            const rlimit limit{100, 100};
+            ::setrlimit(RLIMIT_FSIZE, &limit);
+            const SaveResult result = writeFileAtomically(path, QByteArray(400, 'n'), SaveOptions());
+            ::_exit(result.status == SaveStatus::Saved ? 0 : 1);
+        }
+        int status = 0;
+        QCOMPARE(::waitpid(child, &status, 0), child);
+        QVERIFY(WIFEXITED(status));
+        QCOMPARE(WEXITSTATUS(status), 1);
+        QCOMPARE(fileState(path).bytes, old);
+        QCOMPARE(QDir(dir.path()).entryList(QDir::Files | QDir::Hidden), QStringList{QStringLiteral("0001.json")});
+#endif
     }
 };
 
