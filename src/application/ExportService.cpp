@@ -31,11 +31,25 @@ Qt::CaseSensitivity pathCase()
 #endif
 }
 
+// The path with every link resolved, also for a folder that does not exist yet: the part
+// that exists is resolved and the rest appended, so a link in a parent folder cannot lead
+// into the data folder.
 QString absoluteClean(const QString& path)
 {
-    const QFileInfo info(path);
-    const QString canonical = info.exists() ? info.canonicalFilePath() : QString();
-    return QDir::cleanPath(canonical.isEmpty() ? info.absoluteFilePath() : canonical);
+    QString existing = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    QStringList rest;
+    while (!QFileInfo::exists(existing)) {
+        const QString parent = QFileInfo(existing).absolutePath();
+        if (parent == existing)
+            break;
+        rest.prepend(QFileInfo(existing).fileName());
+        existing = parent;
+    }
+    const QString canonical = QFileInfo(existing).canonicalFilePath();
+    QString resolved = canonical.isEmpty() ? existing : canonical;
+    for (const QString& part : std::as_const(rest))
+        resolved = QDir(resolved).filePath(part);
+    return QDir::cleanPath(resolved);
 }
 
 bool within(const QString& path, const QString& folder)
@@ -350,7 +364,12 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     total = int(scope.images.size()) * 2;
 
     // First pass: what each image is, without writing anything.
-    QHash<QString, QString> digests;  // exported images: the file content they were read with
+    struct Checked {
+        QString digest;  // the annotation file as read
+        int width = 0;   // the size the coordinates are taken against
+        int height = 0;
+    };
+    QHash<QString, Checked> checked;  // exported images
     for (const ScopeImage& scoped : scope.images) {
         ExportItem item;
         item.image = scoped.path;
@@ -382,12 +401,17 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             } else {
                 item.result = ExportResult::Exported;
                 item.imageLabels = chosen;
-                digests.insert(scoped.path, image.annotation->stamp.digest);
+                // Checked again in the second pass, as the other formats.
+                const formats::ExportImage shapes = formats::exportImageOf(scoped.path, image.bytes, image.annotation->file);
+                checked.insert(scoped.path, {image.annotation->stamp.digest, shapes.width, shapes.height});
             }
         } else {
             const formats::ExportImage shapes = formats::exportImageOf(scoped.path, image.bytes, image.annotation->file);
             const QList<formats::ExportIssue> issues = formats::unconvertibleShapes(shapes, format, classIds);
-            if (!issues.isEmpty()) {
+            if (shapes.width <= 0 || shapes.height <= 0) {
+                item.result = ExportResult::Unconvertible;
+                item.reason = QStringLiteral(u"图片尺寸不可用：读不出图片的尺寸，标注文件里也没有");
+            } else if (!issues.isEmpty()) {
                 item.result = ExportResult::Unconvertible;
                 QStringList reasons;
                 for (const formats::ExportIssue& issue : issues)
@@ -396,7 +420,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             } else {
                 item.result = shapes.shapes.isEmpty() ? ExportResult::Negative : ExportResult::Exported;
                 item.clampedObjects = formats::clampedShapes(shapes, format);
-                digests.insert(scoped.path, image.annotation->stamp.digest);
+                checked.insert(scoped.path, {image.annotation->stamp.digest, shapes.width, shapes.height});
             }
         }
         report.items.append(item);
@@ -421,7 +445,10 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
 
     // Second pass: the files.
     Created created(output);
+    QFile coco;
+    QTemporaryFile cocoAnnotations;
     const auto fail = [&](const QString& error) {
+        coco.close();  // Windows cannot remove a file that is open
         created.removeAll();
         report.error = error;
         report.written = false;
@@ -429,15 +456,16 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     };
     if (!created.makeFolder(output))
         return fail(created.error());
-    QFile coco;
-    QTemporaryFile cocoAnnotations;
     std::unique_ptr<formats::CocoWriter> cocoWriter;
     const bool isCoco = format == ExportFormat::CocoDetection || format == ExportFormat::CocoSegmentation;
     if (isCoco) {
         coco.setFileName(output + QLatin1Char('/') + formats::CocoWriter::fileName(format));
-        if (!coco.open(QIODevice::WriteOnly | QIODevice::NewOnly) || !cocoAnnotations.open())
+        if (!coco.open(QIODevice::WriteOnly | QIODevice::NewOnly))
             return fail(QStringLiteral(u"无法写入 %1").arg(QDir::toNativeSeparators(coco.fileName())));
-        created.opened(coco.fileName());
+        created.opened(coco.fileName());  // removed again if anything below fails
+        if (!cocoAnnotations.open()) {
+            return fail(QStringLiteral(u"无法创建临时文件：%1").arg(cocoAnnotations.errorString()));
+        }
         const QDate today = QDate::currentDate();
         cocoWriter = std::make_unique<formats::CocoWriter>(
             format, categories,
@@ -451,10 +479,15 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         if (item.result == ExportResult::Exported || item.result == ExportResult::Negative) {
             const ScopeImage scoped{item.image, false, false};
             const ImageOnDisk image = readImageOnDisk(m_project, scoped.path, false, false, m_readImageInfo);
-            // The file must be the one checked in the first pass.
-            if (!image.annotation || image.annotation->stamp.digest != digests.value(item.image))
+            // The file must be the one checked in the first pass, and still confirmed against
+            // the image as it is now (an image replaced by one of another size is not).
+            const Checked first = checked.value(item.image);
+            if (!image.annotation || image.annotation->stamp.digest != first.digest)
                 return fail(QStringLiteral(u"导出过程中 %1 的标注文件被修改了，请重新导出。").arg(item.image));
             const formats::ExportImage shapes = formats::exportImageOf(item.image, image.bytes, image.annotation->file);
+            if (image.status != AnnotationStatus::Confirmed || shapes.width != first.width || shapes.height != first.height)
+                return fail(QStringLiteral(u"导出过程中 %1 的图片变了（%2），请重新导出。")
+                                .arg(item.image, annotationStatusText(image.status)));
             const QString stem = output + QLatin1Char('/') + stemPath(item.image);
             bool ok = true;
             QString imageTarget = output + QLatin1Char('/') + item.image;  // where a copy goes
@@ -511,6 +544,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             }
         }
         if (!step()) {
+            coco.close();
             created.removeAll();
             report.cancelled = true;
             report.error = QStringLiteral(u"已取消");

@@ -37,6 +37,12 @@ RotatedBox rotateBox(const RotatedBox& box, double theta);
 // keep the box's angle (canvas.py, bounded_move_vertex with get_adjoint_points).
 PointList moveBoxCorner(const RotatedBox& box, int index, const QPointF& position);
 
+// The box's angle as its corners show it. Turning an upright box (canvas.py) takes its top
+// side, corners 0 to 1, along the angle, so that side gives it. `box.direction` is returned
+// when it fits that side, so boxes upstream wrote keep their exact numbers; a file without
+// "direction" (read as 0) or with one that does not fit gets the angle of the corners.
+double fittingDirection(const RotatedBox& box);
+
 // Python's float modulo: the result has the sign of `divisor`.
 double pythonModulo(double value, double divisor);
 // Python's math.radians.
