@@ -11,6 +11,8 @@ add_library(liteanno_formats STATIC
     RecoveryRecord.h
     Exporters.cpp
     Exporters.h
+    Importers.cpp
+    Importers.h
     PolygonRaster.cpp
     PolygonRaster.h
     PngFile.cpp

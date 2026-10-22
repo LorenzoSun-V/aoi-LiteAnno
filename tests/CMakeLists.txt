@@ -110,6 +110,12 @@ if(LITEANNO_BUILD_UI)
                     "$<TARGET_FILE:liteanno_cli>" "${CMAKE_CURRENT_BINARY_DIR}/upstream_export")
         set_property(TEST upstream_export PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         liteanno_set_test_environment(upstream_export)
+        # Architecture 11.2: each import format against upstream's own converter.
+        add_test(NAME upstream_import
+            COMMAND "${LITEANNO_UPSTREAM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/python/import_compat.py"
+                    "$<TARGET_FILE:liteanno_cli>" "${CMAKE_CURRENT_BINARY_DIR}/upstream_import")
+        set_property(TEST upstream_import PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        liteanno_set_test_environment(upstream_import)
     endif()
 
     # Architecture 14: catalog timings; CI runs it with larger folders and prints the table.
