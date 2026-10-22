@@ -225,10 +225,22 @@ private:
         MainWindow* m_window;
     };
     int m_listHolds = 0;
-    // An export holds a reference to the project while it runs: a close asked for meanwhile
-    // cancels it and closes the window once it has ended.
-    bool m_exporting = false;
-    bool m_closeAfterExport = false;
+    // An export or a wait for saves uses the project and its saver while events run: a close
+    // asked for meanwhile cancels an export and closes the window once the last of them has
+    // ended. Closing in the middle would free what they use.
+    class Busy
+    {
+    public:
+        explicit Busy(MainWindow* window);
+        ~Busy();
+        Busy(const Busy&) = delete;
+        Busy& operator=(const Busy&) = delete;
+
+    private:
+        MainWindow* m_window;
+    };
+    int m_busy = 0;
+    bool m_closeAsked = false;
     std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
     // A recovery record of the image waits: put off by the user, or held back for a name
     // collision. The image is read-only until the record is restored or given up.
