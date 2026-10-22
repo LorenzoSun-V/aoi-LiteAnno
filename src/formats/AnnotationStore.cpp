@@ -10,6 +10,16 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace liteanno::formats {
 
 namespace {
@@ -35,6 +45,17 @@ SaveResult writeOnce(const QString& path, const QByteArray& bytes)
     if (!out.commit())
         return {SaveStatus::Failed, out.errorString()};
     return {SaveStatus::Saved, QString()};
+}
+
+// fsync, or FlushFileBuffers on Windows: the bytes are on the disk, not only in the cache.
+bool syncToDisk(int fd)
+{
+#ifdef Q_OS_WIN
+    const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    return handle != INVALID_HANDLE_VALUE && FlushFileBuffers(handle);
+#else
+    return ::fsync(fd) == 0;
+#endif
 }
 
 } // namespace
@@ -163,6 +184,9 @@ SaveResult createFileExclusively(const QString& path, const QByteArray& bytes, c
         const QString error = temporary.errorString();
         return {SaveStatus::Failed, error.isEmpty() ? QStringLiteral("the file was not written whole") : error};
     }
+    // On the disk before it gets its name (format spec 1), as QSaveFile does for the others.
+    if (!syncToDisk(temporary.handle()))
+        return {SaveStatus::Failed, QStringLiteral("the file could not be written to the disk")};
     temporary.close();
     // A temporary file is only for its owner; the project file is read by others as usual.
     temporary.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser
