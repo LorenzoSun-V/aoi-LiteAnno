@@ -490,6 +490,7 @@ bool MainWindow::exportAnnotations()
 {
     if (!m_project)
         return false;
+    const Busy busy(this);
     // What is exported is what the files hold.
     m_idleTimer.stop();
     flushSaves();
@@ -509,7 +510,6 @@ bool MainWindow::exportAnnotations()
     // The progress dialog runs events; a list a scan brings meanwhile waits.
     const ListHold hold(this);
     const auto run = [&] {
-        m_exporting = true;
         QProgressDialog progress(QStringLiteral(u"正在导出…"), QStringLiteral(u"取消"), 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(400);
@@ -519,21 +519,14 @@ bool MainWindow::exportAnnotations()
             // Until then only what keeps the window painted: no clicks or keys reach it.
             if (!progress.isVisible())
                 QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
-            return !progress.wasCanceled() && !m_closeAfterExport;
+            return !progress.wasCanceled() && !m_closeAsked;
         });
-        m_exporting = false;
         return result;
     };
-    // A close asked for during the export happens once the export has ended.
-    const auto closeIfAsked = [this] {
-        if (m_closeAfterExport)
-            QTimer::singleShot(0, this, &QWidget::close);
-    };
     application::ExportReport report = run();
-    if (m_closeAfterExport) {
-        closeIfAsked();
+    // A close asked for meanwhile happens when this returns (Busy).
+    if (m_closeAsked)
         return false;
-    }
     const QList<application::ExportItem> unconvertible = report.unconvertible();
     if (!report.written && !report.cancelled && !unconvertible.isEmpty()) {
         QStringList lines;
@@ -549,10 +542,8 @@ bool MainWindow::exportAnnotations()
             return false;
         request.skipUnconvertible = true;
         report = run();
-        if (m_closeAfterExport) {
-            closeIfAsked();
+        if (m_closeAsked)
             return false;
-        }
     }
     if (!report.written) {
         if (!report.cancelled)
@@ -614,6 +605,17 @@ void MainWindow::reloadImages()
 {
     if (m_catalog)
         setImages(m_catalog->reader().images());
+}
+
+MainWindow::Busy::Busy(MainWindow* window) : m_window(window)
+{
+    ++m_window->m_busy;
+}
+
+MainWindow::Busy::~Busy()
+{
+    if (--m_window->m_busy == 0 && m_window->m_closeAsked)
+        QTimer::singleShot(0, m_window, &QWidget::close);
 }
 
 MainWindow::ListHold::ListHold(MainWindow* window)
@@ -1420,6 +1422,7 @@ void MainWindow::saveNow()
 bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
 {
     const ListHold hold(this);
+    const Busy busy(this);
     ++m_savingWaits;
     m_saveState->setText(QStringLiteral(u"正在保存…"));
     // Results are handled after the wait, not in the middle of switching images.
@@ -1865,12 +1868,12 @@ void MainWindow::refreshBatchState()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
-    if (m_exporting) {
-        m_closeAfterExport = true;
+    if (m_busy > 0) {
+        m_closeAsked = true;
         event->ignore();
         return;
     }
-    m_closeAfterExport = false;
+    m_closeAsked = false;
     if (closeProject())
         event->accept();
     else
