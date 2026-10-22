@@ -107,6 +107,22 @@ WorksetListResult parseWorksetList(const QByteArray& bytes)
     return {list, QString()};
 }
 
+QStringList readItemsOfDamagedList(const QByteArray& bytes)
+{
+    QStringList items;
+    const JsonParseResult parsed = parseJson(bytes);
+    if (!parsed.ok || !parsed.value.is_object())
+        return items;
+    const auto itemsIt = parsed.value.find("items");
+    if (itemsIt == parsed.value.end() || !itemsIt->is_array())
+        return items;
+    for (const Json& item : *itemsIt) {
+        if (item.is_string())
+            items.append(QString::fromStdString(item.get_ref<const Json::string_t&>()));
+    }
+    return items;
+}
+
 QByteArray worksetProgressToBytes(const WorksetProgress& progress)
 {
     Json json = Json::object();

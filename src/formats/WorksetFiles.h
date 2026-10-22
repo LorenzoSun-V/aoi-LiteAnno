@@ -37,6 +37,10 @@ struct WorksetListResult {
 // match the items rejects it; the caller compares projectId.
 WorksetListResult parseWorksetList(const QByteArray& bytes);
 
+// The paths "items" lists in a list that parseWorksetList() rejects, as far as they can be
+// read. A damaged list is not repaired, but its images are not given out again either.
+QStringList readItemsOfDamagedList(const QByteArray& bytes);
+
 struct WorksetEvent {
     QString type;  // "started", "completed"
     QString at;    // ISO 8601 with time zone
