@@ -356,7 +356,11 @@ void MainWindow::buildImageLabelPanel()
 
 void MainWindow::chooseProject()
 {
-    const QString root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开项目（选择数据根目录）"));
+    QString root;
+    {
+        const Busy busy(this);  // the dialog runs events; a close waits until it is answered
+        root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开项目（选择数据根目录）"));
+    }
     if (!root.isEmpty())
         openProject(root);
 }
@@ -428,6 +432,7 @@ bool MainWindow::openProject(const QString& root)
         m_catalog->start();
         if (m_options.waitForScan) {
             m_catalog->waitForScan(-1);
+            const Busy busy(this);
             QCoreApplication::processEvents();
         }
     }
@@ -618,10 +623,12 @@ MainWindow::ListHold::~ListHold()
 
 void MainWindow::setPrompts(Prompts prompts)
 {
-    // Each question runs an event loop; the list waits until it is answered.
+    // Each question runs an event loop; the list waits until it is answered, and so does a
+    // close asked for meanwhile (Busy): the code that asked goes on with the project after it.
     auto held = [this](auto ask) {
         return [this, ask](auto&&... args) {
             ListHold hold(this);
+            const Busy busy(this);
             return ask(std::forward<decltype(args)>(args)...);
         };
     };
