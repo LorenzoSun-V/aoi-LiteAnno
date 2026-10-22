@@ -1,14 +1,22 @@
 #include "ui/Prompts.h"
 
+#include "ui/Texts.h"
+
+#include <QCheckBox>
+#include <QComboBox>
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFileDialog>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QVBoxLayout>
 
 namespace liteanno::ui {
@@ -24,6 +32,63 @@ QPlainTextEdit* jsonView(const QString& text)
     font.setStyleHint(QFont::Monospace);
     view->setFont(font);
     return view;
+}
+
+std::optional<ExportChoice> askExportOptions(QWidget* parent, int batchNumber)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral(u"导出"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    auto* format = new QComboBox;
+    for (formats::ExportFormat f : formats::exportFormats())
+        format->addItem(exportFormatText(f), int(f));
+    form->addRow(QStringLiteral(u"格式："), format);
+    auto* batch = new QRadioButton(batchNumber > 0 ? QStringLiteral(u"当前批次（第 %1 批）").arg(batchNumber)
+                                                   : QStringLiteral(u"当前批次"));
+    auto* project = new QRadioButton(QStringLiteral(u"整个项目"));
+    batch->setEnabled(batchNumber > 0);
+    (batchNumber > 0 ? batch : project)->setChecked(true);
+    auto* scope = new QVBoxLayout;
+    scope->addWidget(batch);
+    scope->addWidget(project);
+    form->addRow(QStringLiteral(u"范围："), scope);
+    auto* folder = new QLineEdit;
+    auto* browse = new QPushButton(QStringLiteral(u"选择…"));
+    QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, folder] {
+        const QString chosen = QFileDialog::getExistingDirectory(&dialog, QStringLiteral(u"导出到（选择空文件夹）"));
+        if (!chosen.isEmpty())
+            folder->setText(chosen);
+    });
+    auto* folderRow = new QHBoxLayout;
+    folderRow->addWidget(folder, 1);
+    folderRow->addWidget(browse);
+    form->addRow(QStringLiteral(u"导出到："), folderRow);
+    auto* copy = new QCheckBox(QStringLiteral(u"同时复制图片"));
+    form->addRow(QString(), copy);
+    layout->addLayout(form);
+    auto* note = new QLabel(QStringLiteral(u"只导出已确认的图片；导出文件夹必须是空文件夹或新文件夹，并且不能在数据文件夹里。"));
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral(u"导出"));
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, folder] {
+        if (folder->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral(u"导出"), QStringLiteral(u"请选择导出文件夹。"));
+            return;
+        }
+        dialog.accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return std::nullopt;
+    ExportChoice choice;
+    choice.format = formats::ExportFormat(format->currentData().toInt());
+    choice.wholeProject = project->isChecked();
+    choice.outputDir = folder->text().trimmed();
+    choice.copyImages = copy->isChecked();
+    return choice;
 }
 
 RecoveryChoice askRecovery(QWidget* parent, const application::RecoveryCandidate& candidate, const QByteArray& current)
@@ -149,6 +214,15 @@ Prompts Prompts::dialogs(QWidget* parent)
         box.setDefaultButton(stay);
         box.exec();
         return box.clickedButton() != stay;
+    };
+    prompts.exportOptions = [parent](int batchNumber) { return askExportOptions(parent, batchNumber); };
+    prompts.skipUnconvertible = [parent](const QString& text) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral(u"有无法转换的对象"), text, QMessageBox::NoButton, parent);
+        QPushButton* stop = box.addButton(QStringLiteral(u"不导出"), QMessageBox::RejectRole);
+        box.addButton(QStringLiteral(u"跳过这些图片继续导出"), QMessageBox::AcceptRole);
+        box.setDefaultButton(stop);
+        box.exec();
+        return box.clickedButton() != stop;
     };
     prompts.chooseBatch = [parent](const QStringList& batches, int current) -> std::optional<int> {
         bool ok = false;

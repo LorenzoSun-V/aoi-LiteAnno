@@ -68,6 +68,8 @@ public:
     void resolveRecoveryRecords();
     // "重新扫描": lists the folder again and checks what changed (architecture 6.1).
     void rescan();
+    // "导出…" (architecture 11): writes the edits first, then exports the files.
+    bool exportAnnotations();
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 

@@ -114,6 +114,10 @@ struct Answers {
     bool discardUnsaved = false;
     int batch = 0;  // the batch chosen from the list offered
     QStringList batchesOffered;
+    std::optional<ExportChoice> exportChoice;
+    bool skipUnconvertible = false;
+    int exportBatchOffered = -1;
+    QStringList unconvertibleTexts;
     // Run while the recovery question or a message is shown, like the event loop behind a
     // dialog.
     std::function<void()> duringRecovery;
@@ -158,6 +162,14 @@ struct Answers {
             if (batch < 0)
                 return std::nullopt;
             return batch;
+        };
+        p.exportOptions = [this](int batchNumber) {
+            exportBatchOffered = batchNumber;
+            return exportChoice;
+        };
+        p.skipUnconvertible = [this](const QString& text) {
+            unconvertibleTexts.append(text);
+            return skipUnconvertible;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -1653,6 +1665,62 @@ private slots:
     }
 
     // A damaged list is not opened or repaired, and its images are not given out again.
+    void exportFromTheWindow()
+    {
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.nextImage());
+        QVERIFY(w.window.confirmCurrent());  // no objects: a negative sample
+        // The edits are still unwritten; exporting writes them first.
+
+        QTemporaryDir out;
+        w.answers.exportChoice.reset();
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(w.answers.exportBatchOffered, 1);
+        QVERIFY(w.answers.messages.isEmpty());
+
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        QVERIFY(w.window.exportAnnotations());
+        QCOMPARE(w.answers.messages.size(), 1);
+        QVERIFY2(w.answers.messages[0].startsWith(QStringLiteral(u"导出完成")), qPrintable(w.answers.messages[0]));
+        QVERIFY2(w.answers.messages[0].contains(QStringLiteral(u"已导出 2 张图片（其中无目标 1 张）")),
+                 qPrintable(w.answers.messages[0]));
+        QVERIFY2(w.answers.messages[0].contains(QStringLiteral(u"未完成 1 张")), qPrintable(w.answers.messages[0]));
+        QCOMPARE(readFile(out.filePath(QStringLiteral("det/line1/0001.txt"))).count('\n'), 1);
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("det/line1/0002.txt"))));
+        QVERIFY(!QFile::exists(out.filePath(QStringLiteral("det/line1/0003.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("det/liteanno-export.json"))));
+
+        // A rectangle cannot go into a segmentation format: the export stops and asks.
+        choice.format = formats::ExportFormat::YoloSegmentation;
+        choice.wholeProject = false;
+        choice.outputDir = out.filePath(QStringLiteral("seg"));
+        w.answers.exportChoice = choice;
+        w.answers.skipUnconvertible = false;
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
+        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("line1/0001.png")),
+                 qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY(QDir(out.filePath(QStringLiteral("seg"))).isEmpty());
+        QCOMPARE(w.answers.messages.size(), 1);
+
+        w.answers.skipUnconvertible = true;
+        QVERIFY(w.window.exportAnnotations());
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 2);
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"无法转换 1 张")), qPrintable(w.answers.messages.last()));
+        QVERIFY(!QFile::exists(out.filePath(QStringLiteral("seg/line1/0001.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/line1/0002.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
+    }
+
     void damagedListIsNotUsed()
     {
         Project project("\"batchSize\": 2", 3);

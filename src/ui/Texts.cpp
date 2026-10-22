@@ -74,4 +74,23 @@ QString readOnlyText(formats::ReadOnlyReason reason)
     return QString();
 }
 
+QString exportFormatText(formats::ExportFormat format)
+{
+    switch (format) {
+    case formats::ExportFormat::YoloDetection:
+        return QStringLiteral(u"YOLO 检测（矩形）");
+    case formats::ExportFormat::YoloSegmentation:
+        return QStringLiteral(u"YOLO 分割（多边形）");
+    case formats::ExportFormat::VocRectangle:
+        return QStringLiteral(u"VOC（矩形）");
+    case formats::ExportFormat::VocPolygon:
+        return QStringLiteral(u"VOC（矩形和多边形）");
+    case formats::ExportFormat::CocoDetection:
+        return QStringLiteral(u"COCO 检测（矩形）");
+    case formats::ExportFormat::CocoSegmentation:
+        return QStringLiteral(u"COCO 实例分割（多边形）");
+    }
+    return QString();
+}
+
 } // namespace liteanno::ui
