@@ -23,6 +23,7 @@
 #include <QSemaphore>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
@@ -197,10 +198,10 @@ struct Project {
         }
     }
 
-    void writeProjectFile(const QByteArray& extra)
+    void writeProjectFile(const QByteArray& extra, const QByteArray& shapeTypes = R"("rectangle", "polygon")")
     {
         QByteArray text = QByteArray("{\"formatVersion\": \"1.0\", \"projectId\": \"") + kProjectId
-                          + "\", \"shapeTypes\": [\"rectangle\", \"polygon\"], "
+                          + "\", \"shapeTypes\": [" + shapeTypes + "], "
                             "\"classes\": [{\"id\": 0, \"name\": \"scratch\"}, {\"id\": 1, \"name\": \"dent\"}]";
         if (!extra.isEmpty())
             text += ", " + extra;
@@ -838,11 +839,38 @@ private slots:
         QVERIFY(canvas->labelsVisible());
     }
 
+    // Review of PR #9, item 2: choosing a hidden shape in the list shows and selects it; the list
+    // and the canvas agree, so Delete removes that shape and not the one selected before.
+    void choosingAHiddenShapeInTheList()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.drawRectangle(QPointF(100, 20), QPointF(150, 70));
+        const quint64 second = w.document().shapes()[1].id;
+        canvas->setSelectedShape(1);
+        QTest::keyClick(canvas, Qt::Key_S);
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("shapeList"));
+        list->setCurrentRow(0);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        list->setCurrentRow(1);
+        QVERIFY(!canvas->isHidden(1));
+        QCOMPARE(canvas->selectedShape(), qsizetype(1));
+        QCOMPARE(list->currentRow(), 1);
+        QTest::keyClick(canvas, Qt::Key_Delete);
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.document().shapes()[0].id != second);
+    }
+
     // O draws a rotated box upright; Z/V turn it by 1°, X/C by 0.1°, as upstream; dragging a
     // corner keeps the angle. The file gets upstream's numbers.
     void rotatedBoxes()
     {
         Project project;
+        project.writeProjectFile(QByteArray(), R"("rectangle", "polygon", "rotation")");
         Window w(project.options());
         QVERIFY(w.window.openProject(project.data.path()));
         Canvas* canvas = w.canvas();
@@ -892,10 +920,71 @@ private slots:
         QCOMPARE(shape[QStringLiteral("direction")].toDouble(), moved.direction);
     }
 
+    // Review of PR #9, item 3: a rotated box whose file has no "direction" (or one that does
+    // not fit its corners) keeps its angle when a corner is dragged; the angle comes from the
+    // corners and is written to the file.
+    void rotatedBoxWithoutDirection()
+    {
+        Project project;
+        project.writeProjectFile(QByteArray(), R"("rectangle", "polygon", "rotation")");
+        writeFile(project.json(1),
+                  R"({"version": "4.2.0", "flags": {}, "shapes": [{"label": "scratch", "points": [[50, 20], [90, 60], [70, 80], [30, 40]], )"
+                  R"("group_id": null, "description": "", "difficult": false, "shape_type": "rotation", "flags": {}}], )"
+                  R"("imagePath": "0001.png", "imageData": null, "imageHeight": 100, "imageWidth": 200})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        const Shape original = w.document().shapes()[0];
+        QCOMPARE(original.type, ShapeType::Rotation);
+        canvas->setSelectedShape(0);
+        drag(canvas, QPointF(50, 20), QPointF(45, 15));
+        const Shape moved = w.document().shapes()[0];
+        const double quarter = 3.141592653589793 / 4;
+        QVERIFY(qAbs(moved.direction - quarter) < 1e-12);
+        QVERIFY(exactlyEqual(moved.points, moveBoxCorner({original.points, moved.direction}, 0, moved.points[0])));
+        // Still a box at 45°: side 0-1 runs along the angle, side 1-2 across it.
+        const QPointF side = moved.points[1] - moved.points[0];
+        const QPointF across = moved.points[2] - moved.points[1];
+        QVERIFY(qAbs(side.y() - side.x()) < 1e-9);
+        QVERIFY(qAbs(across.y() + across.x()) < 1e-9);
+        QVERIFY(qAbs(side.x()) > 1);
+
+        w.window.saveNow();
+        w.window.flushSaves();
+        const QJsonObject shape = readJson(project.json(1))[QStringLiteral("shapes")].toArray()[0].toObject();
+        QVERIFY(qAbs(shape[QStringLiteral("direction")].toDouble() - quarter) < 1e-12);
+    }
+
+    // Review of PR #9, item 14: the rotated box tool is there only when the project has rotated
+    // boxes among its shape types, as the other tools.
+    void rotationToolFollowsTheProject()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        auto* action = w.window.findChild<QAction*>(QStringLiteral("create_rotation"));
+        QVERIFY(action);
+        QVERIFY(!action->isEnabled());
+        QTest::keyClick(canvas, Qt::Key_O);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        // The same for the tools of PR #10.
+        for (const char* name : {"create_point", "create_line", "create_linestrip", "create_circle"})
+            QVERIFY2(!w.window.findChild<QAction*>(QLatin1String(name))->isEnabled(), name);
+        for (const Qt::Key key : {Qt::Key_P, Qt::Key_L, Qt::Key_S, Qt::Key_C}) {
+            QTest::keyClick(canvas, key, Qt::ShiftModifier);
+            QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        }
+    }
+
     // Points, lines, line strips and circles, with upstream's keys.
     void otherShapes()
     {
         Project project;
+        project.writeProjectFile(QByteArray(), R"("point", "line", "linestrip", "circle")");
         Window w(project.options());
         QVERIFY(w.window.openProject(project.data.path()));
         Canvas* canvas = w.canvas();
@@ -1808,6 +1897,92 @@ private slots:
         QCOMPARE(events[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("completed"));
     }
 
+    // Review of PR #7: images confirmed outside the window count as soon as the background
+    // check has read them, and the batch is recorded as complete then.
+    void batchStateFollowsTheBackgroundCheck()
+    {
+        Project project("\"batchSize\": 3", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 1 / 3 张"));
+        for (int i : {2, 3}) {
+            writeFile(project.json(i), QStringLiteral(R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], )"
+                                                      R"("imagePath": "%1.png", "imageData": null, "imageWidth": 200, "imageHeight": 100})")
+                                           .arg(i, 4, 10, QLatin1Char('0'))
+                                           .toUtf8());
+        }
+        // The listing comes first and the check of the changed files after it.
+        QSemaphore listed, checkMayStart;
+        const QMetaObject::Connection connection = QObject::connect(
+            w.window.catalog(), &application::ProjectCatalog::scanFinished, w.window.catalog(),
+            [&](bool) {
+                listed.release();
+                checkMayStart.tryAcquire(1, 20000);
+            },
+            Qt::DirectConnection);
+        w.window.rescan();
+        QVERIFY(listed.tryAcquire(1, 10000));
+        QCoreApplication::processEvents();
+        QObject::disconnect(connection);
+        auto* state = w.window.findChild<QLabel*>(QStringLiteral("batchState"));
+        QCOMPARE(state->text(), QStringLiteral(u"第 1 批：已完成 1 / 3 张"));
+        checkMayStart.release();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QTRY_COMPARE(state->text(), QStringLiteral(u"第 1 批：已完成 3 / 3 张（本批已完成）"));
+        const QJsonArray events =
+            readJson(project.data.filePath(QStringLiteral("liteanno/worksets/b000001.progress.json")))
+                .value(QStringLiteral("events"))
+                .toArray();
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("completed"));
+    }
+
+    // Review of PR #7: an image saved after the window moved on to another batch counts in
+    // "选择批次…".
+    void savesOfOtherBatchesCount()
+    {
+        Project project("\"batchSize\": 1", 2);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.startNextBatch());  // the save of the first image may still run
+        w.window.flushSaves();
+        w.answers.batch = -1;
+        QVERIFY(!w.window.chooseBatch());
+        QCOMPARE(w.answers.batchesOffered.size(), 2);
+        QVERIFY2(w.answers.batchesOffered[0].contains(QStringLiteral(u"已完成 1 / 1 张")),
+                 qPrintable(w.answers.batchesOffered[0]));
+    }
+
+    // Review of PR #7: a deleted image is not done in "选择批次…" either.
+    void missingImagesAreNotDoneInTheBatchChoice()
+    {
+        Project project("\"batchSize\": 1", 2);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 1 / 1 张（本批已完成）"));
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 0 / 1 张"));
+        w.answers.batch = -1;
+        QVERIFY(!w.window.chooseBatch());
+        QVERIFY2(w.answers.batchesOffered.value(0).contains(QStringLiteral(u"已完成 0 / 1 张")),
+                 qPrintable(w.answers.batchesOffered.value(0)));
+    }
+
     // A batch keeps its images: one deleted later is shown as missing and is not done; images
     // with a name collision are not given out (format spec 7.1).
     void batchMembersStayFixed()
@@ -1893,6 +2068,38 @@ private slots:
         QVERIFY(!QFile::exists(out.filePath(QStringLiteral("seg/line1/0001.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/line1/0002.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
+    }
+
+    void closingDuringAnExportWaitsForIt()
+    {
+        // The review's steps: export, and close the window before the progress dialog shows.
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());  // the export still uses the project: it is not closed now
+            QVERIFY(w.window.hasProject());
+        });
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QVERIFY(w.answers.messages.isEmpty());  // cancelled: no report
+        QVERIFY(QDir(out.filePath(QStringLiteral("det"))).isEmpty());
+        // The close asked for happens once the export has ended.
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(!w.window.isVisible());
     }
 
     void damagedListIsNotUsed()

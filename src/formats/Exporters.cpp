@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 
 namespace liteanno::formats {
 
@@ -109,6 +110,31 @@ bool outsideImage(const ExportShape& shape, const ExportImage& image)
     return std::any_of(shape.points.cbegin(), shape.points.cend(), [&image](const Point& p) {
         return p[0].value < 0 || p[0].value > image.width || p[1].value < 0 || p[1].value > image.height;
     });
+}
+
+// The corners of a rectangle with corners 0 and 2 opposite, as the converters use them. A
+// rectangle is its bounding box (format spec 4.2): when the four points are in another order,
+// they are put in upstream's order first; otherwise they are used as they are, as upstream does.
+Points rectangleCorners(const Points& points)
+{
+    if (points.size() == 2)
+        return fromDiagonal(points);
+    if (points.size() != 4)
+        return points;
+    PyNumber xmin = points[0][0], ymin = points[0][1], xmax = points[0][0], ymax = points[0][1];
+    for (const Point& p : points) {
+        xmin = pyMin(xmin, p[0]);
+        ymin = pyMin(ymin, p[1]);
+        xmax = pyMax(xmax, p[0]);
+        ymax = pyMax(ymax, p[1]);
+    }
+    const auto spans = [](double a, double b, double low, double high) {
+        return (a == low && b == high) || (a == high && b == low);
+    };
+    if (spans(points[0][0].value, points[2][0].value, xmin.value, xmax.value)
+        && spans(points[0][1].value, points[2][1].value, ymin.value, ymax.value))
+        return points;
+    return {{xmin, ymin}, {xmax, ymin}, {xmax, ymax}, {xmin, ymax}};
 }
 
 bool takesShape(ExportFormat format, const QString& type)
@@ -296,9 +322,13 @@ ExportImage exportImageOf(const QString& path, const QByteArray& bytes, const An
     if (!parsed.ok || !parsed.value.is_object())
         return image;
     const Json& json = parsed.value;
-    if (const auto it = json.find("imageWidth"); it != json.end() && it->is_number_integer())
+    // Format spec 13.3: a size that is not a positive integer reads as missing; the image's own
+    // size is used then.
+    if (const auto it = json.find("imageWidth"); it != json.end() && it->is_number_integer() && it->get<qint64>() > 0
+                                                  && it->get<qint64>() <= std::numeric_limits<int>::max())
         image.width = int(it->get<qint64>());
-    if (const auto it = json.find("imageHeight"); it != json.end() && it->is_number_integer())
+    if (const auto it = json.find("imageHeight"); it != json.end() && it->is_number_integer() && it->get<qint64>() > 0
+                                                   && it->get<qint64>() <= std::numeric_limits<int>::max())
         image.height = int(it->get<qint64>());
     const auto shapesIt = json.find("shapes");
     if (shapesIt == json.end() || !shapesIt->is_array())
@@ -406,8 +436,7 @@ QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash
         }
         Points points = clamped(shape.points, image.width, image.height);
         if (format == ExportFormat::YoloDetection) {
-            if (points.size() == 2)
-                points = fromDiagonal(points);
+            points = rectangleCorners(points);
             const double xCenter = (points[0][0].value + points[2][0].value) / (2 * width);
             const double yCenter = (points[0][1].value + points[2][1].value) / (2 * height);
             const double w = std::abs(points[2][0].value - points[0][0].value) / width;
@@ -640,12 +669,12 @@ bool CocoWriter::begin(QIODevice* out, QIODevice* annotations)
     info["date_created"] = d->info.dateCreated.toStdString();
     Json licenses = Json::array();
     licenses.push_back(Json{{"id", 1}, {"url", ""}, {"name", ""}});
+    // Upstream numbers its classes from 1 and adds "_background_" as 0 for segmentation; the
+    // project's ids are used here as they are, so 0 can be a class and there is no background.
     Json categories = Json::array();
-    if (segmentation)
-        categories.push_back(Json{{"id", 0}, {"name", "_background_"}, {"supercategory", nullptr}});
     for (const auto& [id, name] : std::as_const(d->categories)) {
         Json category = Json::object();
-        category["id"] = id + 1;
+        category["id"] = id;  // classes[].id as they are (architecture 11), not upstream's index + 1
         category["name"] = name.toStdString();
         category["supercategory"] = segmentation ? Json(nullptr) : Json("");
         categories.push_back(std::move(category));
@@ -672,9 +701,7 @@ bool CocoWriter::add(const ExportImage& image, const QString& fileName, const QH
         for (const ExportShape& shape : image.shapes) {
             if (shape.type != QLatin1String("rectangle") || !classIds.contains(shape.label))
                 continue;
-            Points points = clamped(shape.points, image.width, image.height);
-            if (points.size() == 2)
-                points = fromDiagonal(points);
+            const Points points = rectangleCorners(clamped(shape.points, image.width, image.height));
             const PyNumber xMin = pyMin(points[0][0], points[2][0]);
             const PyNumber yMin = pyMin(points[0][1], points[2][1]);
             const PyNumber xMax = pyMax(points[0][0], points[2][0]);
@@ -684,7 +711,7 @@ bool CocoWriter::add(const ExportImage& image, const QString& fileName, const QH
             Json annotation = Json::object();
             annotation["id"] = d->annotationId;
             annotation["image_id"] = d->imageId;
-            annotation["category_id"] = classIds.value(shape.label) + 1;
+            annotation["category_id"] = classIds.value(shape.label);
             annotation["bbox"] = Json::array({pyJson(xMin), pyJson(yMin), pyJson(width), pyJson(height)});
             annotation["area"] = pyJson(pyMul(width, height));
             annotation["iscrowd"] = 0;
@@ -747,7 +774,7 @@ bool CocoWriter::add(const ExportImage& image, const QString& fileName, const QH
             Json annotation = Json::object();
             annotation["id"] = d->annotationId;
             annotation["image_id"] = d->imageId;
-            annotation["category_id"] = classIds.value(instance.label) + 1;
+            annotation["category_id"] = classIds.value(instance.label);
             annotation["segmentation"] = std::move(segmentation);
             annotation["area"] = rasterizedPolygonArea(polygons);
             annotation["bbox"] = Json::array({x0, y0, std::floor(xMax) - x0 + 1, std::floor(yMax) - y0 + 1});
