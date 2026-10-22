@@ -23,6 +23,7 @@
 #include <QSemaphore>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
@@ -1756,6 +1757,92 @@ private slots:
         QCOMPARE(events[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("completed"));
     }
 
+    // Review of PR #7: images confirmed outside the window count as soon as the background
+    // check has read them, and the batch is recorded as complete then.
+    void batchStateFollowsTheBackgroundCheck()
+    {
+        Project project("\"batchSize\": 3", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 1 / 3 张"));
+        for (int i : {2, 3}) {
+            writeFile(project.json(i), QStringLiteral(R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], )"
+                                                      R"("imagePath": "%1.png", "imageData": null, "imageWidth": 200, "imageHeight": 100})")
+                                           .arg(i, 4, 10, QLatin1Char('0'))
+                                           .toUtf8());
+        }
+        // The listing comes first and the check of the changed files after it.
+        QSemaphore listed, checkMayStart;
+        const QMetaObject::Connection connection = QObject::connect(
+            w.window.catalog(), &application::ProjectCatalog::scanFinished, w.window.catalog(),
+            [&](bool) {
+                listed.release();
+                checkMayStart.tryAcquire(1, 20000);
+            },
+            Qt::DirectConnection);
+        w.window.rescan();
+        QVERIFY(listed.tryAcquire(1, 10000));
+        QCoreApplication::processEvents();
+        QObject::disconnect(connection);
+        auto* state = w.window.findChild<QLabel*>(QStringLiteral("batchState"));
+        QCOMPARE(state->text(), QStringLiteral(u"第 1 批：已完成 1 / 3 张"));
+        checkMayStart.release();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QTRY_COMPARE(state->text(), QStringLiteral(u"第 1 批：已完成 3 / 3 张（本批已完成）"));
+        const QJsonArray events =
+            readJson(project.data.filePath(QStringLiteral("liteanno/worksets/b000001.progress.json")))
+                .value(QStringLiteral("events"))
+                .toArray();
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("completed"));
+    }
+
+    // Review of PR #7: an image saved after the window moved on to another batch counts in
+    // "选择批次…".
+    void savesOfOtherBatchesCount()
+    {
+        Project project("\"batchSize\": 1", 2);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.startNextBatch());  // the save of the first image may still run
+        w.window.flushSaves();
+        w.answers.batch = -1;
+        QVERIFY(!w.window.chooseBatch());
+        QCOMPARE(w.answers.batchesOffered.size(), 2);
+        QVERIFY2(w.answers.batchesOffered[0].contains(QStringLiteral(u"已完成 1 / 1 张")),
+                 qPrintable(w.answers.batchesOffered[0]));
+    }
+
+    // Review of PR #7: a deleted image is not done in "选择批次…" either.
+    void missingImagesAreNotDoneInTheBatchChoice()
+    {
+        Project project("\"batchSize\": 1", 2);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 1 / 1 张（本批已完成）"));
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 0 / 1 张"));
+        w.answers.batch = -1;
+        QVERIFY(!w.window.chooseBatch());
+        QVERIFY2(w.answers.batchesOffered.value(0).contains(QStringLiteral(u"已完成 0 / 1 张")),
+                 qPrintable(w.answers.batchesOffered.value(0)));
+    }
+
     // A batch keeps its images: one deleted later is shown as missing and is not done; images
     // with a name collision are not given out (format spec 7.1).
     void batchMembersStayFixed()
@@ -1841,6 +1928,38 @@ private slots:
         QVERIFY(!QFile::exists(out.filePath(QStringLiteral("seg/line1/0001.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/line1/0002.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
+    }
+
+    void closingDuringAnExportWaitsForIt()
+    {
+        // The review's steps: export, and close the window before the progress dialog shows.
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());  // the export still uses the project: it is not closed now
+            QVERIFY(w.window.hasProject());
+        });
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QVERIFY(w.answers.messages.isEmpty());  // cancelled: no report
+        QVERIFY(QDir(out.filePath(QStringLiteral("det"))).isEmpty());
+        // The close asked for happens once the export has ended.
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(!w.window.isVisible());
     }
 
     void damagedListIsNotUsed()

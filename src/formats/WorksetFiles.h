@@ -54,6 +54,9 @@ struct WorksetProgress {
     QString listDigest;  // the list's itemsDigest
     QString lastItem;    // empty when none
     QList<WorksetEvent> events;
+    // The file as read. Writing keeps what this program does not know in it: other fields of
+    // the file and of the events read (format spec section 1).
+    QByteArray original;
 };
 
 QByteArray worksetProgressToBytes(const WorksetProgress& progress);

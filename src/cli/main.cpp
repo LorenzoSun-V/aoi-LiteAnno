@@ -10,6 +10,7 @@
 #include "core/FormatVersion.h"
 #include "core/Version.h"
 #include "dataset/DirectoryScanner.h"
+#include "formats/AnnotationStore.h"
 #include "formats/ProjectFile.h"
 #include "imaging/ImageLoader.h"
 
@@ -127,9 +128,17 @@ int init(const QCommandLineParser& parser, const Common& common)
         return Usage;
     }
     QDir().mkpath(QFileInfo(file).absolutePath());
-    QFile out(file);
-    if (!out.open(QIODevice::WriteOnly | QIODevice::NewOnly) || out.write(bytes) != bytes.size() || !out.flush()) {
-        printError(QStringLiteral(u"无法写入 %1：%2").arg(QDir::toNativeSeparators(file), out.errorString()));
+    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up.
+    formats::SaveOptions options;
+    options.mayWrite = [&file] {
+        formats::SaveResult result;
+        result.status = QFileInfo::exists(file) ? formats::SaveStatus::ExternallyModified : formats::SaveStatus::Saved;
+        result.error = QStringLiteral(u"文件已存在");
+        return result;
+    };
+    const formats::SaveResult written = formats::writeFileAtomically(file, bytes, options);
+    if (written.status != formats::SaveStatus::Saved) {
+        printError(QStringLiteral(u"无法写入 %1：%2").arg(QDir::toNativeSeparators(file), written.error));
         return Failed;
     }
     print(QStringLiteral(u"已创建 %1").arg(QDir::toNativeSeparators(file)));

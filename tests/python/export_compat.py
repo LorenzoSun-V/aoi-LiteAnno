@@ -194,6 +194,13 @@ def check_coco(cli, root, work, images, fmt, mode, file_name):
         sys.exit(f"{fmt}: not written as json.dump(indent=4)")
     for key in ("info", "licenses"):
         theirs[key] = ours[key]
+    # The one deliberate difference: category ids are the project's classes[].id (0, 1, 2 here),
+    # where upstream numbers from 1 and adds "_background_" as 0 for segmentation.
+    theirs["categories"] = [dict(c, id=c["id"] - 1) for c in theirs["categories"] if c["name"] != "_background_"]
+    for annotation in theirs["annotations"]:
+        annotation["category_id"] -= 1
+    if [c["id"] for c in ours["categories"]] != list(range(len(CLASSES))):
+        sys.exit(f"{fmt}: category ids {[c['id'] for c in ours['categories']]}")
     a = json.dumps(ours, indent=4, ensure_ascii=False)
     b = json.dumps(theirs, indent=4, ensure_ascii=False)
     if a != b:

@@ -20,6 +20,11 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#ifndef Q_OS_WIN
+#include <csignal>
+#include <sys/resource.h>
+#endif
+
 using namespace liteanno;
 using namespace liteanno::application;
 
@@ -249,6 +254,206 @@ private slots:
         request.batches = {QStringLiteral("b000009")};
         request.outputDir = project.output("other");
         QVERIFY(service.run(request).error.contains(QStringLiteral("b000009")));
+    }
+
+    // Review of PR #8, item 4: a rectangle is its bounding box whatever the order of its four
+    // points (format spec 4.2), in YOLO and COCO too.
+    void rectanglePointsInAnyOrder()
+    {
+        Project project;
+        project.image(QStringLiteral("0001.png"),
+                      R"({"label": "scratch", "points": [[10, 10], [80, 60], [80, 10], [10, 60]], "group_id": null, )"
+                      R"("description": "", "difficult": false, "shape_type": "rectangle", "flags": {}})",
+                      true);
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.outputDir = project.output("yolo");
+        ExportReport report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/0001.txt")),
+                 QByteArray("0 0.225000 0.350000 0.350000 0.500000\n"));
+        request.format = formats::ExportFormat::CocoDetection;
+        request.outputDir = project.output("coco");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QJsonObject annotation = QJsonDocument::fromJson(readFile(project.output("coco") + QStringLiteral("/coco_detection.json")))
+                                           .object()
+                                           .value(QStringLiteral("annotations"))
+                                           .toArray()
+                                           .first()
+                                           .toObject();
+        QCOMPARE(annotation.value(QStringLiteral("bbox")).toArray(), (QJsonArray{10, 10, 70, 50}));
+        QCOMPARE(annotation.value(QStringLiteral("area")).toInt(), 3500);
+    }
+
+    // Review of PR #8, item 5: an "imageWidth" that is not a positive integer reads as
+    // missing (format spec 13.3); the image's size is used.
+    void invalidSizeInTheFileIsNotUsed()
+    {
+        Project project;
+        project.image(QStringLiteral("0001.png"), rectangle("scratch", 10, 10, 60, 50), true);
+        QByteArray json = readFile(project.data.filePath(QStringLiteral("0001.json")));
+        json.replace("\"imageWidth\": 200", "\"imageWidth\": 0");
+        writeFile(project.data.filePath(QStringLiteral("0001.json")), json);
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.outputDir = project.output("yolo");
+        ExportReport report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/0001.txt")),
+                 QByteArray("0 0.175000 0.300000 0.250000 0.400000\n"));
+        request.format = formats::ExportFormat::CocoDetection;
+        request.outputDir = project.output("coco");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QJsonObject image = QJsonDocument::fromJson(readFile(project.output("coco") + QStringLiteral("/coco_detection.json")))
+                                      .object()
+                                      .value(QStringLiteral("images"))
+                                      .toArray()
+                                      .first()
+                                      .toObject();
+        QCOMPARE(image.value(QStringLiteral("width")).toInt(), 200);
+    }
+
+    // Review of PR #8, item 6: an image replaced by one of another size between the check and
+    // the writing is not exported with the old coordinates.
+    void imageChangedDuringTheExport()
+    {
+        Project project;
+        project.image(QStringLiteral("0001.png"), rectangle("scratch", 10, 10, 60, 50), true);
+        project.image(QStringLiteral("0002.png"), rectangle("dent", 10, 10, 60, 50), true);
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.outputDir = project.output();
+        request.copyImages = true;
+        bool replaced = false;
+        const ExportReport report = service.run(request, [&](int done, int total) {
+            if (total > 0 && done == total / 2 && !replaced) {  // the check is over
+                QImage bigger(400, 200, QImage::Format_RGB32);
+                bigger.fill(Qt::red);
+                replaced = bigger.save(project.data.filePath(QStringLiteral("0002.png")));
+            }
+            return true;
+        });
+        QVERIFY(replaced);
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral("0002.png")), qPrintable(report.error));
+        QVERIFY(!QFileInfo::exists(project.output()));
+    }
+
+    // Review of PR #8, item 7: COCO takes the class ids of the project file, as YOLO and the
+    // manifest do (architecture 11).
+    void cocoUsesTheProjectsClassIds()
+    {
+        Project project;
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rectangle", "polygon"], )"
+                  R"("classes": [{"id": 5, "name": "scratch"}, {"id": 1, "name": "dent"}]})");
+        project.image(QStringLiteral("0001.png"), rectangle("scratch", 10, 10, 60, 50), true);
+        project.image(QStringLiteral("0002.png"), polygon("scratch"), true);
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        for (const auto& [format, file] : {std::pair{formats::ExportFormat::CocoDetection, "coco_detection.json"},
+                                           std::pair{formats::ExportFormat::CocoSegmentation, "coco_instance_segmentation.json"}}) {
+            ExportRequest request;
+            request.format = format;
+            request.skipUnconvertible = true;  // rectangles for detection, polygons for segmentation
+            request.outputDir = project.output(file);
+            const ExportReport report = service.run(request);
+            QVERIFY2(report.written, qPrintable(report.error));
+            const QJsonObject coco = QJsonDocument::fromJson(readFile(request.outputDir + QLatin1Char('/') + QLatin1String(file))).object();
+            QJsonArray ids;
+            for (const QJsonValue& category : coco.value(QStringLiteral("categories")).toArray())
+                ids.append(category.toObject().value(QStringLiteral("id")));
+            QCOMPARE(ids, (QJsonArray{1, 5}));
+            QCOMPARE(coco.value(QStringLiteral("annotations")).toArray().first().toObject().value(QStringLiteral("category_id")).toInt(), 5);
+            const QJsonArray categories = manifestOf(request.outputDir).value(QStringLiteral("categories")).toArray();
+            QCOMPARE(categories.last().toObject().value(QStringLiteral("id")).toInt(), 5);
+        }
+    }
+
+    // Review of PR #8, item 11: a link in a parent of the output folder cannot lead the export
+    // into the data folder.
+    void linkIntoTheDataFolderIsRefused()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("creating a link needs extra rights on Windows");
+#else
+        Project project;
+        project.image(QStringLiteral("0001.png"), rectangle("scratch", 10, 10, 60, 50), true);
+        const QString link = project.out.filePath(QStringLiteral("link"));
+        QVERIFY(QFile::link(project.data.path(), link));
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.outputDir = link + QStringLiteral("/export");
+        request.copyImages = true;
+        const ExportReport report = service.run(request);
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral(u"数据文件夹")), qPrintable(report.error));
+        QVERIFY(!QFileInfo::exists(project.data.filePath(QStringLiteral("export"))));
+#endif
+    }
+
+    // Review of PR #8, item 12: when the temporary file of a COCO export cannot be created,
+    // the export leaves nothing behind.
+    void cocoTemporaryFileFailureLeavesNothing()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("the temporary folder is taken from TMPDIR on Unix only");
+#else
+        Project project;
+        project.image(QStringLiteral("0001.png"), rectangle("scratch", 10, 10, 60, 50), true);
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.format = formats::ExportFormat::CocoDetection;
+        request.outputDir = project.output();
+        // A file where the temporary folder should be: nothing can be created in it.
+        const QString notAFolder = project.out.filePath(QStringLiteral("not-a-folder"));
+        writeFile(notAFolder, "x");
+        const QByteArray tmp = qgetenv("TMPDIR");
+        qputenv("TMPDIR", notAFolder.toLocal8Bit());
+        const ExportReport report = service.run(request);
+        if (tmp.isEmpty())
+            qunsetenv("TMPDIR");
+        else
+            qputenv("TMPDIR", tmp);
+        QVERIFY(!report.written);
+        QVERIFY(!QFileInfo::exists(project.output()));
+#endif
+    }
+
+    // Review of PR #8, item 13: init writes the project file whole or not at all (format spec 1).
+    void initLeavesNoPartialProjectFile()
+    {
+#ifdef Q_OS_WIN
+        QSKIP("the file size limit is set with setrlimit on Unix only");
+#else
+        QTemporaryDir data;
+        QTemporaryDir local;
+        const QStringList args{QStringLiteral("init"), data.path(), QStringLiteral("--classes"),
+                               QStringLiteral("scratch,dent,crack,stain"), QStringLiteral("--local-data"), local.path()};
+        QProcess process;
+        process.setChildProcessModifier([] {
+            ::signal(SIGXFSZ, SIG_IGN);  // the write fails instead of ending the program
+            const rlimit limit{100, 100};
+            ::setrlimit(RLIMIT_FSIZE, &limit);
+        });
+        process.start(QStringLiteral(LITEANNO_CLI), args);
+        QVERIFY(process.waitForFinished(60000));
+        QVERIFY(process.exitCode() != 0);
+        QVERIFY(!QFileInfo::exists(data.filePath(QStringLiteral("liteanno/project.json"))));
+        // Nothing to clear up: a second try works.
+        QProcess again;
+        again.start(QStringLiteral(LITEANNO_CLI), args);
+        QVERIFY(again.waitForFinished(60000));
+        QCOMPARE(again.exitCode(), 0);
+        QVERIFY(QJsonDocument::fromJson(readFile(data.filePath(QStringLiteral("liteanno/project.json")))).isObject());
+#endif
     }
 
     void commandLine()
