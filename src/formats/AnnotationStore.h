@@ -43,8 +43,9 @@ struct LoadedAnnotation {
 // differs only in case is returned instead (on Linux, where names are case-sensitive).
 QString existingAnnotationPath(const QString& jsonPath);
 
+// `bytes`, when given, receives the bytes read.
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,
-                                    const QStringList& imageLabelOptions = {});
+                                    const QStringList& imageLabelOptions = {}, QByteArray* bytes = nullptr);
 
 enum class SaveStatus {
     Saved,

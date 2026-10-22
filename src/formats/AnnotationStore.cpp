@@ -83,7 +83,7 @@ QString existingAnnotationPath(const QString& jsonPath)
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,
-                                    const QStringList& imageLabelOptions)
+                                    const QStringList& imageLabelOptions, QByteArray* bytesRead)
 {
     QFile file(jsonPath);
     if (!file.exists())
@@ -91,6 +91,8 @@ LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& im
     if (!file.open(QIODevice::ReadOnly))
         return {AnnotationFile::unreadable(image, file.errorString()), readFileStamp(jsonPath)};
     const QByteArray bytes = file.readAll();
+    if (bytesRead)
+        *bytesRead = bytes;
     return {AnnotationFile::fromBytes(bytes, image), stampOf(jsonPath, bytes)};
 }
 

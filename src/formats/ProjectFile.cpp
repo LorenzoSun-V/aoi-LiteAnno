@@ -293,4 +293,31 @@ ProjectFileResult readProjectFile(const QString& path)
     return parseProjectFile(file.readAll());
 }
 
+QByteArray projectFileToBytes(const ProjectConfig& config)
+{
+    Json json = Json::object();
+    json["formatVersion"] = (config.formatVersion.isEmpty() ? QString::fromLatin1(kFormatVersion) : config.formatVersion).toStdString();
+    json["projectId"] = config.projectId.toStdString();
+    if (!config.name.isEmpty())
+        json["name"] = config.name.toStdString();
+    if (!config.createdAt.isEmpty())
+        json["createdAt"] = config.createdAt.toStdString();
+    Json types = Json::array();
+    for (ShapeType type : config.shapeTypes)
+        types.push_back(shapeTypeName(type).toStdString());
+    json["shapeTypes"] = std::move(types);
+    Json classes = Json::array();
+    for (const ClassDef& c : config.classes) {
+        Json entry = Json::object();
+        entry["id"] = c.id;
+        entry["name"] = c.name.toStdString();
+        if (!c.color.isEmpty())
+            entry["color"] = c.color.toStdString();
+        classes.push_back(std::move(entry));
+    }
+    json["classes"] = std::move(classes);
+    json["batchSize"] = config.batchSize;
+    return serializeJson(json);
+}
+
 } // namespace liteanno::formats
