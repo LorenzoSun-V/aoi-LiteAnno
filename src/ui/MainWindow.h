@@ -172,6 +172,14 @@ private:
     };
     int m_listHolds = 0;
     std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
+    // A recovery record of the image waits: put off by the user, or held back for a name
+    // collision. The image is read-only until the record is restored or given up.
+    bool recordHeldBack(const QString& imagePath) const;
+    // A same-name image on disk now, or in what the window knows.
+    bool collidesNow(const QString& imagePath) const;
+    // Queues offerUnblockedRecords() when the image shown waits only for a collision that
+    // is gone.
+    void queueOfferIfFree();
     // Offers the recovery records of the image shown once nothing holds them back.
     void offerUnblockedRecords();
     // Whether the image has a name collision as far as the window knows now: the catalog,

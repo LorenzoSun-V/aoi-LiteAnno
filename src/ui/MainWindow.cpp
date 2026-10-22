@@ -26,6 +26,8 @@
 #include <QToolBar>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace liteanno::ui {
 
 using application::BackgroundSaver;
@@ -539,32 +541,43 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
             }
         }
     }
-    // Recovery records held back for a name collision are offered when the image is opened
-    // next; the one shown is offered now.
-    for (auto it = m_collisionRecords.begin(); it != m_collisionRecords.end();) {
-        const int index = m_imageIndex.value(*it, -1);
-        if (index >= 0 && m_images[index].nameCollision) {
-            ++it;
-            continue;
-        }
-        m_deferredRecords.remove(*it);
-        it = m_collisionRecords.erase(it);
-    }
     if (m_session && m_current >= 0)
         m_statuses.insert(m_session->imagePath(), m_session->status());
     refreshImageItem(m_current);
-    // Asked after this update is complete: the question runs an event loop, in which a
-    // status check or another scan may update the list again.
-    if (m_session && m_current >= 0 && m_session->isBlocked() && !m_deferredRecords.contains(m_session->imagePath()))
-        QMetaObject::invokeMethod(this, &MainWindow::offerUnblockedRecords, Qt::QueuedConnection);
+    // A record held back for a name collision stays held back (the image read-only) until
+    // it is restored or given up; once the collision is gone it is asked about. Asked after
+    // this update is complete: the question runs an event loop, in which a status check or
+    // another scan may update the list again.
+    queueOfferIfFree();
 
     refresh();
 }
 
+bool MainWindow::recordHeldBack(const QString& imagePath) const
+{
+    return m_deferredRecords.contains(imagePath) || m_collisionRecords.contains(imagePath);
+}
+
+bool MainWindow::collidesNow(const QString& imagePath) const
+{
+    return dataset::hasNameCollision(m_project->imageFilePath(imagePath)) || latestNameCollision(imagePath);
+}
+
+void MainWindow::queueOfferIfFree()
+{
+    if (!m_session || m_current < 0 || !m_session->isBlocked())
+        return;
+    const QString& path = m_session->imagePath();
+    if (m_deferredRecords.contains(path) || !m_collisionRecords.contains(path) || collidesNow(path))
+        return;
+    QMetaObject::invokeMethod(this, &MainWindow::offerUnblockedRecords, Qt::QueuedConnection);
+}
+
 void MainWindow::offerUnblockedRecords()
 {
-    // Checked again: the image shown may have changed since this was queued.
-    if (!m_session || m_current < 0 || !m_session->isBlocked() || m_deferredRecords.contains(m_session->imagePath()))
+    // Checked again: the image shown, or the folder, may have changed since this was queued.
+    if (!m_session || m_current < 0 || !m_session->isBlocked() || m_deferredRecords.contains(m_session->imagePath())
+        || !m_collisionRecords.contains(m_session->imagePath()) || collidesNow(m_session->imagePath()))
         return;
     const QString path = m_session->imagePath();
     dropSession();
@@ -657,6 +670,14 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
     const RecoveryService recovery(m_project->paths(), m_project->location());
     application::RecoveryScan scan = recovery.scan();
     recovery.removeAlreadySaved(scan);
+    // A record that is gone (saved over, removed by hand) holds nothing back any more.
+    if (!onlyImage.isEmpty()
+        && std::none_of(scan.candidates.cbegin(), scan.candidates.cend(), [&](const RecoveryCandidate& candidate) {
+               return candidate.record.imagePath == onlyImage && candidate.state != RecoveryState::AlreadySaved;
+           })) {
+        m_collisionRecords.remove(onlyImage);
+        m_deferredRecords.remove(onlyImage);
+    }
     for (const RecoveryCandidate& candidate : std::as_const(scan.candidates)) {
         if (candidate.state == RecoveryState::AlreadySaved)
             continue;
@@ -664,20 +685,16 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         // Format spec 2: restoring would write the annotation file the images share. The
         // record stays, and the image read-only, until the collision is gone.
-        if (dataset::hasNameCollision(m_project->imageFilePath(candidate.record.imagePath))) {
+        if (collidesNow(candidate.record.imagePath)) {
             m_collisionRecords.insert(candidate.record.imagePath);
-            m_deferredRecords.insert(candidate.record.imagePath);
             m_unwritten.insert(candidate.record.imagePath);
             continue;
         }
         m_collisionRecords.remove(candidate.record.imagePath);
         RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
         // Checked again after the question: a same-name image may have appeared meanwhile.
-        if (choice == RecoveryChoice::Restore
-            && (dataset::hasNameCollision(m_project->imageFilePath(candidate.record.imagePath))
-                || latestNameCollision(candidate.record.imagePath))) {
+        if (choice == RecoveryChoice::Restore && collidesNow(candidate.record.imagePath)) {
             m_collisionRecords.insert(candidate.record.imagePath);
-            m_deferredRecords.insert(candidate.record.imagePath);
             m_unwritten.insert(candidate.record.imagePath);
             m_prompts.message(QStringLiteral(u"没有恢复"),
                               QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
@@ -708,7 +725,6 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
         } else if (result.status == application::RecordStatus::NameCollision) {
             // Found while writing: held back like a collision found before the question.
             m_collisionRecords.insert(candidate.record.imagePath);
-            m_deferredRecords.insert(candidate.record.imagePath);
             m_unwritten.insert(candidate.record.imagePath);
             m_prompts.message(QStringLiteral(u"没有恢复"),
                               QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
@@ -812,10 +828,11 @@ void MainWindow::loadCurrentImage()
         m_saveError = held->error;
     m_session = std::make_unique<DocumentSession>(scanned.path, std::move(loaded), m_project->config(),
                                                   scanned.nameCollision);
-    m_session->setBlocked(m_deferredRecords.contains(scanned.path));
+    m_session->setBlocked(recordHeldBack(scanned.path));
     m_canvas->setDocument(&m_session->document(), m_session->isReadOnly());
     if (held != m_heldEdits.cend())
         m_idleTimer.start();
+    queueOfferIfFree();
     refresh();
 }
 
@@ -936,6 +953,12 @@ void MainWindow::processSaveResults()
         // not what it wrote or failed to write; they stay.
         const bool newerHeld = heldNewerThan(result.imagePath, result.sessionId, result.documentVersion);
         if (status == SaveStatus::Saved || status == SaveStatus::NotModified) {
+            // A saved edit replaced the image's recovery record (architecture 8.1): nothing
+            // of it waits any more.
+            if (status == SaveStatus::Saved) {
+                m_collisionRecords.remove(result.imagePath);
+                m_deferredRecords.remove(result.imagePath);
+            }
             if (!newerHeld) {
                 m_unwritten.remove(result.imagePath);
                 m_heldEdits.remove(result.imagePath);

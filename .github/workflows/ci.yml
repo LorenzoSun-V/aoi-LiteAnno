@@ -49,6 +49,16 @@ jobs:
           ctest --preset windows-msvc
           if ($LASTEXITCODE -ne 0) { ctest --preset windows-msvc --rerun-failed -V; exit 1 }
 
+      - name: Skipped test items
+        # Each Qt test item that was skipped (for example a permission test that cannot block
+        # a file here), and each program's totals, from the log ctest keeps.
+        run: |
+          $log = "build/windows-msvc/Testing/Temporary/LastTest.log"
+          if (-not (Test-Path $log)) { Write-Error "no ctest log at $log"; exit 1 }
+          $lines = Select-String -Path $log -Pattern '^(SKIP   :|Totals:)' | ForEach-Object { $_.Line }
+          $lines
+          "### Skipped test items (Windows)`n``````n$($lines -join "`n")`n``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
       - name: Catalog timings
         # Architecture 14: measured on every run and shown in the run summary.
         run: |
@@ -96,6 +106,13 @@ jobs:
 
       - name: Test
         run: ctest --preset linux-gcc || { ctest --preset linux-gcc --rerun-failed -V; exit 1; }
+
+      - name: Skipped test items
+        # Each Qt test item that was skipped, and each program's totals, from ctest's log.
+        run: |
+          lines=$(grep -E '^(SKIP   :|Totals:)' build/linux-gcc/Testing/Temporary/LastTest.log || true)
+          echo "$lines"
+          printf '### Skipped test items (Linux)\n```\n%s\n```\n' "$lines" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Catalog timings
         # Architecture 14: measured on every run and shown in the run summary.

@@ -1354,6 +1354,23 @@ private slots:
         QVERIFY(!QFile::exists(project.json(1)));
         QCOMPARE(recoveryRecordCount(project.local.path()), 1);
         QCOMPARE(w.document().shapes().size(), 1);
+
+        // The other image goes away: the edits on screen are saved, which replaces the
+        // record, and nothing is held back any more.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(w.window.goToImage(1));
+        QVERIFY(w.window.goToImage(0));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.answers.recoveryAsked.size(), 0);
     }
 
     // Review of 80932e9, item 2: the listing is kept aside while a question is shown, and
@@ -1391,6 +1408,71 @@ private slots:
         w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
         QVERIFY(during.contains(QStringLiteral("0002.png  [")));
         QCOMPARE(list->item(1)->text(), during);
+    }
+
+    // Review of 1f6ee17: "处理未写入的编辑…" meets a same-name image during the question, so the
+    // record is not restored; while that message is shown the other image goes away again.
+    // The record is still not handled, so the image must stay read-only until it is; then it
+    // is asked about again.
+    void recordStaysProtectedWhenTheCollisionGoesAway()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        Window w(project.options());
+        w.answers.recovery = RecoveryChoice::Later;
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.window.session()->isReadOnly());
+
+        const QString jpg = project.data.filePath(QStringLiteral("line1/0001.jpg"));
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.answers.duringRecovery = [&] {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::gray);
+            QVERIFY(image.save(jpg));
+        };
+        w.answers.duringMessage = [&] {
+            w.answers.duringMessage = nullptr;
+            w.answers.duringRecovery = nullptr;
+            QVERIFY(QFile::remove(jpg));
+            w.window.rescan();
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.recoveryAsked.size(), 2);
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // Still protected: a new rectangle is refused.
+        QVERIFY(w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 70), QPointF(60, 95));
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // Asked again now that nothing holds the record back; restored.
+        QTRY_COMPARE(w.answers.recoveryAsked.size(), 3);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.document().shapes().size(), 2);
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 2);
     }
 
     // Without any catalog (no cache folder, no temporary folder) the folder is still listed
