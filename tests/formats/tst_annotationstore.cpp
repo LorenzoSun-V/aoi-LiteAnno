@@ -14,6 +14,23 @@
 #include <QTest>
 #include <QTimeZone>
 
+#ifdef Q_OS_LINUX
+#include <sys/syscall.h>
+
+// Calls of fsync/fdatasync, counted: these take the place of the C library's.
+static int syncCalls = 0;
+extern "C" int fsync(int fd)
+{
+    ++syncCalls;
+    return int(::syscall(SYS_fsync, fd));
+}
+extern "C" int fdatasync(int fd)
+{
+    ++syncCalls;
+    return int(::syscall(SYS_fdatasync, fd));
+}
+#endif
+
 #ifndef Q_OS_WIN
 #include <csignal>
 #include <sys/resource.h>
@@ -446,6 +463,29 @@ private slots:
         QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::ExternallyModified));
         QCOMPARE(fileState(path).bytes, QByteArray("theirs"));
         QCOMPARE(QDir(dir.path()).entryList(QDir::Files | QDir::Hidden), QStringList{QStringLiteral("project.json")});
+    }
+
+    // Review of PR #8 (third round), item 2: the new file is on the disk before it gets its
+    // name (format spec 1), as with the other writes.
+    void exclusiveCreateSyncsBeforeNaming()
+    {
+#ifndef Q_OS_LINUX
+        QSKIP("the sync calls are counted on Linux only");
+#else
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("project.json"));
+        syncCalls = 0;
+        int beforeNaming = -1;
+        const SaveResult result = createFileExclusively(path, "content", [&beforeNaming] { beforeNaming = syncCalls; });
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Saved));
+        QVERIFY(beforeNaming >= 1);
+        // The other writes sync too: the counting works.
+        syncCalls = 0;
+        QCOMPARE(saveStatusName(writeFileAtomically(dir.filePath(QStringLiteral("other.json")), "x").status),
+                 saveStatusName(SaveStatus::Saved));
+        QVERIFY(syncCalls >= 1);
+#endif
     }
 
     // A disk that fills up part way through a write (here: a file size limit) must not leave
