@@ -87,6 +87,13 @@ using WriteCheck = std::function<SaveResult()>;
 SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, const SaveOptions& options = {},
                                const WriteCheck& check = {});
 
+// Creates a new file with `bytes`, whole or not at all, and never replaces a file of that
+// name, also one made by another program while this one writes: a temporary file is written
+// and then given the name only if it is free (one operation). ExternallyModified when the
+// name is taken. `beforePublish` runs just before that, for tests.
+SaveResult createFileExclusively(const QString& path, const QByteArray& bytes,
+                                 const std::function<void()>& beforePublish = {});
+
 // Saved when the file still has the content `expected` describes, ExternallyModified when it
 // changed, appeared or disappeared, Failed when it cannot be read now.
 SaveResult checkUnchanged(const QString& path, const FileStamp& expected);
