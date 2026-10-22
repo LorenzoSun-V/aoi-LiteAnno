@@ -22,7 +22,9 @@ FileStamp stampOf(const QString& path, const QByteArray& bytes)
 SaveResult writeOnce(const QString& path, const QByteArray& bytes)
 {
     QSaveFile out(path);
-    if (!out.open(QIODevice::WriteOnly))
+    // Unbuffered: a write cut short (disk full) shows in the count. Through the buffer it is
+    // lost, and commit() would put the first part of the file in place of the old one.
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Unbuffered))
         return {SaveStatus::Failed, out.errorString()};
     if (out.write(bytes) != bytes.size()) {
         const QString error = out.errorString();
