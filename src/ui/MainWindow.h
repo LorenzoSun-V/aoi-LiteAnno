@@ -222,9 +222,11 @@ private:
         MainWindow* m_window;
     };
     int m_listHolds = 0;
-    // An export or a wait for saves uses the project and its saver while events run: a close
-    // asked for meanwhile cancels an export and closes the window once the last of them has
-    // ended. Closing in the middle would free what they use.
+    // Every event loop this window's code runs (a question, a wait for saves, an export, a
+    // folder dialog) is inside a Busy: a close asked for meanwhile cancels an export and is
+    // put off. When the last Busy ends it is asked again through the event queue, so it runs
+    // either in a later loop of this code, which puts it off again, or once the code that
+    // ran the loops has returned. Closing in the middle would free what that code uses.
     class Busy
     {
     public:
