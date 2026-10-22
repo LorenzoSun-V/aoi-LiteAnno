@@ -452,19 +452,31 @@ bool MainWindow::exportAnnotations()
     // The progress dialog runs events; a list a scan brings meanwhile waits.
     const ListHold hold(this);
     const auto run = [&] {
+        m_exporting = true;
         QProgressDialog progress(QStringLiteral(u"正在导出…"), QStringLiteral(u"取消"), 0, 0, this);
         progress.setWindowModality(Qt::WindowModal);
         progress.setMinimumDuration(400);
-        return service.run(request, [&](int done, int total) {
-            if (total > 0) {
-                progress.setMaximum(total);
-                progress.setValue(done);
-            }
-            QCoreApplication::processEvents();
-            return !progress.wasCanceled();
+        application::ExportReport result = service.run(request, [&](int done, int total) {
+            progress.setMaximum(std::max(total, 0));
+            progress.setValue(done);  // runs events once the dialog shows, which blocks the window
+            // Until then only what keeps the window painted: no clicks or keys reach it.
+            if (!progress.isVisible())
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            return !progress.wasCanceled() && !m_closeAfterExport;
         });
+        m_exporting = false;
+        return result;
+    };
+    // A close asked for during the export happens once the export has ended.
+    const auto closeIfAsked = [this] {
+        if (m_closeAfterExport)
+            QTimer::singleShot(0, this, &QWidget::close);
     };
     application::ExportReport report = run();
+    if (m_closeAfterExport) {
+        closeIfAsked();
+        return false;
+    }
     const QList<application::ExportItem> unconvertible = report.unconvertible();
     if (!report.written && !report.cancelled && !unconvertible.isEmpty()) {
         QStringList lines;
@@ -480,6 +492,10 @@ bool MainWindow::exportAnnotations()
             return false;
         request.skipUnconvertible = true;
         report = run();
+        if (m_closeAfterExport) {
+            closeIfAsked();
+            return false;
+        }
     }
     if (!report.written) {
         if (!report.cancelled)
@@ -1742,6 +1758,12 @@ void MainWindow::refresh()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_exporting) {
+        m_closeAfterExport = true;
+        event->ignore();
+        return;
+    }
+    m_closeAfterExport = false;
     if (closeProject())
         event->accept();
     else

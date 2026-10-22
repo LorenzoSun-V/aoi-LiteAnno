@@ -23,6 +23,7 @@
 #include <QSemaphore>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
@@ -1719,6 +1720,38 @@ private slots:
         QVERIFY(!QFile::exists(out.filePath(QStringLiteral("seg/line1/0001.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/line1/0002.txt"))));
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
+    }
+
+    void closingDuringAnExportWaitsForIt()
+    {
+        // The review's steps: export, and close the window before the progress dialog shows.
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());  // the export still uses the project: it is not closed now
+            QVERIFY(w.window.hasProject());
+        });
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QVERIFY(w.answers.messages.isEmpty());  // cancelled: no report
+        QVERIFY(QDir(out.filePath(QStringLiteral("det"))).isEmpty());
+        // The close asked for happens once the export has ended.
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(!w.window.isVisible());
     }
 
     void damagedListIsNotUsed()

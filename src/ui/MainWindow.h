@@ -220,6 +220,10 @@ private:
         MainWindow* m_window;
     };
     int m_listHolds = 0;
+    // An export holds a reference to the project while it runs: a close asked for meanwhile
+    // cancels it and closes the window once it has ended.
+    bool m_exporting = false;
+    bool m_closeAfterExport = false;
     std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
     // A recovery record of the image waits: put off by the user, or held back for a name
     // collision. The image is read-only until the record is restored or given up.
