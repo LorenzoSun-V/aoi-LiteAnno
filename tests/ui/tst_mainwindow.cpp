@@ -4,10 +4,12 @@
 
 #include "application/LocalDataPaths.h"
 #include "ui/MainWindow.h"
+#include "ui/Prompts.h"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -17,6 +19,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -2095,6 +2098,63 @@ private slots:
         QVERIFY(w.window.hasProject());
         QTRY_VERIFY(!w.window.hasProject());
         QVERIFY(QFile::exists(project.json(1)));
+    }
+
+    // Review of PR #8 (fourth round): the close asked for during the wait must also wait for
+    // what follows it: here the real "changed by another program" question, answered "later",
+    // after which "处理未写入的编辑…" goes on with the saver. The steps of the review, through the
+    // menu, with the program's own message box.
+    void closingWaitsForTheQuestionAfterASaveWait()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        options.saveStageHook = [](application::SaveStage stage) {
+            if (stage == application::SaveStage::RecoveryRecordWritten)
+                QThread::msleep(300);
+        };
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.setPrompts(Prompts::dialogs(&w.window));  // the program's own questions from here
+        // Another program writes the annotation file meanwhile.
+        writeFile(project.json(1), R"({"version": "4.2.0", "flags": {}, "shapes": [], "imagePath": "0001.png", )"
+                                   R"("imageData": null, "imageHeight": 100, "imageWidth": 200})");
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());
+        });
+        int questions = 0;
+        QStringList asked;
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            asked.append(dialog->windowTitle());
+            if (auto* box = qobject_cast<QMessageBox*>(dialog)) {
+                for (QAbstractButton* button : box->buttons()) {
+                    if (button->text() == QStringLiteral(u"稍后处理")) {
+                        ++questions;
+                        button->click();
+                        return;
+                    }
+                }
+            }
+            dialog->reject();  // anything else (the unwritten edit is offered again): later
+        });
+        answer.start(20);
+        QAction* resolve = nullptr;
+        for (QAction* action : w.window.findChildren<QAction*>()) {
+            if (action->text() == QStringLiteral(u"处理未写入的编辑…"))
+                resolve = action;
+        }
+        QVERIFY(resolve);
+        resolve->trigger();
+        QCOMPARE(closes, 1);
+        QCOMPARE(questions, 1);
+        QTRY_VERIFY2(!w.window.hasProject(), qPrintable(asked.join(QLatin1Char('|'))));
+        answer.stop();
     }
 
     void closingDuringAnExportWaitsForIt()
