@@ -116,6 +116,18 @@ QByteArray multiPageTiff(const QList<QSize>& pages)
     return out;
 }
 
+// The catalog reads sizes without decoding (architecture 6.1); they must be the sizes the
+// editor finds when it loads the image.
+void compareInfo(const QString& path, const LoadedImage& loaded)
+{
+    const std::optional<liteanno::ImageInfo> info = readImageInfo(path);
+    QVERIFY(info.has_value());
+    QCOMPARE(info->width, loaded.info.width);
+    QCOMPARE(info->height, loaded.info.height);
+    QCOMPARE(info->exifOrientation, loaded.info.exifOrientation);
+    QCOMPARE(info->fileName, loaded.info.fileName);
+}
+
 } // namespace
 
 class TestImageLoader : public QObject
@@ -151,6 +163,7 @@ private slots:
         const LoadedImage loaded = loadImage(path);
         QVERIFY2(!loaded.image.isNull(), qPrintable(loaded.error));
         QCOMPARE(loaded.info.exifOrientation, orientation);
+        compareInfo(path, loaded);
         // Format spec 9.2: sizes and coordinates are those of the upright image.
         const bool turned = orientation >= 5;
         QCOMPARE(loaded.info.width, turned ? 8 : 16);
@@ -190,6 +203,7 @@ private slots:
         QCOMPARE(loaded.info.width, 4);
         QCOMPARE(loaded.info.height, 2);
         QCOMPARE(loaded.image.depth(), 8);
+        compareInfo(path, loaded);
         QCOMPARE(qGray(loaded.image.pixel(0, 0)), 0);
         QCOMPARE(qGray(loaded.image.pixel(3, 0)), 255);
         QVERIFY(qAbs(qGray(loaded.image.pixel(1, 0)) - 85) <= 1);
@@ -203,6 +217,7 @@ private slots:
         const LoadedImage loaded = loadImage(path);
         QVERIFY2(!loaded.image.isNull(), qPrintable(loaded.error));
         QVERIFY(loaded.hasMoreFrames);
+        compareInfo(path, loaded);
         QCOMPARE(loaded.info.width, 6);
         QCOMPARE(loaded.info.height, 4);
     }
@@ -220,6 +235,7 @@ private slots:
         QCOMPARE(loaded.info.width, 5);
         QCOMPARE(loaded.info.height, 3);
         QCOMPARE(loaded.info.fileName, QStringLiteral("really_png.jpg"));
+        compareInfo(path, loaded);
     }
 
     void notAnImage()
@@ -230,6 +246,7 @@ private slots:
         const LoadedImage loaded = loadImage(path);
         QVERIFY(loaded.image.isNull());
         QVERIFY(!loaded.error.isEmpty());
+        QVERIFY(!readImageInfo(path));
     }
 };
 

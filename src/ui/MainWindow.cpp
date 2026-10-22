@@ -1,6 +1,8 @@
 #include "ui/MainWindow.h"
 
+#include "application/FileStatus.h"
 #include "application/RecoveryService.h"
+#include "dataset/DirectoryScanner.h"
 #include "imaging/ImageLoader.h"
 #include "ui/Texts.h"
 
@@ -10,6 +12,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QCoreApplication>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -22,6 +25,8 @@
 #include <QStatusBar>
 #include <QToolBar>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace liteanno::ui {
 
@@ -68,8 +73,8 @@ QString openErrorText(const ProjectSession::OpenResult& result, const QString& r
 MainWindow::MainWindow(Options options, QWidget* parent)
     : QMainWindow(parent)
     , m_options(std::move(options))
-    , m_prompts(Prompts::dialogs(this))
 {
+    setPrompts(Prompts::dialogs(this));
     m_idleTimer.setSingleShot(true);
     m_idleTimer.setInterval(m_options.idleSaveMs);
     connect(&m_idleTimer, &QTimer::timeout, this, [this] { commitCurrent(); });
@@ -107,6 +112,9 @@ void MainWindow::buildUi()
     // Images.
     m_imageList = new QListWidget;
     m_imageList->setObjectName(QStringLiteral("imageList"));
+    // Every row is one line: without this the list measures each of its rows (seconds at
+    // 200 000 images).
+    m_imageList->setUniformItemSizes(true);
     connect(m_imageList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0 && row != m_current)
             goToImage(row);
@@ -177,6 +185,9 @@ void MainWindow::buildUi()
     panelDock->setFeatures(QDockWidget::DockWidgetMovable);
     addDockWidget(Qt::RightDockWidgetArea, panelDock);
 
+    m_scanState = new QLabel;
+    m_scanState->setObjectName(QStringLiteral("scanState"));
+    statusBar()->addPermanentWidget(m_scanState);
     m_saveState = new QLabel;
     statusBar()->addPermanentWidget(m_saveState);
 
@@ -192,6 +203,8 @@ void MainWindow::buildUi()
     QAction* save = named(fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow), "save");
     save->setShortcut(QKeySequence(QStringLiteral("Ctrl+S")));
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
+    // No shortcut: X-AnyLabeling has no such action.
+    fileMenu->addAction(QStringLiteral(u"重新扫描文件夹"), this, &MainWindow::rescan);
     fileMenu->addSeparator();
     QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
     quit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
@@ -319,27 +332,276 @@ bool MainWindow::openProject(const QString& root)
 
     handleRecoveryRecords();
 
-    const dataset::ScanResult scan = dataset::scanDirectory(m_project->rootPath());
-    m_images = scan.images;
-    m_statuses.clear();
-    m_imageList->blockSignals(true);
-    m_imageList->clear();
-    for (const dataset::ScannedImage& image : std::as_const(m_images))
-        m_imageList->addItem(image.path);
-    m_imageList->blockSignals(false);
     const QString name = m_project->config().name.isEmpty() ? m_project->rootPath() : m_project->config().name;
     setWindowTitle(QStringLiteral("%1 - aoi-LiteAnno").arg(name));
-    if (!scan.unsupported.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
-                                     .arg(scan.unsupported.size())
-                                     .arg(scan.unsupported.first()),
-                                 15000);
+
+    // Architecture 6: the list the catalog has is shown at once; the scan brings it up to date.
+    m_catalog = std::make_unique<application::ProjectCatalog>(*m_project, imaging::readImageInfo);
+    if (!m_catalog->isOpen()) {
+        // The catalog is only a cache: without one the folder is listed here, every time.
+        statusBar()->showMessage(
+            QStringLiteral(u"无法建立本机目录索引（%1），每次打开和重新扫描都要完整列一遍文件夹，也不显示各图状态。")
+                .arg(m_catalog->error()),
+            15000);
+        m_catalog.reset();
+        listWithoutCatalog();
+    } else {
+        if (m_catalog->isTemporary()) {
+            statusBar()->showMessage(QStringLiteral(u"本机缓存文件夹不能用（%1），这次的目录索引放在临时文件夹，关闭项目后不保留。")
+                                         .arg(m_project->paths().cacheDir(m_project->config().projectId,
+                                                                          m_project->location().bindingId)),
+                                     15000);
+        }
+        connect(m_catalog.get(), &application::ProjectCatalog::scanProgress, this, [this](int found) {
+            m_scanState->setText(QStringLiteral(u"正在扫描文件夹：已找到 %1 张").arg(found));
+        });
+        connect(m_catalog.get(), &application::ProjectCatalog::scanFinished, this, &MainWindow::scanFinished);
+        connect(m_catalog.get(), &application::ProjectCatalog::checkProgress, this, [this](int done, int total) {
+            m_scanState->setText(total > 0 ? QStringLiteral(u"正在核对标注状态：%1 / %2").arg(done).arg(total) : QString());
+        });
+        connect(m_catalog.get(), &application::ProjectCatalog::checkFinished, this, [this] {
+            m_scanState->clear();
+            reloadStatuses();
+        });
+        reloadImages();
+        m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
+        m_catalog->start();
+        if (m_options.waitForScan) {
+            m_catalog->waitForScan(-1);
+            QCoreApplication::processEvents();
+        }
     }
-    if (!m_images.isEmpty())
+    if (m_current < 0 && !m_images.isEmpty())
         goToImage(0);
     else
         refresh();
     return true;
+}
+
+void MainWindow::rescan()
+{
+    if (!m_project)
+        return;
+    if (!m_catalog) {
+        listWithoutCatalog();
+        return;
+    }
+    m_scanState->setText(QStringLiteral(u"正在扫描文件夹…"));
+    m_catalog->start();
+}
+
+void MainWindow::scanFinished(bool /*complete*/)
+{
+    if (!m_catalog)
+        return;
+    reloadImages();
+    const dataset::ScanReports reports = m_catalog->reader().reports();
+    showScanReports(reports.unsupported, reports.unreadable);
+    if (m_current < 0 && !m_images.isEmpty())
+        goToImage(0);
+}
+
+void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
+{
+    if (!unreadable.isEmpty()) {
+        // Architecture 6.2: their images stay as the last listing had them.
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件夹无法读取（例如 %2），里面的图片按上次的列表显示。请检查文件夹权限。")
+                                     .arg(unreadable.size())
+                                     .arg(unreadable.first()),
+                                 15000);
+    } else if (!unsupported.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个文件是不支持的图片格式（例如 %2），请转换为 JPG 或 PNG。")
+                                     .arg(unsupported.size())
+                                     .arg(unsupported.first()),
+                                 15000);
+    }
+}
+
+void MainWindow::listWithoutCatalog()
+{
+    const dataset::ScanResult scan = dataset::scanDirectory(m_project->rootPath());
+    QList<dataset::CatalogEntry> images;
+    images.reserve(scan.images.size());
+    for (const dataset::ScannedImage& scanned : scan.images) {
+        dataset::CatalogEntry entry;
+        entry.path = scanned.path;
+        entry.position = int(images.size());
+        entry.nameCollision = scanned.nameCollision;
+        entry.image = scanned.image;
+        entry.annotationName = scanned.annotationName;
+        entry.annotation = scanned.annotation;
+        images.append(entry);
+    }
+    setImages(std::move(images));
+    showScanReports(scan.unsupported, scan.unreadable);
+}
+
+void MainWindow::reloadImages()
+{
+    if (m_catalog)
+        setImages(m_catalog->reader().images());
+}
+
+MainWindow::ListHold::ListHold(MainWindow* window)
+    : m_window(window)
+{
+    ++m_window->m_listHolds;
+}
+
+MainWindow::ListHold::~ListHold()
+{
+    if (--m_window->m_listHolds > 0 || !m_window->m_pendingImages)
+        return;
+    QList<dataset::CatalogEntry> images = std::move(*m_window->m_pendingImages);
+    m_window->m_pendingImages.reset();
+    if (!m_window->m_project)
+        return;
+    // The catalog may have moved on while the list waited (statuses checked, another scan):
+    // what it has now is applied, not the list that was kept aside.
+    if (m_window->m_catalog)
+        m_window->reloadImages();
+    else
+        m_window->setImages(std::move(images));
+}
+
+void MainWindow::setPrompts(Prompts prompts)
+{
+    // Each question runs an event loop; the list waits until it is answered.
+    auto held = [this](auto ask) {
+        return [this, ask](auto&&... args) {
+            ListHold hold(this);
+            return ask(std::forward<decltype(args)>(args)...);
+        };
+    };
+    m_prompts.chooseLabel = held(std::move(prompts.chooseLabel));
+    m_prompts.skipReason = held(std::move(prompts.skipReason));
+    m_prompts.externalChange = held(std::move(prompts.externalChange));
+    m_prompts.recovery = held(std::move(prompts.recovery));
+    m_prompts.message = held(std::move(prompts.message));
+    m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
+}
+
+void MainWindow::setImages(QList<dataset::CatalogEntry> images)
+{
+    if (m_listHolds > 0) {
+        m_pendingImages = std::move(images);
+        return;
+    }
+    const QString currentPath = m_current >= 0 ? m_images[m_current].path : QString();
+    m_images = std::move(images);
+    m_imageIndex.clear();
+    m_imageIndex.reserve(m_images.size());
+    for (int i = 0; i < m_images.size(); ++i)
+        m_imageIndex.insert(m_images[i].path, i);
+    if (!currentPath.isEmpty()) {
+        const int found = m_imageIndex.value(currentPath, -1);
+        if (found >= 0) {
+            m_current = found;
+        } else {
+            // The image shown was deleted or renamed by another program. Its edits are kept
+            // as a new image would be; the next image is the one after it.
+            m_images.append(dataset::CatalogEntry{});
+            m_images.last().path = currentPath;
+            m_images.last().missing = true;
+            m_images.last().nameCollision = m_session && m_session->hasNameCollision();
+            m_imageIndex.insert(currentPath, int(m_images.size()) - 1);
+            m_current = int(m_images.size()) - 1;
+        }
+    }
+    m_statuses.clear();
+    for (const dataset::CatalogEntry& entry : std::as_const(m_images)) {
+        if (entry.status && entry.verified)
+            m_statuses.insert(entry.path, *entry.status);
+    }
+    // The list follows the images at once: everything below may open a question, and the
+    // event loop of a question may refresh the list.
+    m_imageList->blockSignals(true);
+    m_imageList->clear();
+    QStringList texts;
+    texts.reserve(m_images.size());
+    for (const dataset::CatalogEntry& image : std::as_const(m_images))
+        texts.append(imageItemText(image.path));
+    m_imageList->addItems(texts);
+    if (m_current >= 0)
+        m_imageList->setCurrentRow(m_current);
+    m_imageList->blockSignals(false);
+    // Format spec 2: a name collision found while the image is shown makes it read-only at
+    // once; edits not saved yet stay on screen but are not written to the shared file.
+    if (m_session && m_current >= 0 && m_session->hasNameCollision() != m_images[m_current].nameCollision) {
+        m_session->setNameCollision(m_images[m_current].nameCollision);
+        if (m_session->needsSave()) {
+            if (m_images[m_current].nameCollision) {
+                statusBar()->showMessage(
+                    QStringLiteral(u"这张图片出现了同名图片，改为只能查看。还没保存的修改留在这台电脑的内存里，不写入标注文件；"
+                                   u"关闭项目前会再询问。"),
+                    15000);
+                commitCurrent();
+            } else {
+                m_idleTimer.start();  // the held edits can be written now
+            }
+        }
+    }
+    if (m_session && m_current >= 0)
+        m_statuses.insert(m_session->imagePath(), m_session->status());
+    refreshImageItem(m_current);
+    // A record held back for a name collision stays held back (the image read-only) until
+    // it is restored or given up; once the collision is gone it is asked about. Asked after
+    // this update is complete: the question runs an event loop, in which a status check or
+    // another scan may update the list again.
+    queueOfferIfFree();
+
+    refresh();
+}
+
+bool MainWindow::recordHeldBack(const QString& imagePath) const
+{
+    return m_deferredRecords.contains(imagePath) || m_collisionRecords.contains(imagePath);
+}
+
+bool MainWindow::collidesNow(const QString& imagePath) const
+{
+    return dataset::hasNameCollision(m_project->imageFilePath(imagePath)) || latestNameCollision(imagePath);
+}
+
+void MainWindow::queueOfferIfFree()
+{
+    if (!m_session || m_current < 0 || !m_session->isBlocked())
+        return;
+    const QString& path = m_session->imagePath();
+    if (m_deferredRecords.contains(path) || !m_collisionRecords.contains(path) || collidesNow(path))
+        return;
+    QMetaObject::invokeMethod(this, &MainWindow::offerUnblockedRecords, Qt::QueuedConnection);
+}
+
+void MainWindow::offerUnblockedRecords()
+{
+    // Checked again: the image shown, or the folder, may have changed since this was queued.
+    if (!m_session || m_current < 0 || !m_session->isBlocked() || m_deferredRecords.contains(m_session->imagePath())
+        || !m_collisionRecords.contains(m_session->imagePath()) || collidesNow(m_session->imagePath()))
+        return;
+    const QString path = m_session->imagePath();
+    dropSession();
+    handleRecoveryRecords(path);
+    const int index = m_imageIndex.value(path, -1);
+    if (index < 0)
+        return;
+    m_current = index;
+    loadCurrentImage();
+}
+
+void MainWindow::reloadStatuses()
+{
+    if (!m_catalog)
+        return;
+    m_statuses.clear();
+    for (const dataset::CatalogEntry& entry : m_catalog->reader().images()) {
+        if (entry.status && entry.verified)
+            m_statuses.insert(entry.path, *entry.status);
+    }
+    if (m_session && m_current >= 0)
+        m_statuses.insert(m_session->imagePath(), m_session->status());
+    for (int i = 0; i < m_imageList->count(); ++i)
+        refreshImageItem(i);
 }
 
 bool MainWindow::closeProject(bool force)
@@ -365,11 +627,16 @@ bool MainWindow::closeProject(bool force)
     }
     dropSession();
     m_saver.reset();
+    m_catalog.reset();
+    m_scanState->clear();
     m_project.reset();
     m_images.clear();
+    m_imageIndex.clear();
     m_statuses.clear();
     m_unwritten.clear();
     m_deferredRecords.clear();
+    m_collisionRecords.clear();
+    m_pendingImages.reset();
     m_heldEdits.clear();
     m_current = -1;
     m_imageList->clear();
@@ -403,12 +670,38 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
     const RecoveryService recovery(m_project->paths(), m_project->location());
     application::RecoveryScan scan = recovery.scan();
     recovery.removeAlreadySaved(scan);
+    // A record that is gone (saved over, removed by hand) holds nothing back any more.
+    if (!onlyImage.isEmpty()
+        && std::none_of(scan.candidates.cbegin(), scan.candidates.cend(), [&](const RecoveryCandidate& candidate) {
+               return candidate.record.imagePath == onlyImage && candidate.state != RecoveryState::AlreadySaved;
+           })) {
+        m_collisionRecords.remove(onlyImage);
+        m_deferredRecords.remove(onlyImage);
+    }
     for (const RecoveryCandidate& candidate : std::as_const(scan.candidates)) {
         if (candidate.state == RecoveryState::AlreadySaved)
             continue;
         if (!onlyImage.isEmpty() && candidate.record.imagePath != onlyImage)
             continue;
-        const RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
+        // Format spec 2: restoring would write the annotation file the images share. The
+        // record stays, and the image read-only, until the collision is gone.
+        if (collidesNow(candidate.record.imagePath)) {
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            continue;
+        }
+        m_collisionRecords.remove(candidate.record.imagePath);
+        RecoveryChoice choice = m_prompts.recovery(candidate, readFile(candidate.annotationPath));
+        // Checked again after the question: a same-name image may have appeared meanwhile.
+        if (choice == RecoveryChoice::Restore && collidesNow(candidate.record.imagePath)) {
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            m_prompts.message(QStringLiteral(u"没有恢复"),
+                              QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
+                                             u"同名图片移走后会再询问。")
+                                  .arg(candidate.record.imagePath));
+            continue;
+        }
         application::RecordResult result;
         if (choice == RecoveryChoice::Restore)
             result = recovery.restore(candidate, candidate.state == RecoveryState::Conflict);
@@ -420,8 +713,23 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
             continue;
         }
         if (result.status == application::RecordStatus::Done) {
-            m_unwritten.remove(candidate.record.imagePath);
+            const auto held = m_heldEdits.find(candidate.record.imagePath);
+            if (held == m_heldEdits.end()) {
+                m_unwritten.remove(candidate.record.imagePath);
+            } else if (choice == RecoveryChoice::Restore) {
+                // The held edits are newer than the record and go on from the file this
+                // program just wrote, not from an external change.
+                held->stamp = formats::readFileStamp(candidate.annotationPath);
+            }
             m_deferredRecords.remove(candidate.record.imagePath);
+        } else if (result.status == application::RecordStatus::NameCollision) {
+            // Found while writing: held back like a collision found before the question.
+            m_collisionRecords.insert(candidate.record.imagePath);
+            m_unwritten.insert(candidate.record.imagePath);
+            m_prompts.message(QStringLiteral(u"没有恢复"),
+                              QStringLiteral(u"图片 %1 旁边出现了同名图片，不能写入共用的标注文件。未写入的编辑仍保存在这台电脑上，"
+                                             u"同名图片移走后会再询问。")
+                                  .arg(candidate.record.imagePath));
         } else {
             m_deferredRecords.insert(candidate.record.imagePath);
             m_unwritten.insert(candidate.record.imagePath);
@@ -440,19 +748,26 @@ bool MainWindow::goToImage(int index)
 {
     if (!m_project || index < 0 || index >= m_images.size())
         return false;
+    // `index` and the rows below stay valid to the end: a list a scan brings meanwhile is
+    // applied after the switch, which maps the image shown to its new row.
+    const ListHold hold(this);
     if (index == m_current && m_session) {
         refresh();
         return true;
     }
+    const QString path = m_images[index].path;
     m_idleTimer.stop();
     commitCurrent();
     // Architecture 8.2: at the limit, wait for saves before showing the next image.
     if (m_saver->atLimit())
         waitForSaver([this](int ms) { return m_saver->waitUntilBelowLimit(ms); });
-    const QString path = m_images[index].path;
     // A save of that image may still be running; its file is read after it.
     if (m_saver->isPending(path))
         waitForSaver([this, path](int ms) { return m_saver->waitUntilIdle(path, ms); });
+    // A scan that finished during the waits may have reordered the list.
+    index = m_imageIndex.value(path, -1);
+    if (index < 0)
+        return false;
     // The session goes first: a save of the image being left that already finished is
     // reported like any other image's, not taken as the state of an image still shown.
     dropSession();
@@ -460,11 +775,18 @@ bool MainWindow::goToImage(int index)
 
     m_current = index;
     // A record the user already put off is not asked about again; the image stays read-only.
-    if (m_unwritten.contains(path) && !m_deferredRecords.contains(path))
+    if (m_unwritten.contains(path) && !m_deferredRecords.contains(path)) {
         handleRecoveryRecords(path);
+        // The question's event loop may have brought a new list.
+        m_current = m_imageIndex.value(path, -1);
+        if (m_current < 0) {
+            refresh();
+            return false;
+        }
+    }
     loadCurrentImage();
     m_imageList->blockSignals(true);
-    m_imageList->setCurrentRow(index);
+    m_imageList->setCurrentRow(m_current);
     m_imageList->blockSignals(false);
     return true;
 }
@@ -484,7 +806,7 @@ void MainWindow::loadCurrentImage()
     m_saveError.clear();
     m_submittedVersion = -1;
     m_externalChangeDeferred = false;
-    const dataset::ScannedImage& scanned = m_images[m_current];
+    const dataset::CatalogEntry& scanned = m_images[m_current];
     const imaging::LoadedImage image = imaging::loadImage(m_project->imageFilePath(scanned.path));
     m_canvas->setImage(image.image);
     if (image.image.isNull()) {
@@ -506,10 +828,11 @@ void MainWindow::loadCurrentImage()
         m_saveError = held->error;
     m_session = std::make_unique<DocumentSession>(scanned.path, std::move(loaded), m_project->config(),
                                                   scanned.nameCollision);
-    m_session->setBlocked(m_deferredRecords.contains(scanned.path));
+    m_session->setBlocked(recordHeldBack(scanned.path));
     m_canvas->setDocument(&m_session->document(), m_session->isReadOnly());
     if (held != m_heldEdits.cend())
         m_idleTimer.start();
+    queueOfferIfFree();
     refresh();
 }
 
@@ -523,6 +846,30 @@ void MainWindow::reloadCurrent()
 
 void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
 {
+    // Format spec 2: edits made before a name collision was found must not go into the
+    // annotation file the images share, nor be lost. They are held like edits whose save
+    // failed: shown again when the image is opened, written once the collision is gone,
+    // and closing the project asks before giving them up.
+    // The collision the catalog knows now counts, also while a new list waits for a
+    // question to close.
+    if (m_session && !m_session->hasNameCollision() && latestNameCollision(m_session->imagePath())) {
+        m_session->setNameCollision(true);
+        statusBar()->showMessage(QStringLiteral(u"这张图片出现了同名图片，改为只能查看。还没保存的修改留在这台电脑的内存里，不写入标注文件；"
+                                                u"关闭项目前会再询问。"),
+                                 15000);
+    }
+    if (m_session && m_session->hasNameCollision() && m_session->needsSave()) {
+        formats::LoadedAnnotation copy = m_session->copy();
+        m_heldEdits.insert(m_session->imagePath(),
+                           HeldEdit{std::make_shared<formats::AnnotationFile>(std::move(copy.file)), copy.stamp,
+                                    QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件"),
+                                    m_session->id(), m_session->version()});
+        if (!m_unwritten.contains(m_session->imagePath())) {
+            m_unwritten.insert(m_session->imagePath());
+            refreshImageItem(m_current);
+        }
+        return;
+    }
     if (!m_session || !m_saver || m_session->isReadOnly() || !m_session->needsSave())
         return;
     if (!force && m_session->version() == m_submittedVersion)
@@ -542,6 +889,7 @@ void MainWindow::saveNow()
 
 bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
 {
+    const ListHold hold(this);
     ++m_savingWaits;
     m_saveState->setText(QStringLiteral(u"正在保存…"));
     // Results are handled after the wait, not in the middle of switching images.
@@ -557,26 +905,76 @@ void MainWindow::flushSaves()
     if (!m_saver)
         return;
     commitCurrent();
-    // Answering a prompt can hand over another save ("用我的版本覆盖").
+    // Answering a prompt can hand over another save ("用我的版本覆盖"). That save may already
+    // be finished when the loop checks again; its result still has to be handled.
     do {
         if (m_saver->pendingCount() > 0)
             waitForSaver([this](int ms) { return m_saver->waitUntilAllDone(ms); });
         processSaveResults();
-    } while (m_saver->pendingCount() > 0);
+    } while (m_saver->pendingCount() > 0 || (!m_handlingResults && m_saver->hasResults()));
+}
+
+bool MainWindow::latestNameCollision(const QString& imagePath) const
+{
+    if (m_catalog) {
+        const std::optional<dataset::CatalogEntry> entry = m_catalog->reader().image(imagePath);
+        if (entry && entry->nameCollision)
+            return true;
+    }
+    if (m_pendingImages) {
+        for (const dataset::CatalogEntry& entry : *m_pendingImages) {
+            if (entry.path == imagePath && entry.nameCollision)
+                return true;
+        }
+    }
+    const int index = m_imageIndex.value(imagePath, -1);
+    return index >= 0 && m_images[index].nameCollision;
+}
+
+bool MainWindow::heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const
+{
+    const auto held = m_heldEdits.constFind(imagePath);
+    if (held == m_heldEdits.cend())
+        return false;
+    return held->sessionId > sessionId || (held->sessionId == sessionId && held->version > version);
 }
 
 void MainWindow::processSaveResults()
 {
     if (!m_saver || m_handlingResults)
         return;
+    const ListHold hold(this);
     m_handlingResults = true;
     for (application::SaveJobResult& result : m_saver->takeResults()) {
         const SaveStatus status = result.outcome.result.status;
         // Results of an earlier session of the same image (before "重新加载") are not this one's.
         const bool current = m_session && m_session->id() == result.sessionId;
+        // Edits held after this save was handed over (a name collision found meanwhile) are
+        // not what it wrote or failed to write; they stay.
+        const bool newerHeld = heldNewerThan(result.imagePath, result.sessionId, result.documentVersion);
         if (status == SaveStatus::Saved || status == SaveStatus::NotModified) {
-            m_unwritten.remove(result.imagePath);
-            m_heldEdits.remove(result.imagePath);
+            // A saved edit replaced the image's recovery record (architecture 8.1): nothing
+            // of it waits any more.
+            if (status == SaveStatus::Saved) {
+                m_collisionRecords.remove(result.imagePath);
+                m_deferredRecords.remove(result.imagePath);
+            }
+            if (!newerHeld) {
+                m_unwritten.remove(result.imagePath);
+                m_heldEdits.remove(result.imagePath);
+            } else if (status == SaveStatus::Saved && m_heldEdits[result.imagePath].sessionId == result.sessionId) {
+                // The held edits go on from this session's own write; when they can be written
+                // the file they replace is this one, not an external change.
+                m_heldEdits[result.imagePath].stamp = result.stamp;
+            }
+            if (status == SaveStatus::Saved && m_catalog && result.saved) {
+                // Format spec 5.4: what this program wrote counts without reading it again.
+                const int index = m_imageIndex.value(result.imagePath, -1);
+                const bool nameCollision = index >= 0 && m_images[index].nameCollision;
+                m_catalog->recordSaved(result.imagePath,
+                                       application::statusOfFile(*result.saved, m_project->config(), nameCollision, true),
+                                       result.stamp, nameCollision);
+            }
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
                 m_saveError.clear();
@@ -587,18 +985,30 @@ void MainWindow::processSaveResults()
             }
             continue;
         }
-        if (result.outcome.recoveryRecordKept) {
+        if (newerHeld) {
+            // Kept as they are; the failed older version is in the recovery record, if any.
+        } else if (result.outcome.recoveryRecordKept) {
             m_heldEdits.remove(result.imagePath);
         } else if (result.saved) {
             m_heldEdits.insert(result.imagePath,
                                HeldEdit{result.saved, result.stamp,
                                         status == SaveStatus::ExternallyModified
                                             ? QStringLiteral(u"文件被其他程序修改过")
-                                            : result.outcome.result.error});
+                                            : result.outcome.result.error,
+                                        result.sessionId, result.documentVersion});
         }
         // The next commit hands the edits over again.
         if (current)
             m_submittedVersion = -1;
+        if (current && result.outcome.nameCollision) {
+            // The edits are in the recovery record and on screen; the image is read-only
+            // until the same-name image is gone, and the record is offered then.
+            m_session->setNameCollision(true);
+            m_collisionRecords.insert(result.imagePath);
+            m_unwritten.insert(result.imagePath);
+            m_saveError = result.outcome.result.error;
+            continue;
+        }
         if (current && status == SaveStatus::ExternallyModified) {
             m_unwritten.insert(result.imagePath);
             m_saveError = QStringLiteral(u"标注文件被其他程序修改，修改未写入");
@@ -606,8 +1016,10 @@ void MainWindow::processSaveResults()
                 continue;
             switch (m_prompts.externalChange(result.imagePath)) {
             case ExternalChangeChoice::Reload:
+                // The user gives up the edits for the file as it is now.
                 m_saver->coordinator().discardRecoveryRecord(result.imagePath);
                 m_unwritten.remove(result.imagePath);
+                m_heldEdits.remove(result.imagePath);
                 reloadCurrent();
                 break;
             case ExternalChangeChoice::Overwrite: {
@@ -771,16 +1183,20 @@ QString MainWindow::saveStateText() const
 
 void MainWindow::refreshImageItem(int index)
 {
-    if (index < 0 || index >= m_imageList->count())
+    if (index < 0 || index >= m_imageList->count() || index >= m_images.size())
         return;
-    const QString path = m_images[index].path;
+    m_imageList->item(index)->setText(imageItemText(m_images[index].path));
+}
+
+QString MainWindow::imageItemText(const QString& path) const
+{
     QString text = path;
     const auto status = m_statuses.constFind(path);
     if (status != m_statuses.cend())
         text += QStringLiteral(u"  [%1]").arg(statusText(*status));
     if (m_unwritten.contains(path))
         text += QStringLiteral(u"  [未写入]");
-    m_imageList->item(index)->setText(text);
+    return text;
 }
 
 void MainWindow::refresh()

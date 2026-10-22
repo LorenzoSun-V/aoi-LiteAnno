@@ -4,6 +4,7 @@ set(LITEANNO_UPSTREAM_PYTHON "" CACHE FILEPATH
     "A Python with X-AnyLabeling (x-anylabeling-cvhub) 4.2.0 installed; runs the round trips of format spec 11")
 
 set(LITEANNO_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-results")
 
 # Tests find the Qt DLLs next to Qt6Core.dll on Windows.
 function(liteanno_set_test_environment test)
@@ -19,14 +20,15 @@ target_include_directories(liteanno_test_helper PRIVATE "${CMAKE_CURRENT_SOURCE_
 target_link_libraries(liteanno_test_helper PRIVATE liteanno_application Qt6::Core)
 
 function(liteanno_add_test name)
-    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h)
+    add_executable(${name} ${ARGN} common/TestData.h common/FileBlocker.h common/FolderBlocker.h)
     target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(${name} PRIVATE
         liteanno_application liteanno_platform liteanno_formats liteanno_core liteanno_nlohmann_json Qt6::Test)
     target_compile_definitions(${name} PRIVATE
         LITEANNO_TEST_DATA_DIR="${LITEANNO_TEST_DATA_DIR}"
         LITEANNO_TEST_HELPER="$<TARGET_FILE:liteanno_test_helper>")
-    add_test(NAME ${name} COMMAND ${name})
+    # Each item's result also goes to a file, so CI can list skipped items on every platform.
+    add_test(NAME ${name} COMMAND ${name} -o -,txt -o "${CMAKE_BINARY_DIR}/test-results/${name}.txt,txt")
     liteanno_set_test_environment(${name})
 endfunction()
 
@@ -45,6 +47,8 @@ liteanno_add_test(tst_reliablesave application/tst_reliablesave.cpp common/Relia
 add_dependencies(tst_reliablesave liteanno_test_helper)
 liteanno_add_test(tst_documentsession application/tst_documentsession.cpp common/ReliableSaveTestData.h)
 liteanno_add_test(tst_directoryscanner dataset/tst_directoryscanner.cpp)
+liteanno_add_test(tst_catalog dataset/tst_catalog.cpp)
+liteanno_add_test(tst_projectcatalog application/tst_projectcatalog.cpp)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions
@@ -94,6 +98,16 @@ if(LITEANNO_BUILD_UI)
         set_property(TEST upstream_compat_catches_changed_types PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         liteanno_set_test_environment(upstream_compat_catches_changed_types)
     endif()
+
+    # Architecture 14: catalog timings; CI runs it with larger folders and prints the table.
+    add_executable(liteanno_catalog_benchmark tools/catalog_benchmark.cpp)
+    target_link_libraries(liteanno_catalog_benchmark PRIVATE liteanno_ui_lib liteanno_application liteanno_imaging Qt6::Widgets)
+    if(WIN32)
+        target_link_libraries(liteanno_catalog_benchmark PRIVATE psapi)
+    endif()
+    add_test(NAME catalog_benchmark_runs
+        COMMAND liteanno_catalog_benchmark "${CMAKE_CURRENT_BINARY_DIR}/benchmark" 2000)
+    liteanno_set_test_environment(catalog_benchmark_runs)
 
     liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
     target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)

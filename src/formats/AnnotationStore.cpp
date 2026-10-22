@@ -131,6 +131,12 @@ SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, con
             if (result.status != SaveStatus::Saved)
                 return result;
         }
+        if (options.mayWrite) {
+            result = options.mayWrite();
+            result.attempts = attempt;
+            if (result.status != SaveStatus::Saved)
+                return result;
+        }
         result = writeOnce(path, bytes);
         result.attempts = attempt;
         if (result.status == SaveStatus::Saved)

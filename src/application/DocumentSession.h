@@ -35,6 +35,10 @@ public:
     // decided on yet: saving would replace that record.
     void setBlocked(bool blocked) { m_blocked = blocked; }
     bool isBlocked() const { return m_blocked; }
+    // Another image with the same stem appeared or went away (format spec 2): with a
+    // collision the shared annotation file must not be written.
+    void setNameCollision(bool collision) { m_nameCollision = collision; }
+    bool hasNameCollision() const { return m_nameCollision; }
 
     // Edits. Each one that changes something becomes one undo step; read-only documents
     // refuse all of them.
@@ -63,6 +67,9 @@ public:
 
     // Saving. needsSave() says whether the current content differs from the file on disk.
     bool needsSave() const { return m_annotation.file.needsWrite(); }
+    // The current content and the stamp of the file it was read from, without handing it
+    // to a save: edits kept in memory while they cannot be written.
+    formats::LoadedAnnotation copy() const { return {m_annotation.file.clone(), m_annotation.stamp}; }
     // A copy to hand to the saver. Until its save is acknowledged with savedSnapshot(), the
     // file may change under the session, so going back to the saved entry still needs a save.
     SaveSnapshot snapshot();

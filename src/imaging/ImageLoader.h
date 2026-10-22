@@ -5,6 +5,8 @@
 #include <QImage>
 #include <QString>
 
+#include <optional>
+
 namespace liteanno::imaging {
 
 struct LoadedImage {
@@ -18,5 +20,10 @@ struct LoadedImage {
 // extension is wrong, turned upright like OpenCV, first frame only. 16-bit and float images
 // are mapped to 8 bits for display; coordinates do not change.
 LoadedImage loadImage(const QString& path);
+
+// Only the size after orientation and the orientation, from the file header where the
+// format allows it (the second scan stage checks sizes without decoding). Empty when the
+// file is not a readable image.
+std::optional<ImageInfo> readImageInfo(const QString& path);
 
 } // namespace liteanno::imaging

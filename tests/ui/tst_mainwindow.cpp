@@ -16,12 +16,18 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPushButton>
+#include <QScopeGuard>
+#include <QSemaphore>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
+
+#include <atomic>
+#include <memory>
 
 using namespace liteanno;
 using namespace liteanno::ui;
@@ -105,8 +111,12 @@ struct Answers {
     ExternalChangeChoice externalChange = ExternalChangeChoice::Reload;
     RecoveryChoice recovery = RecoveryChoice::Restore;
     bool discardUnsaved = false;
-    // Runs while the recovery question is shown, like a repaint behind a dialog.
+    // Run while the recovery question or a message is shown, like the event loop behind a
+    // dialog.
     std::function<void()> duringRecovery;
+    std::function<void()> duringMessage;
+    std::function<void()> duringExternalChange;
+    std::function<void()> duringLabel;
 
     int externalChangeAsked = 0;
     QList<application::RecoveryState> recoveryAsked;
@@ -117,6 +127,8 @@ struct Answers {
     {
         Prompts p;
         p.chooseLabel = [this](const QStringList&, const QString&) -> std::optional<QString> {
+            if (duringLabel)
+                duringLabel();
             if (label.isEmpty())
                 return std::nullopt;
             return label;
@@ -124,6 +136,8 @@ struct Answers {
         p.skipReason = [this]() -> std::optional<QString> { return skipReason; };
         p.externalChange = [this](const QString&) {
             ++externalChangeAsked;
+            if (duringExternalChange)
+                duringExternalChange();
             return externalChange;
         };
         p.recovery = [this](const application::RecoveryCandidate& candidate, const QByteArray&) {
@@ -136,7 +150,11 @@ struct Answers {
             ++discardAsked;
             return discardUnsaved;
         };
-        p.message = [this](const QString& title, const QString& text) { messages.append(title + QLatin1Char('\n') + text); };
+        p.message = [this](const QString& title, const QString& text) {
+            messages.append(title + QLatin1Char('\n') + text);
+            if (duringMessage)
+                duringMessage();
+        };
         return p;
     }
 };
@@ -176,6 +194,7 @@ struct Project {
         MainWindow::Options o;
         o.localData = application::LocalDataPaths(local.path());
         o.idleSaveMs = 60 * 60 * 1000;  // saves happen when the tests ask for them
+        o.waitForScan = true;
         return o;
     }
 };
@@ -818,6 +837,705 @@ private slots:
         QTest::newRow("40000x100") << QSize(40000, 100);
         QTest::newRow("1x1") << QSize(1, 1);
         QTest::newRow("200x100") << QSize(200, 100);
+    }
+
+    // Architecture 6: the list and its statuses come from the catalog; saves update it, and
+    // "重新扫描" finds files added or removed by other programs without losing the image shown.
+    void catalogListAndRescan()
+    {
+        Project project;
+        writeFile(project.json(2),
+                  R"({"version": "2.4.0", "flags": {}, "shapes": [], "imagePath": "0002.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200, "checked": true})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY2(list->item(1)->text().contains(QStringLiteral(u"[已确认]")), qPrintable(list->item(1)->text()));
+        QVERIFY(list->item(2)->text().contains(QStringLiteral(u"[未处理]")));
+
+        // A save of the first image goes into the catalog as written.
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.goToImage(2));
+        w.window.flushSaves();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        dataset::CatalogEntry first = *w.window.catalog()->reader().image(QStringLiteral("line1/0001.png"));
+        QCOMPARE(first.status, AnnotationStatus::Confirmed);
+        QVERIFY(first.verified);
+
+        // Another program adds one image and removes another; the image shown stays shown.
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0000.png"))));
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0002.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.imageCount(), 3);
+        QCOMPARE(list->item(0)->text(), QStringLiteral(u"line1/0000.png  [未处理]"));
+        QCOMPARE(w.window.currentIndex(), 2);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QVERIFY(list->item(1)->text().contains(QStringLiteral(u"[已确认]")));
+
+        // The image shown is removed: it stays in the list until it is left.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0003.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.imageCount(), 3);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QVERIFY(w.window.goToImage(0));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0000.png"));
+    }
+
+    // An image that gets a name collision while shown becomes read-only: saving would write
+    // the annotation file the other image shares (format spec 2).
+    void nameCollisionFoundWhileShown()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.document().shapes().isEmpty());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+
+        // The other image goes away again: editable again.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+    }
+
+    // Edits not saved yet when the collision is found are neither written to the shared file
+    // nor lost: they stay with the image, and closing asks before giving them up.
+    void unsavedEditsSurviveANameCollision()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(w.window.session()->isReadOnly());
+
+        // Away and back: the rectangle is still there, still not written. The list is now
+        // 0001.jpg, 0001.png, 0002.png, 0003.png.
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(w.window.goToImage(3));
+        w.window.flushSaves();
+        QVERIFY(w.window.goToImage(1));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.window.session()->isReadOnly());
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+
+        // Closing asks; declined, the project stays open with the edits.
+        w.answers.discardUnsaved = false;
+        QVERIFY(!w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        // The other image is renamed away: the edits are saved after all.
+        QVERIFY(QFile::rename(project.data.filePath(QStringLiteral("line1/0001.jpg")),
+                              project.data.filePath(QStringLiteral("line1/0009.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+    }
+
+    // Review of 9a46be8: the receipt of a save started before the collision was found comes
+    // back after newer edits were held. It must not take those edits with it.
+    void olderReceiptKeepsNewerHeldEdits()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        auto written = std::make_shared<QSemaphore>();
+        auto release = std::make_shared<QSemaphore>();
+        auto hold = std::make_shared<std::atomic<bool>>(false);
+        options.saveStageHook = [written, release, hold](application::SaveStage stage) {
+            if (stage == application::SaveStage::AnnotationWritten && hold->exchange(false)) {
+                written->release();
+                release->tryAcquire(1, 20000);
+            }
+        };
+        Window w(options);
+        const auto unblock = qScopeGuard([&] { release->release(); });
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+
+        // The first rectangle is written; its receipt is held back.
+        hold->store(true);
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QVERIFY(written->tryAcquire(1, 10000));
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+
+        // A second rectangle, then the same-name image appears: both are held.
+        w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+        QCOMPARE(w.document().shapes().size(), 2);
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(w.window.session()->isReadOnly());
+
+        // The old save finishes; its receipt is handled while switching away.
+        release->release();
+        QVERIFY(w.window.saver()->waitUntilAllDone(10000));
+
+        // Away and back: both rectangles, still not written; closing asks.
+        QVERIFY(w.window.goToImage(3));
+        w.window.flushSaves();
+        QVERIFY(w.window.goToImage(1));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 2);
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        w.answers.discardUnsaved = false;
+        QVERIFY(!w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+
+        // Once the other image is gone, the second rectangle is written too.
+        QVERIFY(QFile::rename(project.data.filePath(QStringLiteral("line1/0001.jpg")),
+                              project.data.filePath(QStringLiteral("line1/0009.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 2);
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 1);
+    }
+
+    // A recovery record of an image that now has a same-name image is not restored: that
+    // would write the annotation file the two share. It is offered once the collision is gone.
+    void recoveryRecordWaitsForANameCollision()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+        const QByteArray external = readFile(project.json(1));
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+
+        Window w(project.options());
+        w.answers.recovery = RecoveryChoice::Restore;
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        // The list is now 0001.jpg, 0001.png, 0002.png, 0003.png.
+        QVERIFY(w.window.goToImage(1));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.answers.recoveryAsked.isEmpty());
+        QVERIFY(w.window.session()->isReadOnly());
+        w.window.resolveRecoveryRecords();
+        QVERIFY(w.answers.recoveryAsked.isEmpty());
+        QCOMPARE(readFile(project.json(1)), external);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // The other image is renamed away while this one is shown: the record is offered now.
+        QVERIFY(QFile::rename(project.data.filePath(QStringLiteral("line1/0001.jpg")),
+                              project.data.filePath(QStringLiteral("line1/0009.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QTRY_COMPARE(w.answers.recoveryAsked.size(), 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.document().shapes().size(), 2);
+    }
+
+    // Review of ed16295, item 1: the other image is deleted, so the list gets shorter. While
+    // the recovery question is shown, the status check finishes and the list is refreshed;
+    // the list and the images behind it must already agree.
+    void recoveryQuestionAfterTheListShrinks()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(w.window.goToImage(1));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.answers.recoveryAsked.isEmpty());
+
+        auto* list = w.window.findChild<QListWidget*>();
+        QVERIFY(list);
+        int listed = -1;
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.answers.duringRecovery = [&] {
+            listed = list->count();
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QTRY_COMPARE(w.answers.recoveryAsked.size(), 1);
+        QCOMPARE(listed, 3);
+        QCOMPARE(w.window.imageCount(), 3);
+        QCOMPARE(list->count(), 3);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 2);
+        QVERIFY(!w.window.session()->isReadOnly());
+    }
+
+    // Review of ed16295, item 2: an older recovery record is restored while newer edits are
+    // held. The file the program just wrote is what the held edits replace, not an external
+    // change.
+    void heldEditsAfterRestoringAnOlderRecord()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+
+        // The first save meets an external change; the edit goes to a recovery record.
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        writeFile(project.json(1), QByteArray(R"({"version": "2.4.0", "flags": {}, "shapes": [], "imagePath": "0001.png", )"
+                                              R"("imageData": null, "imageHeight": 100, "imageWidth": 200})"));
+        w.answers.externalChange = ExternalChangeChoice::Later;
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(w.answers.externalChangeAsked, 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // A second rectangle, then a same-name image: both rectangles are held.
+        w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(w.window.session()->isReadOnly());
+        QVERIFY(w.window.goToImage(3));
+        w.window.flushSaves();
+
+        // The collision is gone; the older record is restored from the menu.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.recoveryAsked.size(), 1);
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+
+        // The held rectangles are saved over it without an external-change question.
+        QVERIFY(w.window.goToImage(0));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 2);
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(w.answers.externalChangeAsked, 1);
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 2);
+        QVERIFY(w.window.closeProject());
+        QCOMPARE(w.answers.discardAsked, 0);
+    }
+
+    // Review of 30af45f: switching images shows "修改没有写入" for an earlier failed save. While
+    // it is shown, a rescan finds the second image deleted and the list gets shorter. The
+    // switch goes to the image that was asked for, found by its path.
+    void listShrinksDuringAMessageWhileSwitching()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QVERIFY(w.window.saver()->waitUntilAllDone(10000));  // its result is not handled yet
+
+        auto* list = w.window.findChild<QListWidget*>();
+        QVERIFY(list);
+        w.answers.duringMessage = [&] {
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0002.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.goToImage(2));
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(w.window.imageCount(), 2);
+        QCOMPARE(list->count(), 2);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0003.png"));
+        QCOMPARE(w.window.currentIndex(), 1);
+        QCOMPARE(list->currentRow(), 1);
+        unblockRecoveryFolder(project.local.path());
+    }
+
+    // The image asked for is deleted while the message is shown: it is handled like an image
+    // deleted while shown, and the list and the image shown still agree.
+    void targetDeletedDuringAMessageWhileSwitching()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        blockRecoveryFolder(project.local.path());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        QVERIFY(w.window.saver()->waitUntilAllDone(10000));
+
+        auto* list = w.window.findChild<QListWidget*>();
+        w.answers.duringMessage = [&] {
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0003.png"))));
+        w.window.rescan();
+        w.window.goToImage(2);
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(list->count(), w.window.imageCount());
+        QVERIFY(w.window.currentIndex() >= 0 && w.window.currentIndex() < w.window.imageCount());
+        QCOMPARE(list->currentRow(), w.window.currentIndex());
+        QCOMPARE(list->currentItem()->text(), QStringLiteral("line1/0003.png"));
+        QVERIFY(!w.window.session());
+        // The other images are still there to go to.
+        QVERIFY(w.window.goToImage(0));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QCOMPARE(w.document().shapes().size(), 1);
+        unblockRecoveryFolder(project.local.path());
+    }
+
+    // Review of 80932e9, item 1: while the external-change question is shown, a scan finds a
+    // same-name image. "用我的版本覆盖" must not write the file the two images share.
+    void overwriteAfterACollisionFoundDuringTheQuestion()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        const QByteArray external = R"({"version": "2.4.0", "flags": {}, "shapes": [], "imagePath": "0001.png", )"
+                                    R"("imageData": null, "imageHeight": 100, "imageWidth": 200})";
+        writeFile(project.json(1), external);
+        w.answers.externalChange = ExternalChangeChoice::Overwrite;
+        w.answers.duringExternalChange = [&] {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::gray);
+            QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+            w.window.rescan();
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(w.answers.externalChangeAsked, 1);
+        QCOMPARE(readFile(project.json(1)), external);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.window.session()->isReadOnly());
+        QCOMPARE(w.document().shapes().size(), 1);
+        w.answers.discardUnsaved = false;
+        QVERIFY(!w.window.closeProject());
+        QCOMPARE(readFile(project.json(1)), external);
+    }
+
+    // The same for a recovery record restored at open: the same-name image appears while
+    // the question is shown.
+    void restoreAfterACollisionAppearsDuringTheQuestion()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+        const QByteArray external = readFile(project.json(1));
+
+        Window w(project.options());
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.answers.duringRecovery = [&] {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::gray);
+            QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        };
+        QVERIFY(w.window.openProject(project.data.path()));
+        QCOMPARE(w.answers.recoveryAsked.size(), 1);
+        QCOMPARE(readFile(project.json(1)), external);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+    }
+
+    // The last check is in the save itself: a same-name image that appears after the save
+    // was handed over keeps it from writing the shared file. The edits are not lost.
+    void collisionAppearsWhileSaving()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        QString jpg;
+        options.saveStageHook = [&jpg](application::SaveStage stage) {
+            if (stage == application::SaveStage::RecoveryRecordWritten && !jpg.isEmpty()) {
+                QImage image(200, 100, QImage::Format_RGB32);
+                image.fill(Qt::gray);
+                image.save(std::exchange(jpg, QString()));
+            }
+        };
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        jpg = project.data.filePath(QStringLiteral("line1/0001.jpg"));
+        w.window.saveNow();
+        w.window.flushSaves();
+        QVERIFY(!QFile::exists(project.json(1)));
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        // The other image goes away: the edits on screen are saved, which replaces the
+        // record, and nothing is held back any more.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.jpg"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(w.window.goToImage(1));
+        QVERIFY(w.window.goToImage(0));
+        QCoreApplication::processEvents();
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.answers.recoveryAsked.size(), 0);
+    }
+
+    // Review of 80932e9, item 2: the listing is kept aside while a question is shown, and
+    // the status check finishes meanwhile. Applying the kept listing must not drop the
+    // statuses the check found.
+    void statusesFoundDuringAQuestionStay()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        writeFile(project.json(2), R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], )"
+                                   R"("imagePath": "0002.png", "imageData": null, "imageWidth": 200, "imageHeight": 100})");
+        QSemaphore listed, checkMayStart;
+        const QMetaObject::Connection connection = QObject::connect(
+            w.window.catalog(), &application::ProjectCatalog::scanFinished, w.window.catalog(),
+            [&](bool) {
+                listed.release();
+                checkMayStart.tryAcquire(1, 20000);
+            },
+            Qt::DirectConnection);
+        auto* list = w.window.findChild<QListWidget*>();
+        QString during;
+        w.answers.duringLabel = [&] {
+            QVERIFY(listed.tryAcquire(1, 10000));
+            QCoreApplication::processEvents();  // the listing arrives and is kept aside
+            QObject::disconnect(connection);
+            checkMayStart.release();
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();  // the check finishes
+            during = list->item(1)->text();
+        };
+        w.window.rescan();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(during.contains(QStringLiteral("0002.png  [")));
+        QCOMPARE(list->item(1)->text(), during);
+    }
+
+    // Review of 1f6ee17: "处理未写入的编辑…" meets a same-name image during the question, so the
+    // record is not restored; while that message is shown the other image goes away again.
+    // The record is still not handled, so the image must stay read-only until it is; then it
+    // is asked about again.
+    void recordStaysProtectedWhenTheCollisionGoesAway()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            w.window.saveNow();
+            w.window.flushSaves();
+            QJsonObject external = readJson(project.json(1));
+            external.insert(QStringLiteral("shapes"), QJsonArray());
+            writeFile(project.json(1), QJsonDocument(external).toJson());
+            w.drawRectangle(QPointF(100, 10), QPointF(150, 60));
+            w.answers.externalChange = ExternalChangeChoice::Later;
+            QVERIFY(w.window.closeProject());
+        }
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        Window w(project.options());
+        w.answers.recovery = RecoveryChoice::Later;
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0001.png"));
+        QVERIFY(w.window.session()->isReadOnly());
+
+        const QString jpg = project.data.filePath(QStringLiteral("line1/0001.jpg"));
+        w.answers.recovery = RecoveryChoice::Restore;
+        w.answers.duringRecovery = [&] {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::gray);
+            QVERIFY(image.save(jpg));
+        };
+        w.answers.duringMessage = [&] {
+            w.answers.duringMessage = nullptr;
+            w.answers.duringRecovery = nullptr;
+            QVERIFY(QFile::remove(jpg));
+            w.window.rescan();
+            QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+            QCoreApplication::processEvents();
+        };
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.recoveryAsked.size(), 2);
+        QCOMPARE(w.answers.messages.size(), 1);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // Still protected: a new rectangle is refused.
+        QVERIFY(w.window.session()->isReadOnly());
+        w.drawRectangle(QPointF(20, 70), QPointF(60, 95));
+        w.window.saveNow();
+        w.window.flushSaves();
+        QCOMPARE(recoveryRecordCount(project.local.path()), 1);
+
+        // Asked again now that nothing holds the record back; restored.
+        QTRY_COMPARE(w.answers.recoveryAsked.size(), 3);
+        QCOMPARE(recoveryRecordCount(project.local.path()), 0);
+        QVERIFY(!w.window.session()->isReadOnly());
+        QCOMPARE(w.document().shapes().size(), 2);
+        QCOMPARE(readJson(project.json(1)).value(QStringLiteral("shapes")).toArray().size(), 2);
+    }
+
+    // Without any catalog (no cache folder, no temporary folder) the folder is still listed
+    // and the images can be labelled.
+    void noCatalogAtAll()
+    {
+        Project project;
+        writeFile(project.local.filePath(QStringLiteral("cache")), "not a folder");
+        QTemporaryDir other;
+        const QString blockedTemp = other.filePath(QStringLiteral("temp-is-a-file"));
+        writeFile(blockedTemp, "not a folder");
+        const QByteArray names[] = {"TMPDIR", "TMP", "TEMP"};
+        QList<QByteArray> saved;
+        for (const QByteArray& name : names) {
+            saved.append(qgetenv(name.constData()));
+            qputenv(name.constData(), QFile::encodeName(blockedTemp));
+        }
+        const auto restore = qScopeGuard([&] {
+            for (int i = 0; i < 3; ++i) {
+                if (saved[i].isEmpty())
+                    qunsetenv(names[i].constData());
+                else
+                    qputenv(names[i].constData(), saved[i]);
+            }
+        });
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(!w.window.catalog());
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(w.window.session());
+        QVERIFY(w.window.findChild<QLabel*>(QStringLiteral("scanState"))->text().isEmpty());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.nextImage());
+        w.window.flushSaves();
+        QVERIFY(QFile::exists(project.json(1)));
+
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0004.png"))));
+        w.window.rescan();
+        QCOMPARE(w.window.imageCount(), 4);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+    }
+
+    // Opening again shows what the catalog knows before anything is read again.
+    void reopenedProjectUsesTheCatalog()
+    {
+        Project project;
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+            QVERIFY(w.window.confirmCurrent());
+            QVERIFY(w.window.closeProject());
+        }
+        MainWindow::Options options = project.options();
+        options.waitForScan = false;
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(list->item(0)->text().contains(QStringLiteral(u"[已确认]")));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
     }
 
     void zoomNeverTurnsTheOtherWay()

@@ -2,6 +2,10 @@
 
 #include "core/ReviewState.h"
 
+#include <QString>
+
+#include <optional>
+
 namespace liteanno {
 
 // Derived status of one image (format spec 5.1), in the order it is decided.
@@ -37,5 +41,7 @@ AnnotationStatus deriveStatus(const StatusFacts& facts);
 bool countsAsDone(AnnotationStatus status);
 
 const char* annotationStatusName(AnnotationStatus status);
+// The inverse of annotationStatusName(); nothing for a name it never returns.
+std::optional<AnnotationStatus> annotationStatusFromName(const QString& name);
 
 } // namespace liteanno

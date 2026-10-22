@@ -3,9 +3,13 @@ add_library(liteanno_application STATIC
     BackgroundSaver.h
     DocumentSession.cpp
     DocumentSession.h
+    FileStatus.cpp
+    FileStatus.h
     LocalDataPaths.cpp
     LocalDataPaths.h
     ProjectLock.cpp
+    ProjectCatalog.cpp
+    ProjectCatalog.h
     ProjectLock.h
     ProjectSession.cpp
     ProjectSession.h

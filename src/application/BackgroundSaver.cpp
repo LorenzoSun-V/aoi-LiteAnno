@@ -121,6 +121,12 @@ bool BackgroundSaver::waitUntilAllDone(int timeoutMs)
     return waitFor(timeoutMs, [this] { return m_queue.empty() && m_running.isEmpty(); });
 }
 
+bool BackgroundSaver::hasResults() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return !m_results.empty();
+}
+
 std::vector<SaveJobResult> BackgroundSaver::takeResults()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -158,6 +164,7 @@ void BackgroundSaver::run()
         result.imagePath = job.snapshot.imagePath;
         result.sessionId = job.snapshot.sessionId;
         result.entryId = job.snapshot.entryId;
+        result.documentVersion = job.snapshot.documentVersion;
         result.outcome = m_coordinator.save(job.snapshot.imagePath, job.snapshot.annotation,
                                             job.snapshot.documentVersion, job.options);
         result.stamp = job.snapshot.annotation.stamp;

@@ -49,6 +49,27 @@ jobs:
           ctest --preset windows-msvc
           if ($LASTEXITCODE -ne 0) { ctest --preset windows-msvc --rerun-failed -V; exit 1 }
 
+      - name: Skipped test items
+        # Each Qt test item that was skipped (for example a permission test that cannot block
+        # a file here), and each program's totals, from the result files the tests write.
+        run: |
+          $files = Get-ChildItem build/windows-msvc/test-results/*.txt
+          if (-not $files) { Write-Error "no test result files"; exit 1 }
+          $lines = foreach ($file in $files) {
+            Select-String -Path $file.FullName -Pattern '^(SKIP   :|Totals:)' | ForEach-Object { "$($file.BaseName): $($_.Line)" }
+          }
+          $lines
+          "### Skipped test items (Windows)`n``````n$($lines -join "`n")`n``````" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Catalog timings
+        # Architecture 14: measured on every run and shown in the run summary.
+        run: |
+          $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          foreach ($count in 5000, 200000) {
+            & build/windows-msvc/Release/liteanno_catalog_benchmark.exe "$env:RUNNER_TEMP" $count | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
   linux:
     name: Linux x64 (GCC)
     runs-on: ubuntu-24.04
@@ -87,3 +108,18 @@ jobs:
 
       - name: Test
         run: ctest --preset linux-gcc || { ctest --preset linux-gcc --rerun-failed -V; exit 1; }
+
+      - name: Skipped test items
+        # Each Qt test item that was skipped, and each program's totals, from the result files.
+        run: |
+          lines=$(grep -E '^(SKIP   :|Totals:)' build/linux-gcc/test-results/*.txt || true)
+          echo "$lines"
+          printf '### Skipped test items (Linux)\n```\n%s\n```\n' "$lines" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Catalog timings
+        # Architecture 14: measured on every run and shown in the run summary.
+        run: |
+          set -o pipefail
+          for count in 5000 200000; do
+            build/linux-gcc/tests/liteanno_catalog_benchmark "$RUNNER_TEMP" "$count" | tee -a "$GITHUB_STEP_SUMMARY"
+          done

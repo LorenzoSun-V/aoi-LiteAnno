@@ -40,6 +40,7 @@ enum class RecordStatus {
     Conflict,  // the file changed after the edit began; nothing written
     Stale,     // the record changed since the scan (a newer edit was saved there); nothing done
     Failed,    // the file or the record cannot be read or written now; nothing removed
+    NameCollision,  // a same-name image is next to the image (format spec 2); nothing written
 };
 
 struct RecordResult {

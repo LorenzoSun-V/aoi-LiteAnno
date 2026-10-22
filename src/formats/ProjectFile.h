@@ -13,6 +13,8 @@ struct ProjectFileResult {
     std::optional<ProjectConfig> config;  // nullopt when the file cannot be used
     QString field;  // JSON pointer of the offending field, "" for the whole file
     QString error;  // why the file was rejected, in English
+    // SHA-256 of the file's bytes: changes whenever the project's rules may have changed.
+    QString digest;
 };
 
 // Reads liteanno/project.json (format spec section 6). Any invalid field rejects the whole

@@ -24,6 +24,8 @@ enum class SaveStage {
 struct SaveOutcome {
     formats::SaveResult result;
     bool recoveryRecordKept = false;  // the edit is safe in a local record (failure, external change)
+    // Not written: another image with the same stem is next to it (format spec 2).
+    bool nameCollision = false;
 };
 
 // Saves one document the way architecture section 8.1 describes: the snapshot goes to a

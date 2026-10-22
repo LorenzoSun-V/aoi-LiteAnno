@@ -21,6 +21,7 @@ struct SaveJobResult {
     QString imagePath;
     quint64 sessionId = 0;
     quint64 entryId = 0;
+    qint64 documentVersion = 0;
     SaveOutcome outcome;
     // The clone that was saved, and the file after the save; for DocumentSession::savedSnapshot.
     // After a failed save, the edits that were not written and the file they expect.
@@ -62,6 +63,8 @@ public:
 
     // Finished saves, oldest first. Call on the thread that owns the documents.
     std::vector<SaveJobResult> takeResults();
+    // Finished saves not taken yet. A save leaves pendingCount() and arrives here at once.
+    bool hasResults() const;
 
     const SaveCoordinator& coordinator() const { return m_coordinator; }
 

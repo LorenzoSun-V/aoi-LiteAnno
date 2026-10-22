@@ -24,10 +24,8 @@ bool isDigit(QChar c)
 
 } // namespace
 
-bool naturalLess(const QString& a, const QString& b)
+int compareFoldedNaturally(QStringView fa, QStringView fb)
 {
-    const QString fa = a.toCaseFolded();
-    const QString fb = b.toCaseFolded();
     qsizetype i = 0;
     qsizetype j = 0;
     while (i < fa.size() && j < fb.size()) {
@@ -38,9 +36,9 @@ bool naturalLess(const QString& a, const QString& b)
             qsizetype ej = j;
             while (ej < fb.size() && isDigit(fb[ej]))
                 ++ej;
-            const int c = compareDigits(QStringView(fa).mid(i, ei - i), QStringView(fb).mid(j, ej - j));
+            const int c = compareDigits(fa.mid(i, ei - i), fb.mid(j, ej - j));
             if (c != 0)
-                return c < 0;
+                return c;
             i = ei;
             j = ej;
             continue;
@@ -49,15 +47,26 @@ bool naturalLess(const QString& a, const QString& b)
         const bool sa = fa[i] == QLatin1Char('/');
         const bool sb = fb[j] == QLatin1Char('/');
         if (sa != sb)
-            return sa;
+            return sa ? -1 : 1;
         if (fa[i] != fb[j])
-            return fa[i] < fb[j];
+            return fa[i] < fb[j] ? -1 : 1;
         ++i;
         ++j;
     }
     if ((i < fa.size()) != (j < fb.size()))
-        return j < fb.size();
-    return a < b;
+        return j < fb.size() ? -1 : 1;
+    return 0;
+}
+
+bool naturalLess(const QString& a, const QString& b)
+{
+    const int c = compareFoldedNaturally(a.toCaseFolded(), b.toCaseFolded());
+    return c != 0 ? c < 0 : a < b;
+}
+
+void sortNaturally(QStringList& names)
+{
+    sortNaturally(names, [](const QString& name) -> const QString& { return name; });
 }
 
 } // namespace liteanno::dataset

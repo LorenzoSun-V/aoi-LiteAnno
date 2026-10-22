@@ -11,9 +11,10 @@
 
 namespace liteanno::application {
 
-ProjectSession::ProjectSession(ProjectConfig config, ProjectLocation location, LocalDataPaths paths,
-                               std::unique_ptr<ProjectLock> lock)
+ProjectSession::ProjectSession(ProjectConfig config, QString configDigest, ProjectLocation location,
+                               LocalDataPaths paths, std::unique_ptr<ProjectLock> lock)
     : m_config(std::move(config))
+    , m_configDigest(std::move(configDigest))
     , m_location(std::move(location))
     , m_paths(std::move(paths))
     , m_lock(std::move(lock))
@@ -63,7 +64,7 @@ ProjectSession::OpenResult ProjectSession::open(const QString& root, const Local
     }
 
     ProjectLocation location{parsed.config->projectId, bindingId, rootPath};
-    result.session.reset(new ProjectSession(std::move(*parsed.config), std::move(location), paths, std::move(lock)));
+    result.session.reset(new ProjectSession(std::move(*parsed.config), std::move(parsed.digest), std::move(location), paths, std::move(lock)));
     return result;
 }
 

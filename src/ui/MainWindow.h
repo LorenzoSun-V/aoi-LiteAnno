@@ -3,8 +3,9 @@
 #include "application/BackgroundSaver.h"
 #include "application/DocumentSession.h"
 #include "application/LocalDataPaths.h"
+#include "application/ProjectCatalog.h"
 #include "application/ProjectSession.h"
-#include "dataset/DirectoryScanner.h"
+#include "dataset/Catalog.h"
 #include "ui/Canvas.h"
 #include "ui/Prompts.h"
 
@@ -31,6 +32,8 @@ struct MainWindowOptions {
     int idleSaveMs = 800;  // save this long after the last edit
     // Tests slow saves down with it.
     std::function<void(application::SaveStage)> saveStageHook;
+    // Opening a project waits until its folder is listed (tests).
+    bool waitForScan = false;
 };
 
 // The editing window: one project, one image at a time (milestone 2).
@@ -44,7 +47,8 @@ public:
     explicit MainWindow(Options options = Options(), QWidget* parent = nullptr);
     ~MainWindow() override;
 
-    void setPrompts(Prompts prompts) { m_prompts = std::move(prompts); }
+    // Every question holds the image list while it is shown; see ListHold.
+    void setPrompts(Prompts prompts);
 
     // Opens the project whose data root is `root`. Reports problems through the prompts.
     bool openProject(const QString& root);
@@ -61,6 +65,10 @@ public:
     void flushSaves();
     // "处理未写入的编辑…": asks again about every recovery record, then reopens the image.
     void resolveRecoveryRecords();
+    // "重新扫描": lists the folder again and checks what changed (architecture 6.1).
+    void rescan();
+    application::ProjectCatalog* catalog() const { return m_catalog.get(); }
+    application::BackgroundSaver* saver() const { return m_saver.get(); }
 
     // For tests and status displays.
     int imageCount() const { return int(m_images.size()); }
@@ -99,6 +107,15 @@ private:
     void edited();
     void refresh();
     void refreshImageItem(int index);
+    QString imageItemText(const QString& path) const;
+    // The image list from the catalog; the current image stays current.
+    void reloadImages();
+    void setImages(QList<dataset::CatalogEntry> images);
+    void reloadStatuses();
+    void scanFinished(bool complete);
+    // Without a catalog: lists the folder here, on this thread, and shows no statuses.
+    void listWithoutCatalog();
+    void showScanReports(const QStringList& unsupported, const QStringList& unreadable);
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;
@@ -107,7 +124,9 @@ private:
     Prompts m_prompts;
     std::unique_ptr<application::ProjectSession> m_project;
     std::unique_ptr<application::BackgroundSaver> m_saver;
-    QList<dataset::ScannedImage> m_images;
+    std::unique_ptr<application::ProjectCatalog> m_catalog;
+    QList<dataset::CatalogEntry> m_images;
+    QHash<QString, int> m_imageIndex;
     QHash<QString, AnnotationStatus> m_statuses;
     int m_current = -1;
     std::unique_ptr<application::DocumentSession> m_session;
@@ -120,14 +139,53 @@ private:
     // Recovery records the user answered "以后再说" for; their images stay read-only so that
     // a new save does not replace the record.
     QSet<QString> m_deferredRecords;
+    // Recovery records not offered because the image has a name collision: writing them
+    // would go into the annotation file the images share. Offered once the collision is gone.
+    QSet<QString> m_collisionRecords;
     // Edits whose save failed and left no recovery record (the local folder was not writable
     // either). They live only here; opening the image again continues from them.
     struct HeldEdit {
         std::shared_ptr<formats::AnnotationFile> file;
         formats::FileStamp stamp;
         QString error;
+        // The session and its document version the edits come from. Sessions are numbered
+        // in the order they were opened, so a save result only concerns held edits that are
+        // not newer than what it saved.
+        quint64 sessionId = 0;
+        qint64 version = 0;
     };
     QHash<QString, HeldEdit> m_heldEdits;
+    // Whether edits held for the image are newer than the save of (sessionId, version).
+    // While a question is shown or saves are waited for, an event loop runs and a scan may
+    // finish. Code around those calls keeps rows of the image list; so a new list is kept
+    // aside while any hold exists and applied when the last one ends.
+    class ListHold
+    {
+    public:
+        explicit ListHold(MainWindow* window);
+        ~ListHold();
+        ListHold(const ListHold&) = delete;
+        ListHold& operator=(const ListHold&) = delete;
+
+    private:
+        MainWindow* m_window;
+    };
+    int m_listHolds = 0;
+    std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
+    // A recovery record of the image waits: put off by the user, or held back for a name
+    // collision. The image is read-only until the record is restored or given up.
+    bool recordHeldBack(const QString& imagePath) const;
+    // A same-name image on disk now, or in what the window knows.
+    bool collidesNow(const QString& imagePath) const;
+    // Queues offerUnblockedRecords() when the image shown waits only for a collision that
+    // is gone.
+    void queueOfferIfFree();
+    // Offers the recovery records of the image shown once nothing holds them back.
+    void offerUnblockedRecords();
+    // Whether the image has a name collision as far as the window knows now: the catalog,
+    // a list waiting to be applied, or the list shown.
+    bool latestNameCollision(const QString& imagePath) const;
+    bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
     QTimer m_idleTimer;
     int m_savingWaits = 0;
@@ -140,6 +198,7 @@ private:
     QLabel* m_readOnlyNote = nullptr;
     QLabel* m_blockers = nullptr;
     QLabel* m_saveState = nullptr;
+    QLabel* m_scanState = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_skipButton = nullptr;
     QPushButton* m_unskipButton = nullptr;

@@ -1,5 +1,7 @@
 #include "application/RecoveryService.h"
 
+#include "dataset/DirectoryScanner.h"
+
 #include "core/ImagePath.h"
 #include "formats/AnnotationStore.h"
 
@@ -113,8 +115,18 @@ RecordResult RecoveryService::restore(const RecoveryCandidate& candidate, bool o
         return {SaveStatus::Saved, QString()};
     };
 
+    // Format spec 2, before every write attempt: a same-name image may have appeared since
+    // the user chose to restore, or while a retry waited.
+    formats::SaveOptions restoreOptions = options;
+    restoreOptions.mayWrite = [&, outer = options.mayWrite]() -> SaveResult {
+        if (dataset::hasNameCollision(m_location.rootPath + QLatin1Char('/') + candidate.record.imagePath)) {
+            stopped = RecordStatus::NameCollision;
+            return {SaveStatus::ReadOnly, QStringLiteral(u"同一目录下有同名图片，不能写入共用的标注文件")};
+        }
+        return outer ? outer() : SaveResult{SaveStatus::Saved, QString()};
+    };
     const SaveResult written =
-        formats::writeFileAtomically(candidate.annotationPath, candidate.record.annotation, options, check);
+        formats::writeFileAtomically(candidate.annotationPath, candidate.record.annotation, restoreOptions, check);
     if (written.status != SaveStatus::Saved && !alreadySaved)
         return {written.status == SaveStatus::Failed ? RecordStatus::Failed : stopped, written.error};
     QFile::remove(candidate.recordPath);
