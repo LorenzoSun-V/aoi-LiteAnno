@@ -4,6 +4,7 @@ set(LITEANNO_UPSTREAM_PYTHON "" CACHE FILEPATH
     "A Python with X-AnyLabeling (x-anylabeling-cvhub) 4.2.0 installed; runs the round trips of format spec 11")
 
 set(LITEANNO_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/data")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/test-results")
 
 # Tests find the Qt DLLs next to Qt6Core.dll on Windows.
 function(liteanno_set_test_environment test)
@@ -26,7 +27,8 @@ function(liteanno_add_test name)
     target_compile_definitions(${name} PRIVATE
         LITEANNO_TEST_DATA_DIR="${LITEANNO_TEST_DATA_DIR}"
         LITEANNO_TEST_HELPER="$<TARGET_FILE:liteanno_test_helper>")
-    add_test(NAME ${name} COMMAND ${name})
+    # Each item's result also goes to a file, so CI can list skipped items on every platform.
+    add_test(NAME ${name} COMMAND ${name} -o -,txt -o "${CMAKE_BINARY_DIR}/test-results/${name}.txt,txt")
     liteanno_set_test_environment(${name})
 endfunction()
 
