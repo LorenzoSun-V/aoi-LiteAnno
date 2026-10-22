@@ -538,7 +538,9 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             if (!ok)
                 return fail(created.error());
             if (copyImage) {
-                const QString target = isCoco ? output + QStringLiteral("/images/") + item.image : imageTarget;
+                // COCO and masks put the images apart: a mask has the image's own name.
+                const QString target = isCoco || format == ExportFormat::Mask ? output + QStringLiteral("/images/") + item.image
+                                                                              : imageTarget;
                 if (!created.copy(m_project.imageFilePath(item.image), target))
                     return fail(created.error());
             }

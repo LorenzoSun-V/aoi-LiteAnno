@@ -15,6 +15,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,9 @@ bool exportNeedsClassIds(ExportFormat format);
 struct PyNumber {
     double value = 0;
     bool isInteger = false;
+    // An integer as the file has it, digits only, when it came from the file: a double does
+    // not hold every 64-bit integer (2^63 - 1 rounds to 2^63).
+    std::string digits;
 };
 
 struct ExportShape {
