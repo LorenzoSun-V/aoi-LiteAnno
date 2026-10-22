@@ -50,8 +50,8 @@ jobs:
           $name = "aoi-LiteAnno-$version-win64"
           $dir = "dist/$name"
           New-Item -ItemType Directory -Force $dir | Out-Null
-          Copy-Item build/windows-msvc/src/ui/Release/LiteAnno.exe $dir
-          Copy-Item build/windows-msvc/src/cli/Release/liteanno-cli.exe $dir
+          Copy-Item build/windows-msvc/Release/LiteAnno.exe $dir
+          Copy-Item build/windows-msvc/Release/liteanno-cli.exe $dir
           # Qt, the image format plugins and the Chinese translation of Qt's dialogs only.
           & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-opengl-sw --no-system-d3d-compiler `
               --no-compiler-runtime --translations zh_CN "$dir\LiteAnno.exe" "$dir\liteanno-cli.exe"
