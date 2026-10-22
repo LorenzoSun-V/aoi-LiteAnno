@@ -127,6 +127,8 @@ private:
     void dropSession();
     void edited();
     void refresh();
+    // The batch line of the status bar, and the completion event when the batch is done.
+    void refreshBatchState();
     void refreshImageItem(int index);
     QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
