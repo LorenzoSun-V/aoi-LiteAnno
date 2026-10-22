@@ -77,7 +77,7 @@ jobs:
           $missing = @()
           foreach ($file in Get-ChildItem -Recurse $dir -Include *.exe, *.dll) {
             $deps = & $dumpbin.FullName /nologo /dependents $file.FullName |
-                ForEach-Object { $_.Trim() } | Where-Object { $_ -match '\.dll$' }
+                ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[\w.\-]+\.dll$' }
             foreach ($dep in $deps) {
               $name = $dep.ToLowerInvariant()
               if ($name -like 'api-ms-*' -or $name -like 'ext-ms-*') { continue }
