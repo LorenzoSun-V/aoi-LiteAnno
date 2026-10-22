@@ -421,6 +421,33 @@ private slots:
         QCOMPARE(fileState(path).modified, before.modified);
     }
 
+    // Review of PR #8 (second round), item 3: a project file made by another program between
+    // the check and the write is kept, and the new one is not written.
+    void exclusiveCreateNeverReplaces()
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString path = dir.filePath(QStringLiteral("project.json"));
+        SaveResult result = createFileExclusively(path, "first");
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Saved));
+        QCOMPARE(fileState(path).bytes, QByteArray("first"));
+        QVERIFY(QFileInfo(path).permissions().testFlag(QFile::ReadOther));
+        // Taken before the call.
+        result = createFileExclusively(path, "second");
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::ExternallyModified));
+        QCOMPARE(fileState(path).bytes, QByteArray("first"));
+        // Taken while the new file is being written.
+        QVERIFY(QFile::remove(path));
+        result = createFileExclusively(path, "mine", [&path] {
+            QFile other(path);
+            QVERIFY(other.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+            other.write("theirs");
+        });
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::ExternallyModified));
+        QCOMPARE(fileState(path).bytes, QByteArray("theirs"));
+        QCOMPARE(QDir(dir.path()).entryList(QDir::Files | QDir::Hidden), QStringList{QStringLiteral("project.json")});
+    }
+
     // A disk that fills up part way through a write (here: a file size limit) must not leave
     // the first part of the new file in place of the old one.
     void writeCutShortIsNotCommitted()
