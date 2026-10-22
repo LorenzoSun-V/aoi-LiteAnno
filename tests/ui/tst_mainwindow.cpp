@@ -2070,6 +2070,33 @@ private slots:
         QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
     }
 
+    // A close that comes while the window waits for a save (the wait runs events) happens after
+    // the wait; closing in the middle freed what the wait was using (a crash on Windows CI).
+    void closingDuringASaveWaitWaitsForIt()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        options.saveStageHook = [](application::SaveStage stage) {
+            if (stage == application::SaveStage::RecoveryRecordWritten)
+                QThread::msleep(300);
+        };
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());
+            QVERIFY(w.window.hasProject());
+        });
+        w.window.flushSaves();
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(QFile::exists(project.json(1)));
+    }
+
     void closingDuringAnExportWaitsForIt()
     {
         // The review's steps: export, and close the window before the progress dialog shows.
