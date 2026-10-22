@@ -311,11 +311,12 @@ void MainWindow::buildUi()
         const char16_t* text;
         const char* keys;
         Canvas::Tool tool;
+        ShapeType type;
     } moreTools[] = {
-        {"create_point", u"点 (Shift+P)", "Shift+P", Canvas::Tool::Point},
-        {"create_line", u"线段 (Shift+L)", "Shift+L", Canvas::Tool::Line},
-        {"create_linestrip", u"折线 (Shift+S)", "Shift+S", Canvas::Tool::LineStrip},
-        {"create_circle", u"圆 (Shift+C)", "Shift+C", Canvas::Tool::Circle},
+        {"create_point", u"点 (Shift+P)", "Shift+P", Canvas::Tool::Point, ShapeType::Point},
+        {"create_line", u"线段 (Shift+L)", "Shift+L", Canvas::Tool::Line, ShapeType::Line},
+        {"create_linestrip", u"折线 (Shift+S)", "Shift+S", Canvas::Tool::LineStrip, ShapeType::LineStrip},
+        {"create_circle", u"圆 (Shift+C)", "Shift+C", Canvas::Tool::Circle, ShapeType::Circle},
     };
     QList<QAction*> toolActions = {m_selectTool, m_rectangleTool, m_polygonTool, m_rotationTool};
     for (const auto& more : moreTools) {
@@ -324,6 +325,7 @@ void MainWindow::buildUi()
         const Canvas::Tool tool = more.tool;
         connect(action, &QAction::triggered, this, [this, tool] { m_canvas->setTool(tool); });
         toolActions.append(action);
+        m_moreTools.append({more.type, action});
     }
     for (QAction* action : toolActions) {
         action->setCheckable(true);
@@ -405,6 +407,8 @@ bool MainWindow::openProject(const QString& root)
     m_rectangleTool->setEnabled(types.contains(ShapeType::Rectangle));
     m_polygonTool->setEnabled(types.contains(ShapeType::Polygon));
     m_rotationTool->setEnabled(types.contains(ShapeType::Rotation));
+    for (const auto& [type, action] : std::as_const(m_moreTools))
+        action->setEnabled(types.contains(type));
     m_selectTool->setChecked(true);
     m_canvas->setTool(Canvas::Tool::Select);
     buildImageLabelPanel();

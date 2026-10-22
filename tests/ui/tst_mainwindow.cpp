@@ -971,12 +971,20 @@ private slots:
         QVERIFY(!action->isEnabled());
         QTest::keyClick(canvas, Qt::Key_O);
         QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        // The same for the tools of PR #10.
+        for (const char* name : {"create_point", "create_line", "create_linestrip", "create_circle"})
+            QVERIFY2(!w.window.findChild<QAction*>(QLatin1String(name))->isEnabled(), name);
+        for (const Qt::Key key : {Qt::Key_P, Qt::Key_L, Qt::Key_S, Qt::Key_C}) {
+            QTest::keyClick(canvas, key, Qt::ShiftModifier);
+            QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        }
     }
 
     // Points, lines, line strips and circles, with upstream's keys.
     void otherShapes()
     {
         Project project;
+        project.writeProjectFile(QByteArray(), R"("point", "line", "linestrip", "circle")");
         Window w(project.options());
         QVERIFY(w.window.openProject(project.data.path()));
         Canvas* canvas = w.canvas();
