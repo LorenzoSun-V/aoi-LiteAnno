@@ -5,6 +5,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QTemporaryFile>
 #include <QThread>
 
 #include <algorithm>
@@ -147,6 +148,36 @@ SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, con
             break;
     }
     return result;
+}
+
+SaveResult createFileExclusively(const QString& path, const QByteArray& bytes, const std::function<void()>& beforePublish)
+{
+    if (QFileInfo::exists(path))
+        return {SaveStatus::ExternallyModified, QStringLiteral("the file exists")};
+    // Next to the target, so the name can be given without copying.
+    QTemporaryFile temporary(path + QStringLiteral(".XXXXXX"));
+    if (!temporary.open())
+        return {SaveStatus::Failed, temporary.errorString()};
+    // flush() reports a write cut short (disk full), which the buffered count does not.
+    if (temporary.write(bytes) != bytes.size() || !temporary.flush()) {
+        const QString error = temporary.errorString();
+        return {SaveStatus::Failed, error.isEmpty() ? QStringLiteral("the file was not written whole") : error};
+    }
+    temporary.close();
+    // A temporary file is only for its owner; the project file is read by others as usual.
+    temporary.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser
+                             | QFile::ReadGroup | QFile::ReadOther);
+    if (beforePublish)
+        beforePublish();
+    // QFile::rename never replaces a file: renameat2(RENAME_NOREPLACE) or link() on Unix,
+    // MoveFileEx without MOVEFILE_REPLACE_EXISTING on Windows; the check and the naming are one.
+    if (!temporary.rename(path)) {
+        if (QFileInfo::exists(path))
+            return {SaveStatus::ExternallyModified, QStringLiteral("the file exists")};
+        return {SaveStatus::Failed, temporary.errorString()};
+    }
+    temporary.setAutoRemove(false);
+    return {SaveStatus::Saved, QString(), 1};
 }
 
 SaveResult checkUnchanged(const QString& path, const FileStamp& expected)

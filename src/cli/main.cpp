@@ -129,15 +129,13 @@ int init(const QCommandLineParser& parser, const Common& common)
         return Usage;
     }
     QDir().mkpath(QFileInfo(file).absolutePath());
-    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up.
-    formats::SaveOptions options;
-    options.mayWrite = [&file] {
-        formats::SaveResult result;
-        result.status = QFileInfo::exists(file) ? formats::SaveStatus::ExternallyModified : formats::SaveStatus::Saved;
-        result.error = QStringLiteral(u"文件已存在");
-        return result;
-    };
-    const formats::SaveResult written = formats::writeFileAtomically(file, bytes, options);
+    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up;
+    // and never in place of a project file, also one another program makes meanwhile.
+    const formats::SaveResult written = formats::createFileExclusively(file, bytes);
+    if (written.status == formats::SaveStatus::ExternallyModified) {
+        printError(QStringLiteral(u"%1 已存在，没有改动。").arg(QDir::toNativeSeparators(file)));
+        return Failed;
+    }
     if (written.status != formats::SaveStatus::Saved) {
         printError(QStringLiteral(u"无法写入 %1：%2").arg(QDir::toNativeSeparators(file), written.error));
         return Failed;

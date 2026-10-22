@@ -21,7 +21,7 @@ namespace {
 PyNumber numberOf(const Json& value)
 {
     if (value.is_number_integer() || value.is_number_unsigned())
-        return {value.get<double>(), true};
+        return {value.get<double>(), true, value.dump()};
     if (value.is_number_float())
         return {value.get<double>(), false};
     if (value.is_boolean())
@@ -47,31 +47,48 @@ PyNumber pyMax(PyNumber a, PyNumber b)
 
 PyNumber pySub(PyNumber a, PyNumber b)
 {
-    return {a.value - b.value, a.isInteger && b.isInteger};
+    return {a.value - b.value, a.isInteger && b.isInteger, {}};
 }
 
 PyNumber pyMul(PyNumber a, PyNumber b)
 {
-    return {a.value * b.value, a.isInteger && b.isInteger};
+    return {a.value * b.value, a.isInteger && b.isInteger, {}};
+}
+
+// A double as a 64-bit integer, held at the ends of the range (a plain cast past them is
+// undefined behaviour).
+qint64 toInt64(double value)
+{
+    if (std::isnan(value))
+        return 0;
+    if (value >= 9223372036854775808.0)
+        return std::numeric_limits<qint64>::max();
+    if (value < -9223372036854775808.0)
+        return std::numeric_limits<qint64>::min();
+    return qint64(value);
 }
 
 // int(x): truncates toward zero.
 qint64 pyInt(PyNumber number)
 {
-    return qint64(std::trunc(number.value));
+    return toInt64(std::trunc(number.value));
 }
 
 std::string pyStr(PyNumber number)
 {
+    if (!number.digits.empty())
+        return number.digits;
     if (number.isInteger)
-        return std::to_string(qint64(number.value));
+        return std::to_string(toInt64(number.value));
     return pythonFloatRepr(number.value);
 }
 
 Json pyJson(PyNumber number)
 {
+    if (!number.digits.empty())
+        return Json::parse(number.digits);  // the integer exactly, signed or unsigned
     if (number.isInteger)
-        return Json(qint64(number.value));
+        return Json(toInt64(number.value));
     return Json(number.value);
 }
 
@@ -395,6 +412,10 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
         else if ((format == ExportFormat::YoloObb || format == ExportFormat::Dota) && outsideImage(shape, image))
             // Upstream leaves such boxes out silently; here the image waits for a fix.
             reason = QStringLiteral(u"旋转框有角点在图片外");
+        else if (format == ExportFormat::Dota
+                 && std::any_of(shape.label.cbegin(), shape.label.cend(), [](QChar c) { return c.isSpace(); }))
+            // Fields are split on white space (upstream dota_to_custom): the name would change.
+            reason = QStringLiteral(u"类别名“%1”含空白字符，DOTA 格式无法表示").arg(shape.label);
         else if (exportNeedsClassIds(format) && !classIds.contains(shape.label))
             reason = QStringLiteral(u"类别“%1”不在项目的类别列表中").arg(shape.label);
         if (!reason.isEmpty())

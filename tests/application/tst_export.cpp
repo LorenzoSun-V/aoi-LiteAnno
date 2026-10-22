@@ -225,6 +225,72 @@ private slots:
         QCOMPARE(readFile(project.output("dota") + QStringLiteral("/a.txt")), QByteArray("10 10 50 10 50 40 10 40 scratch 0\n"));
     }
 
+    // Review of PR #10 (second round), item 2: DOTA separates fields with spaces, so a class
+    // name with a space cannot be written; such images are unconvertible, not changed silently.
+    void dotaClassNameWithASpace()
+    {
+        Project project;
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rotation"], )"
+                  R"("classes": [{"id": 0, "name": "scratch heavy"}]})");
+        project.image(QStringLiteral("a.png"),
+                      R"({"label": "scratch heavy", "points": [[10, 10], [50, 10], [50, 40], [10, 40]], "shape_type": "rotation", "direction": 0})",
+                      true);
+        const auto session = project.open();
+        ExportRequest request;
+        request.format = formats::ExportFormat::Dota;
+        request.outputDir = project.output();
+        const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
+        QVERIFY(!report.written);
+        QCOMPARE(report.unconvertible().size(), 1);
+        QVERIFY2(report.unconvertible()[0].reason.contains(QStringLiteral(u"空白")), qPrintable(report.unconvertible()[0].reason));
+        QVERIFY(!QFileInfo::exists(request.outputDir));
+        // YOLO OBB writes class ids: the same image is fine there.
+        request.format = formats::ExportFormat::YoloObb;
+        QVERIFY(ExportService(*session, imaging::readImageInfo).run(request, {}).written);
+    }
+
+    // Review of PR #10 (second round), item 1: a mask has the image's name, so copied images
+    // go to images/, as for COCO, and do not collide with the masks.
+    void maskWithCopiedImages()
+    {
+        Project project;
+        project.image(QStringLiteral("line1/a.png"), polygon("scratch"), true);
+        const auto session = project.open();
+        ExportRequest request;
+        request.format = formats::ExportFormat::Mask;
+        request.copyImages = true;
+        request.outputDir = project.output();
+        const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(filesUnder(request.outputDir),
+                 (QStringList{QStringLiteral("images/line1/a.png"), QStringLiteral("line1/a.png"), QStringLiteral("liteanno-export.json"),
+                              QStringLiteral("mask_colors.json")}));
+        QCOMPARE(readFile(request.outputDir + QStringLiteral("/images/line1/a.png")), readFile(project.data.filePath(QStringLiteral("line1/a.png"))));
+        QCOMPARE(QImage(request.outputDir + QStringLiteral("/line1/a.png")).format(), QImage::Format_Grayscale8);
+    }
+
+    // Review of PR #10 (second round), item 4: integer coordinates are written as they are,
+    // also ones too large for a double to hold exactly.
+    void labelMeKeepsLargeIntegers()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"),
+                      R"({"label": "scratch", "points": [[9223372036854775807, 10], [-9223372036854775807, 10], [30, 40]], )"
+                      R"("shape_type": "polygon"})",
+                      true);
+        const auto session = project.open();
+        ExportRequest request;
+        request.format = formats::ExportFormat::LabelMe;
+        request.outputDir = project.output();
+        const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QByteArray json = readFile(request.outputDir + QStringLiteral("/a.json"));
+        QVERIFY2(json.contains("          9223372036854775807,\n"), json.constData());
+        QVERIFY2(json.contains("-9223372036854775807,"), json.constData());
+        QVERIFY(!json.contains("-9223372036854775808"));
+    }
+
     // Image classification: single choice copies each image into its label's folder; multiple
     // choice writes labels.csv.
     void classification()
