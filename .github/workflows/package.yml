@@ -67,34 +67,61 @@ jobs:
           "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem -Recurse $dir | Select-Object -ExpandProperty FullName
 
+      - name: Dependency check
+        # Every DLL the packaged files load is in the folder or comes with Windows.
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
+          $local = Get-ChildItem -Recurse $dir -Include *.dll | ForEach-Object { $_.Name.ToLowerInvariant() }
+          $missing = @()
+          foreach ($file in Get-ChildItem -Recurse $dir -Include *.exe, *.dll) {
+            $deps = & $dumpbin.FullName /nologo /dependents $file.FullName |
+                ForEach-Object { $_.Trim() } | Where-Object { $_ -match '\.dll$' }
+            foreach ($dep in $deps) {
+              $name = $dep.ToLowerInvariant()
+              if ($name -like 'api-ms-*' -or $name -like 'ext-ms-*') { continue }
+              if ($local -contains $name) { continue }
+              if (Test-Path "C:\Windows\System32\$name") { continue }
+              $missing += "$($file.Name) -> $dep"
+            }
+          }
+          if ($missing) { $missing | ForEach-Object { Write-Host "missing: $_" }; exit 1 }
+          Write-Host "All dependencies found."
+
       - name: Start-up check
-        # The packaged program starts and quits on a machine without Qt on the PATH. A hang
+        # The packaged programs start and quit on a machine without Qt on the PATH. A hang
         # fails within a minute and leaves Qt's log and a screenshot of the desktop behind.
         timeout-minutes: 5
         run: |
           $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
           $env:PATH = "C:\Windows\System32;C:\Windows"
           Remove-Item Env:QT_PLUGIN_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
-          & "$dir\liteanno-cli.exe" --version
-          if ($LASTEXITCODE -ne 0) { Write-Error "liteanno-cli.exe exited with $LASTEXITCODE"; exit 1 }
           $env:QT_FORCE_STDERR_LOGGING = "1"
           $env:QT_DEBUG_PLUGINS = "1"
           New-Item -ItemType Directory -Force startup-check | Out-Null
-          $p = Start-Process -FilePath "$dir\LiteAnno.exe" -ArgumentList "--smoke-test" -PassThru `
-              -RedirectStandardError startup-check/stderr.txt -RedirectStandardOutput startup-check/stdout.txt
-          $null = $p.Handle  # keeps the exit code readable after the process ends
-          $finished = $p.WaitForExit(60000)
-          if (-not $finished) {
-            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-            $bitmap.Save("$PWD\startup-check\screen.png")
-            Stop-Process -Id $p.Id -Force
+          function Test-Start($exe, $arguments) {
+            Write-Host "== $exe $arguments"
+            $p = Start-Process -FilePath "$dir\$exe" -ArgumentList $arguments -PassThru `
+                -RedirectStandardError "startup-check/$exe.stderr.txt" -RedirectStandardOutput "startup-check/$exe.stdout.txt"
+            $null = $p.Handle  # keeps the exit code readable after the process ends
+            $finished = $p.WaitForExit(60000)
+            if (-not $finished) {
+              Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+              $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bitmap.Save("$PWD\startup-check\$exe.png")
+              Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { Write-Host "window: $($_.ProcessName): $($_.MainWindowTitle)" }
+              Stop-Process -Id $p.Id -Force
+            }
+            Get-Content "startup-check/$exe.stdout.txt", "startup-check/$exe.stderr.txt" -ErrorAction SilentlyContinue |
+                Select-Object -Last 80
+            if (-not $finished) { Write-Error "$exe did not quit within 60 s"; exit 1 }
+            if ($p.ExitCode -ne 0) { Write-Error "$exe exited with $($p.ExitCode)"; exit 1 }
           }
-          Get-Content startup-check/stderr.txt -ErrorAction SilentlyContinue | Select-Object -Last 80
-          if (-not $finished) { Write-Error "LiteAnno.exe --smoke-test did not quit within 60 s"; exit 1 }
-          if ($p.ExitCode -ne 0) { Write-Error "LiteAnno.exe exited with $($p.ExitCode)"; exit 1 }
+          Test-Start "liteanno-cli.exe" "--version"
+          Test-Start "LiteAnno.exe" "--smoke-test"
 
       - name: Keep the start-up check output
         if: failure()
