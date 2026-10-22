@@ -126,13 +126,27 @@ QStringList readItemsOfDamagedList(const QByteArray& bytes)
 QByteArray worksetProgressToBytes(const WorksetProgress& progress)
 {
     Json json = Json::object();
+    Json originalEvents = Json::array();
+    if (!progress.original.isEmpty()) {
+        JsonParseResult parsed = parseJson(progress.original);
+        if (parsed.ok && parsed.value.is_object()) {
+            json = std::move(parsed.value);
+            const auto eventsIt = json.find("events");
+            if (eventsIt != json.end() && eventsIt->is_array())
+                originalEvents = *eventsIt;
+        }
+    }
+    // Known fields are set where they are; unknown ones stay as they were.
     json["formatVersion"] = utf8(versionOrDefault(progress.formatVersion));
     json["batchId"] = utf8(progress.batchId);
     json["listDigest"] = utf8(progress.listDigest);
     json["lastItem"] = progress.lastItem.isEmpty() ? Json(nullptr) : Json(utf8(progress.lastItem));
+    // Events are only ever appended: the ones read keep their other fields.
     Json events = Json::array();
-    for (const WorksetEvent& event : progress.events) {
-        Json entry = Json::object();
+    for (qsizetype i = 0; i < progress.events.size(); ++i) {
+        const WorksetEvent& event = progress.events[i];
+        Json entry = size_t(i) < originalEvents.size() && originalEvents[size_t(i)].is_object() ? originalEvents[size_t(i)]
+                                                                                                 : Json::object();
         entry["type"] = utf8(event.type);
         entry["at"] = utf8(event.at);
         events.push_back(std::move(entry));
@@ -148,6 +162,7 @@ std::optional<WorksetProgress> parseWorksetProgress(const QByteArray& bytes)
         return std::nullopt;
     const Json& json = parsed.value;
     WorksetProgress progress;
+    progress.original = bytes;
     if (!readString(json, "formatVersion", progress.formatVersion) || !supportedVersion(progress.formatVersion)
         || !readString(json, "batchId", progress.batchId) || !readString(json, "listDigest", progress.listDigest))
         return std::nullopt;
