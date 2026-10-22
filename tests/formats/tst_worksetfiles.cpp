@@ -109,6 +109,27 @@ private slots:
         QVERIFY(!parseWorksetProgress("{").has_value());
         QVERIFY(!parseWorksetProgress(QByteArray(bytes).replace("\"events\": [", "\"events\": [1, ")).has_value());
     }
+
+    void progressKeepsUnknownFields()
+    {
+        // The review's steps: a newer minor version or an engineer adds optional fields; this
+        // program only moves lastItem and adds an event, and keeps them.
+        const QByteArray file = R"({"formatVersion": "1.1", "batchId": "b", "listDigest": "d", "engineerNote": "check line 2", )"
+                                R"("lastItem": null, "events": [{"type": "started", "at": "2026-10-22T08:00:00+08:00", "operator": "li"}]})";
+        std::optional<WorksetProgress> progress = parseWorksetProgress(file);
+        QVERIFY(progress.has_value());
+        progress->lastItem = QStringLiteral("a.jpg");
+        progress->events.append({QStringLiteral("completed"), QStringLiteral("2026-10-22T09:00:00+08:00")});
+        const QByteArray bytes = worksetProgressToBytes(*progress);
+        QVERIFY2(bytes.contains("\"engineerNote\": \"check line 2\""), bytes.constData());
+        QVERIFY2(bytes.contains("\"operator\": \"li\""), bytes.constData());
+        QVERIFY2(bytes.contains("\"formatVersion\": \"1.1\""), bytes.constData());
+        std::optional<WorksetProgress> again = parseWorksetProgress(bytes);
+        QVERIFY(again.has_value());
+        QCOMPARE(again->lastItem, QStringLiteral("a.jpg"));
+        QCOMPARE(again->events.size(), 2);
+        QCOMPARE(again->events[1].type, QStringLiteral("completed"));
+    }
 };
 
 QTEST_GUILESS_MAIN(TestWorksetFiles)

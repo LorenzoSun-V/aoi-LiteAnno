@@ -970,12 +970,19 @@ bool MainWindow::chooseBatch()
     QStringList texts;
     QStringList stems;
     int current = 0;
+    // Missing images are not done (format spec 7.1), whatever their last status was.
+    QSet<QString> present;
+    present.reserve(m_allImages.size());
+    for (const dataset::CatalogEntry& entry : std::as_const(m_allImages)) {
+        if (!entry.missing)
+            present.insert(entry.path);
+    }
     for (const application::WorksetStore::Batch& batch : m_worksets->batches()) {
         if (!batch.list)
             continue;
         int done = 0;
         for (const QString& item : batch.list->items) {
-            if (isDone(item))
+            if (present.contains(item) && isDone(item))
                 ++done;
         }
         if (batch.stem == m_batchStem)
@@ -1057,6 +1064,7 @@ void MainWindow::reloadStatuses()
         m_statuses.insert(m_session->imagePath(), m_session->status());
     for (int i = 0; i < m_imageList->count(); ++i)
         refreshImageItem(i);
+    refreshBatchState();
 }
 
 bool MainWindow::closeProject(bool force)
@@ -1432,13 +1440,18 @@ void MainWindow::processSaveResults()
                 // the file they replace is this one, not an external change.
                 m_heldEdits[result.imagePath].stamp = result.stamp;
             }
-            if (status == SaveStatus::Saved && m_catalog && result.saved) {
+            if (status == SaveStatus::Saved && result.saved) {
                 // Format spec 5.4: what this program wrote counts without reading it again.
                 const int index = m_imageIndex.value(result.imagePath, -1);
                 const bool nameCollision = index >= 0 && m_images[index].nameCollision;
-                m_catalog->recordSaved(result.imagePath,
-                                       application::statusOfFile(*result.saved, m_project->config(), nameCollision, true),
-                                       result.stamp, nameCollision);
+                const AnnotationStatus saved =
+                    application::statusOfFile(*result.saved, m_project->config(), nameCollision, true);
+                if (m_catalog)
+                    m_catalog->recordSaved(result.imagePath, saved, result.stamp, nameCollision);
+                // The image shown has its status from the session; others, of this batch or
+                // another one ("选择批次…"), from what was written.
+                if (!current)
+                    m_statuses.insert(result.imagePath, saved);
             }
             if (current && status == SaveStatus::Saved) {
                 m_session->savedSnapshot(result.entryId, *result.saved, result.stamp);
@@ -1745,6 +1758,11 @@ void MainWindow::refresh()
     m_undoAction->setEnabled(editable && m_session->canUndo());
     m_redoAction->setEnabled(editable && m_session->canRedo());
     m_saveState->setText(saveStateText());
+    refreshBatchState();
+}
+
+void MainWindow::refreshBatchState()
+{
     m_batchState->setText(batchStateText());
     if (!m_batchStem.isEmpty()) {
         int done = 0;
