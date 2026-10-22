@@ -271,7 +271,8 @@ def check_mask(cli, root, work, images):
             converter.custom_to_mask(os.path.join(root, stem + ".json"), theirs_path, mapping)
         else:
             converter.write_empty_mask(theirs_path, mapping, width, height)
-        ours = cv2.imread(os.path.join(out, stem + ".png"), cv2.IMREAD_UNCHANGED)
+        # Ours are in masks/, so copied images (in images/) never meet them.
+        ours = cv2.imread(os.path.join(out, "masks", stem + ".png"), cv2.IMREAD_UNCHANGED)
         theirs = cv2.imread(theirs_path, cv2.IMREAD_UNCHANGED)
         if ours is None or ours.dtype != np.uint8 or ours.shape != theirs.shape or not np.array_equal(ours, theirs):
             sys.exit(f"mask {stem}.png differs: {None if ours is None else (ours.shape, ours.dtype)} "

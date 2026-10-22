@@ -250,12 +250,14 @@ private slots:
         QVERIFY(ExportService(*session, imaging::readImageInfo).run(request, {}).written);
     }
 
-    // Review of PR #10 (second round), item 1: a mask has the image's name, so copied images
-    // go to images/, as for COCO, and do not collide with the masks.
+    // Review of PR #10 (second and third round): a mask has the image's name, so masks go to
+    // masks/ and copied images to images/; a data folder with its own images/ folder cannot
+    // make the two meet.
     void maskWithCopiedImages()
     {
         Project project;
-        project.image(QStringLiteral("line1/a.png"), polygon("scratch"), true);
+        project.image(QStringLiteral("a.png"), polygon("scratch"), true);
+        project.image(QStringLiteral("images/a.png"), polygon("dent"), true);
         const auto session = project.open();
         ExportRequest request;
         request.format = formats::ExportFormat::Mask;
@@ -264,10 +266,13 @@ private slots:
         const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
         QVERIFY2(report.written, qPrintable(report.error));
         QCOMPARE(filesUnder(request.outputDir),
-                 (QStringList{QStringLiteral("images/line1/a.png"), QStringLiteral("line1/a.png"), QStringLiteral("liteanno-export.json"),
-                              QStringLiteral("mask_colors.json")}));
-        QCOMPARE(readFile(request.outputDir + QStringLiteral("/images/line1/a.png")), readFile(project.data.filePath(QStringLiteral("line1/a.png"))));
-        QCOMPARE(QImage(request.outputDir + QStringLiteral("/line1/a.png")).format(), QImage::Format_Grayscale8);
+                 (QStringList{QStringLiteral("images/a.png"), QStringLiteral("images/images/a.png"), QStringLiteral("liteanno-export.json"),
+                              QStringLiteral("mask_colors.json"), QStringLiteral("masks/a.png"), QStringLiteral("masks/images/a.png")}));
+        for (const char* image : {"a.png", "images/a.png"}) {
+            QCOMPARE(readFile(request.outputDir + QStringLiteral("/images/") + QLatin1String(image)),
+                     readFile(project.data.filePath(QLatin1String(image))));
+            QCOMPARE(QImage(request.outputDir + QStringLiteral("/masks/") + QLatin1String(image)).format(), QImage::Format_Grayscale8);
+        }
     }
 
     // Review of PR #10 (second round), item 4: integer coordinates are written as they are,
