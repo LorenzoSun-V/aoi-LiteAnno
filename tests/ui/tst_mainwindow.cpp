@@ -21,6 +21,7 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSemaphore>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QThread>
@@ -111,6 +112,8 @@ struct Answers {
     ExternalChangeChoice externalChange = ExternalChangeChoice::Reload;
     RecoveryChoice recovery = RecoveryChoice::Restore;
     bool discardUnsaved = false;
+    int batch = 0;  // the batch chosen from the list offered
+    QStringList batchesOffered;
     // Run while the recovery question or a message is shown, like the event loop behind a
     // dialog.
     std::function<void()> duringRecovery;
@@ -149,6 +152,12 @@ struct Answers {
         p.confirmDiscard = [this](const QString&) {
             ++discardAsked;
             return discardUnsaved;
+        };
+        p.chooseBatch = [this](const QStringList& batches, int) -> std::optional<int> {
+            batchesOffered = batches;
+            if (batch < 0)
+                return std::nullopt;
+            return batch;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -717,6 +726,7 @@ private slots:
             {"create_polygon", "P"},          {"create_rectangle", "R"},
             {"edit_polygon", "Ctrl+J"},       {"delete_polygon", "Delete"},
             {"undo", "Ctrl+Z"},               {"edit_label", "Ctrl+E"},
+            {"open_next_unchecked", "Ctrl+Shift+D"}, {"open_prev_unchecked", "Ctrl+Shift+A"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
@@ -1254,7 +1264,7 @@ private slots:
         QCOMPARE(list->count(), w.window.imageCount());
         QVERIFY(w.window.currentIndex() >= 0 && w.window.currentIndex() < w.window.imageCount());
         QCOMPARE(list->currentRow(), w.window.currentIndex());
-        QCOMPARE(list->currentItem()->text(), QStringLiteral("line1/0003.png"));
+        QCOMPARE(list->currentItem()->text(), QStringLiteral(u"line1/0003.png  [缺失]"));
         QVERIFY(!w.window.session());
         // The other images are still there to go to.
         QVERIFY(w.window.goToImage(0));
@@ -1477,6 +1487,188 @@ private slots:
 
     // Without any catalog (no cache folder, no temporary folder) the folder is still listed
     // and the images can be labelled.
+    // Architecture 7: "开始下一批" gives out the next images in natural order; the batch and
+    // the image left are where the next opening continues.
+    void batchesAreGivenOutAndResumed()
+    {
+        Project project("\"batchSize\": 2", 5);
+        auto paths = [](MainWindow& window) {
+            QStringList shown;
+            auto* list = window.findChild<QListWidget*>(QStringLiteral("imageList"));
+            for (int i = 0; i < list->count(); ++i)
+                shown.append(list->item(i)->text().section(QLatin1Char(' '), 0, 0));
+            return shown;
+        };
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            QVERIFY(w.window.currentBatch().isEmpty());
+            QCOMPARE(w.window.imageCount(), 5);
+            QCOMPARE(w.window.batchStateText(), QStringLiteral(u"全部图片：5 张"));
+
+            QVERIFY(w.window.startNextBatch());
+            QCOMPARE(w.window.currentBatch(), QStringLiteral("b000001"));
+            QCOMPARE(paths(w.window), (QStringList{QStringLiteral("line1/0001.png"), QStringLiteral("line1/0002.png")}));
+            QCOMPARE(w.window.currentIndex(), 0);
+            QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 0 / 2 张"));
+            // A and D stay inside the batch.
+            QVERIFY(w.window.nextImage());
+            QVERIFY(!w.window.nextImage());
+            QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+
+            QVERIFY(w.window.startNextBatch());
+            QCOMPARE(w.window.currentBatch(), QStringLiteral("b000002"));
+            QCOMPARE(paths(w.window), (QStringList{QStringLiteral("line1/0003.png"), QStringLiteral("line1/0004.png")}));
+            QVERIFY(w.window.nextImage());
+            QVERIFY(w.window.closeProject());
+        }
+        const QString worksets = project.data.filePath(QStringLiteral("liteanno/worksets"));
+        QVERIFY(QFile::exists(worksets + QStringLiteral("/b000001.list.json")));
+        const QJsonObject progress = readJson(worksets + QStringLiteral("/b000002.progress.json"));
+        QCOMPARE(progress.value(QStringLiteral("lastItem")).toString(), QStringLiteral("line1/0004.png"));
+        QCOMPARE(progress.value(QStringLiteral("events")).toArray().first().toObject().value(QStringLiteral("type")).toString(),
+                 QStringLiteral("started"));
+
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000002"));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0004.png"));
+
+        // Back to batch 1 where it was left, all images, and back again.
+        w.answers.batch = 0;
+        QVERIFY(w.window.chooseBatch());
+        QCOMPARE(w.answers.batchesOffered,
+                 (QStringList{QStringLiteral(u"第 1 批（已完成 0 / 2 张）"), QStringLiteral(u"第 2 批（已完成 0 / 2 张）")}));
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000001"));
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+        w.window.showAllImages();
+        QVERIFY(w.window.currentBatch().isEmpty());
+        QCOMPARE(w.window.imageCount(), 5);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+        QVERIFY(w.window.continueLastBatch());
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000001"));
+
+        QVERIFY(w.window.startNextBatch());
+        QCOMPARE(paths(w.window), QStringList{QStringLiteral("line1/0005.png")});
+        QVERIFY(!w.window.startNextBatch());
+        QCOMPARE(w.answers.messages.size(), 1);
+        QVERIFY(w.answers.messages.first().contains(QStringLiteral(u"所有图片都已经分到批次里")));
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000003"));
+    }
+
+    // Format spec 5.4: an image counts once its done status is written; Ctrl+Shift+D/A go to
+    // the ones that are not.
+    void unfinishedImagesOfABatch()
+    {
+        Project project("\"batchSize\": 3", 4);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QVERIFY(w.window.startNextBatch());
+        QCOMPARE(w.window.showUnfinished(), 3);
+        QCOMPARE(w.window.currentIndex(), 0);
+
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        // Not written yet: not done.
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 0 / 3 张"));
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 1 / 3 张"));
+
+        QVERIFY(w.window.goToImage(2));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QVERIFY(w.window.previousUnfinished());
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.window.nextUnfinished());
+        QVERIFY(!w.window.previousUnfinished());
+        QCOMPARE(w.window.currentIndex(), 1);
+        // The shortcut does the same.
+        QVERIFY(w.window.goToImage(0));
+        QTest::keyClick(&w.window, Qt::Key_D, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(w.window.goToImage(2));
+        QTest::keyClick(&w.window, Qt::Key_A, Qt::ControlModifier | Qt::ShiftModifier);
+        QCOMPARE(w.window.currentIndex(), 1);
+
+        const QString progressFile = project.data.filePath(QStringLiteral("liteanno/worksets/b000001.progress.json"));
+        QCOMPARE(readJson(progressFile).value(QStringLiteral("events")).toArray().size(), 1);
+        QVERIFY(w.window.skipCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.batchStateText(), QStringLiteral(u"第 1 批：已完成 3 / 3 张（本批已完成）"));
+        QCOMPARE(w.window.showUnfinished(), 0);
+        // The image outside the batch is not counted.
+        w.window.showAllImages();
+        QCOMPARE(w.window.showUnfinished(), 1);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0004.png"));
+    }
+
+    // Format spec 7.2: the batch being complete is recorded once, as history.
+    void completedBatchIsRecorded()
+    {
+        Project project("\"batchSize\": 1", 2);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        QVERIFY(w.window.skipCurrent());
+        w.window.flushSaves();
+        QVERIFY(w.window.closeProject());
+        const QJsonArray events =
+            readJson(project.data.filePath(QStringLiteral("liteanno/worksets/b000001.progress.json")))
+                .value(QStringLiteral("events"))
+                .toArray();
+        QCOMPARE(events.size(), 2);
+        QCOMPARE(events[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("completed"));
+    }
+
+    // A batch keeps its images: one deleted later is shown as missing and is not done; images
+    // with a name collision are not given out (format spec 7.1).
+    void batchMembersStayFixed()
+    {
+        Project project("\"batchSize\": 3", 4);
+        QImage image(200, 100, QImage::Format_RGB32);
+        image.fill(Qt::gray);
+        QVERIFY(image.save(project.data.filePath(QStringLiteral("line1/0002.jpg"))));
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        QCOMPARE(list->count(), 3);
+        QCOMPARE(list->item(0)->text().section(QLatin1Char(' '), 0, 0), QStringLiteral("line1/0001.png"));
+        QCOMPARE(list->item(1)->text().section(QLatin1Char(' '), 0, 0), QStringLiteral("line1/0003.png"));
+        QCOMPARE(list->item(2)->text().section(QLatin1Char(' '), 0, 0), QStringLiteral("line1/0004.png"));
+
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0003.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        QCOMPARE(list->count(), 3);
+        QVERIFY2(list->item(1)->text().contains(QStringLiteral(u"[缺失]")), qPrintable(list->item(1)->text()));
+        QCOMPARE(w.window.showUnfinished(), 3);
+        QVERIFY(w.window.goToImage(1));
+        QVERIFY(!w.window.session());
+        // The deleted image is not given out again, nor the colliding ones.
+        QVERIFY(!w.window.startNextBatch());
+    }
+
+    // A damaged list is not opened or repaired, and its images are not given out again.
+    void damagedListIsNotUsed()
+    {
+        Project project("\"batchSize\": 2", 3);
+        writeFile(project.data.filePath(QStringLiteral("liteanno/worksets/b000001.list.json")),
+                  R"({"formatVersion": "1.0", "projectId": "other", "batchId": "x", "number": 1, )"
+                  R"("createdAt": "t", "items": ["line1/0001.png"], "itemsDigest": "sha256:0"})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.currentBatch().isEmpty());
+        QVERIFY(w.window.statusBar()->currentMessage().contains(QStringLiteral(u"已损坏")));
+        QVERIFY(w.window.startNextBatch());
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000002"));
+        QCOMPARE(w.window.imageCount(), 2);
+        QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+    }
+
     void noCatalogAtAll()
     {
         Project project;
@@ -1515,6 +1707,11 @@ private slots:
         w.window.rescan();
         QCOMPARE(w.window.imageCount(), 4);
         QCOMPARE(w.window.session()->imagePath(), QStringLiteral("line1/0002.png"));
+
+        // A complete listing of the folder is enough to give out a batch.
+        QVERIFY(w.window.startNextBatch());
+        QCOMPARE(w.window.currentBatch(), QStringLiteral("b000001"));
+        QCOMPARE(w.window.imageCount(), 4);
     }
 
     // Opening again shows what the catalog knows before anything is read again.

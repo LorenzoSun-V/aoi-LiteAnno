@@ -13,6 +13,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QCoreApplication>
+#include <QDir>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -78,6 +79,9 @@ MainWindow::MainWindow(Options options, QWidget* parent)
     m_idleTimer.setSingleShot(true);
     m_idleTimer.setInterval(m_options.idleSaveMs);
     connect(&m_idleTimer, &QTimer::timeout, this, [this] { commitCurrent(); });
+    m_progressTimer.setSingleShot(true);
+    m_progressTimer.setInterval(1000);
+    connect(&m_progressTimer, &QTimer::timeout, this, &MainWindow::writeProgress);
     buildUi();
     refresh();
 }
@@ -188,6 +192,9 @@ void MainWindow::buildUi()
     m_scanState = new QLabel;
     m_scanState->setObjectName(QStringLiteral("scanState"));
     statusBar()->addPermanentWidget(m_scanState);
+    m_batchState = new QLabel;
+    m_batchState->setObjectName(QStringLiteral("batchState"));
+    statusBar()->addPermanentWidget(m_batchState);
     m_saveState = new QLabel;
     statusBar()->addPermanentWidget(m_saveState);
 
@@ -238,6 +245,22 @@ void MainWindow::buildUi()
     original->setShortcut(QKeySequence(QStringLiteral("Ctrl+=")));
     QAction* fit = named(viewMenu->addAction(QStringLiteral(u"适合窗口"), m_canvas, &Canvas::fitToWindow), "fit_window");
     fit->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
+
+    // Architecture 7: fixed batches, picked up where they were left.
+    QMenu* batchMenu = menuBar()->addMenu(QStringLiteral(u"批次(&B)"));
+    batchMenu->addAction(QStringLiteral(u"继续上次批次"), this, [this] { continueLastBatch(); });
+    batchMenu->addAction(QStringLiteral(u"开始下一批"), this, [this] { startNextBatch(); });
+    batchMenu->addAction(QStringLiteral(u"选择批次…"), this, [this] { chooseBatch(); });
+    batchMenu->addAction(QStringLiteral(u"查看未完成项"), this, [this] { showUnfinished(); });
+    batchMenu->addSeparator();
+    batchMenu->addAction(QStringLiteral(u"显示全部图片"), this, &MainWindow::showAllImages);
+    batchMenu->addSeparator();
+    QAction* nextUnchecked = named(batchMenu->addAction(QStringLiteral(u"下一张未完成"), this, [this] { nextUnfinished(); }),
+                                   "open_next_unchecked");
+    nextUnchecked->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+D")));
+    QAction* previousUnchecked = named(
+        batchMenu->addAction(QStringLiteral(u"上一张未完成"), this, [this] { previousUnfinished(); }), "open_prev_unchecked");
+    previousUnchecked->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
 
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
     tools->setObjectName(QStringLiteral("tools"));
@@ -331,6 +354,7 @@ bool MainWindow::openProject(const QString& root)
     buildImageLabelPanel();
 
     handleRecoveryRecords();
+    loadWorksets();
 
     const QString name = m_project->config().name.isEmpty() ? m_project->rootPath() : m_project->config().name;
     setWindowTitle(QStringLiteral("%1 - aoi-LiteAnno").arg(name));
@@ -372,7 +396,7 @@ bool MainWindow::openProject(const QString& root)
         }
     }
     if (m_current < 0 && !m_images.isEmpty())
-        goToImage(0);
+        goToImage(startIndex());
     else
         refresh();
     return true;
@@ -390,15 +414,16 @@ void MainWindow::rescan()
     m_catalog->start();
 }
 
-void MainWindow::scanFinished(bool /*complete*/)
+void MainWindow::scanFinished(bool complete)
 {
     if (!m_catalog)
         return;
+    m_scanComplete = complete;
     reloadImages();
     const dataset::ScanReports reports = m_catalog->reader().reports();
     showScanReports(reports.unsupported, reports.unreadable);
     if (m_current < 0 && !m_images.isEmpty())
-        goToImage(0);
+        goToImage(startIndex());
 }
 
 void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
@@ -432,6 +457,7 @@ void MainWindow::listWithoutCatalog()
         entry.annotation = scanned.annotation;
         images.append(entry);
     }
+    m_scanComplete = scan.unreadable.isEmpty();
     setImages(std::move(images));
     showScanReports(scan.unsupported, scan.unreadable);
 }
@@ -479,6 +505,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.recovery = held(std::move(prompts.recovery));
     m_prompts.message = held(std::move(prompts.message));
     m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
+    m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
 }
 
 void MainWindow::setImages(QList<dataset::CatalogEntry> images)
@@ -488,7 +515,8 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
         return;
     }
     const QString currentPath = m_current >= 0 ? m_images[m_current].path : QString();
-    m_images = std::move(images);
+    m_allImages = std::move(images);
+    m_images = m_batchStem.isEmpty() ? m_allImages : batchEntries();
     m_imageIndex.clear();
     m_imageIndex.reserve(m_images.size());
     for (int i = 0; i < m_images.size(); ++i)
@@ -508,8 +536,9 @@ void MainWindow::setImages(QList<dataset::CatalogEntry> images)
             m_current = int(m_images.size()) - 1;
         }
     }
+    // Of all images: other batches are counted too ("选择批次…").
     m_statuses.clear();
-    for (const dataset::CatalogEntry& entry : std::as_const(m_images)) {
+    for (const dataset::CatalogEntry& entry : std::as_const(m_allImages)) {
         if (entry.status && entry.verified)
             m_statuses.insert(entry.path, *entry.status);
     }
@@ -589,6 +618,339 @@ void MainWindow::offerUnblockedRecords()
     loadCurrentImage();
 }
 
+void MainWindow::loadWorksets()
+{
+    m_worksets = std::make_unique<application::WorksetStore>(m_project->rootPath(), m_project->config().projectId);
+    if (!m_worksets->load()) {
+        statusBar()->showMessage(QStringLiteral(u"无法读取批次文件夹 %1，暂时显示全部图片，也不能开始下一批。")
+                                     .arg(QDir::toNativeSeparators(m_worksets->directory())),
+                                 15000);
+        return;
+    }
+    QStringList damaged;
+    for (const application::WorksetStore::Batch& batch : m_worksets->batches()) {
+        if (!batch.list)
+            damaged.append(QStringLiteral("%1（%2）").arg(batch.stem, batch.error));
+    }
+    const QStringList duplicates = m_worksets->duplicates();
+    if (!damaged.isEmpty()) {
+        // Format spec 7.1: a damaged list is not repaired; its images are not given out again.
+        statusBar()->showMessage(QStringLiteral(u"有 %1 个批次清单已损坏，不能打开，例如 %2。请交给工程师处理。")
+                                     .arg(damaged.size())
+                                     .arg(damaged.first()),
+                                 15000);
+    } else if (!duplicates.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 张图片同时在多个批次里，例如 %2。不影响标注结果。")
+                                     .arg(duplicates.size())
+                                     .arg(duplicates.first()),
+                                 15000);
+    }
+    if (const application::WorksetStore::Batch* last = m_worksets->lastWorkedOn()) {
+        m_batchStem = last->stem;
+        m_batchProgress = m_worksets->progress(*last);
+    }
+}
+
+QList<dataset::CatalogEntry> MainWindow::batchEntries() const
+{
+    QList<dataset::CatalogEntry> entries;
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    if (!batch || !batch->list)
+        return entries;
+    QHash<QString, qsizetype> where;
+    where.reserve(m_allImages.size());
+    for (qsizetype i = 0; i < m_allImages.size(); ++i)
+        where.insert(m_allImages[i].path, i);
+    QSet<QString> listed;
+    entries.reserve(batch->list->items.size());
+    for (const QString& item : batch->list->items) {
+        if (listed.contains(item))
+            continue;  // listed twice by a script: shown once
+        listed.insert(item);
+        const qsizetype found = where.value(item, -1);
+        if (found >= 0) {
+            entries.append(m_allImages[found]);
+        } else {
+            // In the batch, but not in the folder (any more).
+            entries.append(dataset::CatalogEntry{});
+            entries.last().path = item;
+            entries.last().missing = true;
+        }
+        entries.last().position = int(entries.size()) - 1;
+    }
+    return entries;
+}
+
+int MainWindow::startIndex() const
+{
+    if (m_images.isEmpty())
+        return -1;
+    if (m_batchProgress && !m_batchProgress->lastItem.isEmpty())
+        return std::max(0, m_imageIndex.value(m_batchProgress->lastItem, 0));
+    return 0;
+}
+
+bool MainWindow::isDone(const QString& imagePath) const
+{
+    const auto status = m_statuses.constFind(imagePath);
+    if (status == m_statuses.cend() || !countsAsDone(*status))
+        return false;
+    if (m_unwritten.contains(imagePath) || m_heldEdits.contains(imagePath))
+        return false;
+    if (m_saver && m_saver->isPending(imagePath))
+        return false;
+    // The status of the image shown follows the edits; it counts once they are written.
+    return !(m_session && m_session->imagePath() == imagePath && m_session->needsSave());
+}
+
+bool MainWindow::isDoneAt(int index) const
+{
+    return index >= 0 && index < m_images.size() && !m_images[index].missing && isDone(m_images[index].path);
+}
+
+QString MainWindow::batchStateText() const
+{
+    if (!m_project)
+        return QString();
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    if (!batch || !batch->list)
+        return QStringLiteral(u"全部图片：%1 张").arg(m_images.size());
+    int done = 0;
+    for (int i = 0; i < m_images.size(); ++i) {
+        if (isDoneAt(i))
+            ++done;
+    }
+    QString text = QStringLiteral(u"第 %1 批：已完成 %2 / %3 张").arg(batch->number).arg(done).arg(m_images.size());
+    if (done == m_images.size())
+        text += QStringLiteral(u"（本批已完成）");
+    return text;
+}
+
+formats::WorksetProgress* MainWindow::batchProgress()
+{
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    if (!batch || !batch->list)
+        return nullptr;
+    if (!m_batchProgress) {
+        // Missing or damaged: started again, only the last position was lost (format spec 7.2).
+        m_batchProgress = formats::WorksetProgress{};
+        m_batchProgress->batchId = batch->list->batchId;
+        m_batchProgress->listDigest = batch->list->itemsDigest;
+    }
+    return &*m_batchProgress;
+}
+
+void MainWindow::recordCompletion(int done)
+{
+    if (m_batchStem.isEmpty() || m_images.isEmpty() || done != m_images.size())
+        return;
+    formats::WorksetProgress* progress = batchProgress();
+    if (!progress || (!progress->events.isEmpty() && progress->events.last().type == QLatin1String("completed")))
+        return;
+    progress->events.append({QStringLiteral("completed"), application::WorksetStore::timestamp(QDateTime::currentDateTime())});
+    m_progressChanged = true;
+    writeProgress();
+}
+
+void MainWindow::rememberPosition()
+{
+    if (m_current < 0 || !batchProgress())
+        return;
+    const QString& path = m_images[m_current].path;
+    if (m_batchProgress->lastItem == path)
+        return;
+    m_batchProgress->lastItem = path;
+    m_progressChanged = true;
+    m_progressTimer.start();
+}
+
+void MainWindow::writeProgress()
+{
+    m_progressTimer.stop();
+    if (!m_progressChanged || !m_batchProgress || !m_worksets)
+        return;
+    const application::WorksetStore::Batch* batch = m_worksets->find(m_batchStem);
+    if (!batch || !batch->list)
+        return;
+    m_progressChanged = false;
+    const formats::SaveResult written = m_worksets->writeProgress(*batch, *m_batchProgress);
+    if (written.status != SaveStatus::Saved)
+        statusBar()->showMessage(QStringLiteral(u"没能记下这一批看到哪张（%1），标注本身不受影响。").arg(written.error), 10000);
+}
+
+void MainWindow::switchBatch(const QString& stem, const QString& preferred)
+{
+    if (!m_project)
+        return;
+    writeProgress();
+    m_idleTimer.stop();
+    commitCurrent();
+    dropSession();
+    processSaveResults();
+    m_current = -1;
+    if (!m_batchStem.isEmpty())
+        m_lastBatchStem = m_batchStem;
+    m_batchStem = stem;
+    m_batchProgress.reset();
+    m_progressChanged = false;
+    if (const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(stem) : nullptr)
+        m_batchProgress = m_worksets->progress(*batch);
+    if (m_catalog)
+        reloadImages();
+    else
+        setImages(m_allImages);
+    int index = preferred.isEmpty() ? -1 : m_imageIndex.value(preferred, -1);
+    if (index < 0)
+        index = startIndex();
+    if (index >= 0)
+        goToImage(index);
+    else
+        refresh();
+    // Written now: the batch opened last is the one to continue next time.
+    if (batchProgress()) {
+        m_progressChanged = true;
+        writeProgress();
+    }
+}
+
+bool MainWindow::startNextBatch()
+{
+    if (!m_project || !m_worksets)
+        return false;
+    // Format spec 7.1: only images of a complete scan are given out.
+    if (!m_scanComplete || (m_catalog && m_catalog->isScanning())) {
+        m_prompts.message(QStringLiteral(u"还不能开始下一批"),
+                          QStringLiteral(u"文件夹还没有完整扫描一遍，或者有文件夹无法读取。等扫描完成后再开始下一批；"
+                                         u"有文件夹无法读取时，请先检查权限，再用“文件 > 重新扫描文件夹”。"));
+        return false;
+    }
+    QStringList candidates;
+    const QList<dataset::CatalogEntry> all = m_catalog ? m_catalog->reader().images() : m_allImages;
+    candidates.reserve(all.size());
+    for (const dataset::CatalogEntry& entry : all) {
+        if (!entry.missing && !entry.nameCollision)
+            candidates.append(entry.path);
+    }
+    writeProgress();
+    const application::WorksetStore::Created created =
+        m_worksets->createNext(candidates, m_project->config().batchSize);
+    if (!created.batch) {
+        m_prompts.message(QStringLiteral(u"没有开始下一批"),
+                          created.error.isEmpty()
+                              ? QStringLiteral(u"所有图片都已经分到批次里了，没有新的图片可以分。")
+                              : QStringLiteral(u"无法创建批次清单：%1").arg(created.error));
+        return false;
+    }
+    const QString stem = created.batch->stem;
+    const int number = created.batch->number;
+    const qsizetype count = created.batch->list->items.size();
+    switchBatch(stem, QString());
+    statusBar()->showMessage(QStringLiteral(u"已开始第 %1 批，共 %2 张。").arg(number).arg(count), 10000);
+    return true;
+}
+
+bool MainWindow::continueLastBatch()
+{
+    if (!m_project || !m_worksets)
+        return false;
+    writeProgress();
+    const application::WorksetStore::Batch* last = nullptr;
+    if (m_worksets->load()) {
+        last = m_worksets->find(m_lastBatchStem);
+        if (!last || !last->list)
+            last = m_worksets->lastWorkedOn();
+    }
+    if (!last) {
+        m_prompts.message(QStringLiteral(u"没有可以继续的批次"), QStringLiteral(u"还没有批次。请用“批次 > 开始下一批”分一批图片。"));
+        return false;
+    }
+    switchBatch(last->stem, QString());
+    return true;
+}
+
+bool MainWindow::chooseBatch()
+{
+    if (!m_project || !m_worksets)
+        return false;
+    writeProgress();
+    m_worksets->load();
+    QStringList texts;
+    QStringList stems;
+    int current = 0;
+    for (const application::WorksetStore::Batch& batch : m_worksets->batches()) {
+        if (!batch.list)
+            continue;
+        int done = 0;
+        for (const QString& item : batch.list->items) {
+            if (isDone(item))
+                ++done;
+        }
+        if (batch.stem == m_batchStem)
+            current = int(texts.size());
+        texts.append(QStringLiteral(u"第 %1 批（已完成 %2 / %3 张）").arg(batch.number).arg(done).arg(batch.list->items.size()));
+        stems.append(batch.stem);
+    }
+    if (texts.isEmpty()) {
+        m_prompts.message(QStringLiteral(u"没有批次"), QStringLiteral(u"还没有批次。请用“批次 > 开始下一批”分一批图片。"));
+        return false;
+    }
+    const std::optional<int> chosen = m_prompts.chooseBatch(texts, current);
+    if (!chosen || *chosen < 0 || *chosen >= stems.size())
+        return false;
+    switchBatch(stems[*chosen], QString());
+    return true;
+}
+
+void MainWindow::showAllImages()
+{
+    if (!m_project || m_batchStem.isEmpty())
+        return;
+    switchBatch(QString(), m_current >= 0 ? m_images[m_current].path : QString());
+}
+
+int MainWindow::showUnfinished()
+{
+    if (!m_project)
+        return 0;
+    int count = 0;
+    int first = -1;
+    for (int i = 0; i < m_images.size(); ++i) {
+        if (isDoneAt(i))
+            continue;
+        ++count;
+        if (first < 0)
+            first = i;
+    }
+    const QString scope = m_batchStem.isEmpty() ? QStringLiteral(u"全部图片") : QStringLiteral(u"本批");
+    if (count == 0) {
+        statusBar()->showMessage(QStringLiteral(u"%1都已完成。").arg(scope), 10000);
+        return 0;
+    }
+    goToImage(first);
+    statusBar()->showMessage(QStringLiteral(u"%1还有 %2 张未完成，按 Ctrl+Shift+D 跳到下一张未完成。").arg(scope).arg(count), 10000);
+    return count;
+}
+
+bool MainWindow::nextUnfinished()
+{
+    for (int i = m_current + 1; i < m_images.size(); ++i) {
+        if (!isDoneAt(i))
+            return goToImage(i);
+    }
+    statusBar()->showMessage(QStringLiteral(u"后面没有未完成的图片了。"), 5000);
+    return false;
+}
+
+bool MainWindow::previousUnfinished()
+{
+    for (int i = std::min<int>(m_current, int(m_images.size())) - 1; i >= 0; --i) {
+        if (!isDoneAt(i))
+            return goToImage(i);
+    }
+    statusBar()->showMessage(QStringLiteral(u"前面没有未完成的图片了。"), 5000);
+    return false;
+}
+
 void MainWindow::reloadStatuses()
 {
     if (!m_catalog)
@@ -625,11 +987,20 @@ bool MainWindow::closeProject(bool force)
             return false;
         }
     }
+    m_progressTimer.stop();
+    writeProgress();
     dropSession();
     m_saver.reset();
     m_catalog.reset();
     m_scanState->clear();
     m_project.reset();
+    m_worksets.reset();
+    m_batchStem.clear();
+    m_lastBatchStem.clear();
+    m_batchProgress.reset();
+    m_progressChanged = false;
+    m_scanComplete = false;
+    m_allImages.clear();
     m_images.clear();
     m_imageIndex.clear();
     m_statuses.clear();
@@ -788,6 +1159,7 @@ bool MainWindow::goToImage(int index)
     m_imageList->blockSignals(true);
     m_imageList->setCurrentRow(m_current);
     m_imageList->blockSignals(false);
+    rememberPosition();
     return true;
 }
 
@@ -1191,6 +1563,9 @@ void MainWindow::refreshImageItem(int index)
 QString MainWindow::imageItemText(const QString& path) const
 {
     QString text = path;
+    const int index = m_imageIndex.value(path, -1);
+    if (index >= 0 && index < m_images.size() && m_images[index].missing)
+        text += QStringLiteral(u"  [缺失]");
     const auto status = m_statuses.constFind(path);
     if (status != m_statuses.cend())
         text += QStringLiteral(u"  [%1]").arg(statusText(*status));
@@ -1277,6 +1652,15 @@ void MainWindow::refresh()
     m_undoAction->setEnabled(editable && m_session->canUndo());
     m_redoAction->setEnabled(editable && m_session->canRedo());
     m_saveState->setText(saveStateText());
+    m_batchState->setText(batchStateText());
+    if (!m_batchStem.isEmpty()) {
+        int done = 0;
+        for (int i = 0; i < m_images.size(); ++i) {
+            if (isDoneAt(i))
+                ++done;
+        }
+        recordCompletion(done);
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent* event)
