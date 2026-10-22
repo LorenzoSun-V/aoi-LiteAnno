@@ -87,6 +87,20 @@ RotatedBox rotateBox(const RotatedBox& box, double theta)
     return turned;
 }
 
+double fittingDirection(const RotatedBox& box)
+{
+    if (box.points.size() != 4)
+        return box.direction;
+    const QPointF side = box.points[1] - box.points[0];
+    if (side.isNull())
+        return box.direction;
+    const double corners = std::atan2(side.y(), side.x());
+    // Only the slope matters to the box: an angle half a turn away fits as well.
+    if (std::abs(std::sin(box.direction - corners)) < 1e-9)
+        return box.direction;
+    return pythonModulo(corners, 2 * kPi);
+}
+
 PointList moveBoxCorner(const RotatedBox& box, int index, const QPointF& position)
 {
     PointList points = box.points;

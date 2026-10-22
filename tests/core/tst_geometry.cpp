@@ -46,6 +46,22 @@ class TestGeometry : public QObject
     Q_OBJECT
 
 private slots:
+    // A stored angle that fits the corners is kept bit for bit; a missing (0) or wrong one is
+    // replaced by the angle of side 0-1.
+    void fittingDirection()
+    {
+        const PointList upright{{10, 10}, {50, 10}, {50, 30}, {10, 30}};
+        QCOMPARE(liteanno::fittingDirection({upright, 0}), 0.0);
+        const RotatedBox turned = rotateBox({upright, 0}, radians(30));
+        QCOMPARE(liteanno::fittingDirection(turned), turned.direction);
+        // Half a turn away has the same slope.
+        const double opposite = liteanno::pythonModulo(turned.direction + 3.141592653589793, 2 * 3.141592653589793);
+        QCOMPARE(liteanno::fittingDirection({turned.points, opposite}), opposite);
+        QVERIFY(qAbs(liteanno::fittingDirection({turned.points, 0}) - turned.direction) < 1e-12);
+        const PointList diagonal{{50, 20}, {90, 60}, {70, 80}, {30, 40}};
+        QVERIFY(qAbs(liteanno::fittingDirection({diagonal, 0}) - 3.141592653589793 / 4) < 1e-15);
+    }
+
     void pythonModulo()
     {
         QCOMPARE(liteanno::pythonModulo(-0.5, 2 * 3.141592653589793), 2 * 3.141592653589793 - 0.5);

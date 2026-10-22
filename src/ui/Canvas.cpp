@@ -94,18 +94,22 @@ void Canvas::setTool(Tool tool)
 
 void Canvas::setSelectedShape(qsizetype index)
 {
+    bool shown = false;
     if (isHidden(index)) {
         m_hidden.removeAll(m_document->shapes()[index].id);
+        shown = true;
+    }
+    if (m_selected != index) {
+        m_selected = index;
+        // A drag belongs to the shape it started on.
+        if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex) {
+            m_drag = Drag::None;
+            m_dragPoints.clear();
+        }
+    }
+    // After the selection: the window rebuilds its list from it.
+    if (shown)
         emit visibilityChanged();
-    }
-    if (m_selected == index)
-        return;
-    m_selected = index;
-    // A drag belongs to the shape it started on.
-    if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex) {
-        m_drag = Drag::None;
-        m_dragPoints.clear();
-    }
     update();
 }
 
@@ -255,7 +259,7 @@ bool Canvas::rotateSelectedBy(double degrees)
     const Shape& shape = m_document->shapes()[m_selected];
     if (shape.type != ShapeType::Rotation || shape.points.size() != 4)
         return false;
-    emit shapeRotated(m_selected, rotateBox({shape.points, shape.direction}, radians(degrees)));
+    emit shapeRotated(m_selected, rotateBox({shape.points, fittingDirection({shape.points, shape.direction})}, radians(degrees)));
     return true;
 }
 
@@ -457,7 +461,8 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
         const QPointF point = clampToImage(imagePoint);
         if (shape.type == ShapeType::Rotation && shape.points.size() == 4) {
             // As upstream, the corners of a rotated box may leave the image.
-            m_dragPoints = moveBoxCorner({shape.points, shape.direction}, m_dragVertex, imagePoint);
+            m_dragPoints = moveBoxCorner({shape.points, fittingDirection({shape.points, shape.direction})}, m_dragVertex,
+                                         imagePoint);
         } else if (shape.type == ShapeType::Rectangle && shape.points.size() == 4) {
             // Corners are stored in order; the opposite corner stays.
             m_dragPoints = canonicalRectangle({shape.points[(m_dragVertex + 2) % 4], point});
@@ -498,8 +503,16 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
         const PointList points = m_dragPoints;
         m_dragPoints.clear();
         if (m_document && m_selected >= 0 && m_selected < m_document->shapes().size() && !points.isEmpty()
-            && !exactlyEqual(points, m_document->shapes()[m_selected].points))
-            emit shapePointsChanged(m_selected, points);
+            && !exactlyEqual(points, m_document->shapes()[m_selected].points)) {
+            const Shape& shape = m_document->shapes()[m_selected];
+            const double direction = shape.type == ShapeType::Rotation ? fittingDirection({shape.points, shape.direction})
+                                                                       : shape.direction;
+            // A rotated box that had no fitting angle gets the one its corners were moved by.
+            if (direction != shape.direction)
+                emit shapeRotated(m_selected, {points, direction});
+            else
+                emit shapePointsChanged(m_selected, points);
+        }
         break;
     }
     default:

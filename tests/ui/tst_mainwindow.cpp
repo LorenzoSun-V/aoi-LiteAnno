@@ -198,10 +198,10 @@ struct Project {
         }
     }
 
-    void writeProjectFile(const QByteArray& extra)
+    void writeProjectFile(const QByteArray& extra, const QByteArray& shapeTypes = R"("rectangle", "polygon")")
     {
         QByteArray text = QByteArray("{\"formatVersion\": \"1.0\", \"projectId\": \"") + kProjectId
-                          + "\", \"shapeTypes\": [\"rectangle\", \"polygon\"], "
+                          + "\", \"shapeTypes\": [" + shapeTypes + "], "
                             "\"classes\": [{\"id\": 0, \"name\": \"scratch\"}, {\"id\": 1, \"name\": \"dent\"}]";
         if (!extra.isEmpty())
             text += ", " + extra;
@@ -837,11 +837,38 @@ private slots:
         QVERIFY(canvas->labelsVisible());
     }
 
+    // Review of PR #9, item 2: choosing a hidden shape in the list shows and selects it; the list
+    // and the canvas agree, so Delete removes that shape and not the one selected before.
+    void choosingAHiddenShapeInTheList()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.drawRectangle(QPointF(100, 20), QPointF(150, 70));
+        const quint64 second = w.document().shapes()[1].id;
+        canvas->setSelectedShape(1);
+        QTest::keyClick(canvas, Qt::Key_S);
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("shapeList"));
+        list->setCurrentRow(0);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        list->setCurrentRow(1);
+        QVERIFY(!canvas->isHidden(1));
+        QCOMPARE(canvas->selectedShape(), qsizetype(1));
+        QCOMPARE(list->currentRow(), 1);
+        QTest::keyClick(canvas, Qt::Key_Delete);
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(w.document().shapes()[0].id != second);
+    }
+
     // O draws a rotated box upright; Z/V turn it by 1°, X/C by 0.1°, as upstream; dragging a
     // corner keeps the angle. The file gets upstream's numbers.
     void rotatedBoxes()
     {
         Project project;
+        project.writeProjectFile(QByteArray(), R"("rectangle", "polygon", "rotation")");
         Window w(project.options());
         QVERIFY(w.window.openProject(project.data.path()));
         Canvas* canvas = w.canvas();
@@ -889,6 +916,59 @@ private slots:
         const QJsonObject shape = readJson(project.json(1))[QStringLiteral("shapes")].toArray()[0].toObject();
         QCOMPARE(shape[QStringLiteral("shape_type")].toString(), QStringLiteral("rotation"));
         QCOMPARE(shape[QStringLiteral("direction")].toDouble(), moved.direction);
+    }
+
+    // Review of PR #9, item 3: a rotated box whose file has no "direction" (or one that does
+    // not fit its corners) keeps its angle when a corner is dragged; the angle comes from the
+    // corners and is written to the file.
+    void rotatedBoxWithoutDirection()
+    {
+        Project project;
+        project.writeProjectFile(QByteArray(), R"("rectangle", "polygon", "rotation")");
+        writeFile(project.json(1),
+                  R"({"version": "4.2.0", "flags": {}, "shapes": [{"label": "scratch", "points": [[50, 20], [90, 60], [70, 80], [30, 40]], )"
+                  R"("group_id": null, "description": "", "difficult": false, "shape_type": "rotation", "flags": {}}], )"
+                  R"("imagePath": "0001.png", "imageData": null, "imageHeight": 100, "imageWidth": 200})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        const Shape original = w.document().shapes()[0];
+        QCOMPARE(original.type, ShapeType::Rotation);
+        canvas->setSelectedShape(0);
+        drag(canvas, QPointF(50, 20), QPointF(45, 15));
+        const Shape moved = w.document().shapes()[0];
+        const double quarter = 3.141592653589793 / 4;
+        QVERIFY(qAbs(moved.direction - quarter) < 1e-12);
+        QVERIFY(exactlyEqual(moved.points, moveBoxCorner({original.points, moved.direction}, 0, moved.points[0])));
+        // Still a box at 45°: side 0-1 runs along the angle, side 1-2 across it.
+        const QPointF side = moved.points[1] - moved.points[0];
+        const QPointF across = moved.points[2] - moved.points[1];
+        QVERIFY(qAbs(side.y() - side.x()) < 1e-9);
+        QVERIFY(qAbs(across.y() + across.x()) < 1e-9);
+        QVERIFY(qAbs(side.x()) > 1);
+
+        w.window.saveNow();
+        w.window.flushSaves();
+        const QJsonObject shape = readJson(project.json(1))[QStringLiteral("shapes")].toArray()[0].toObject();
+        QVERIFY(qAbs(shape[QStringLiteral("direction")].toDouble() - quarter) < 1e-12);
+    }
+
+    // Review of PR #9, item 14: the rotated box tool is there only when the project has rotated
+    // boxes among its shape types, as the other tools.
+    void rotationToolFollowsTheProject()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        auto* action = w.window.findChild<QAction*>(QStringLiteral("create_rotation"));
+        QVERIFY(action);
+        QVERIFY(!action->isEnabled());
+        QTest::keyClick(canvas, Qt::Key_O);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Select);
     }
 
     void keyboardAndMouseLikeXAnyLabeling()

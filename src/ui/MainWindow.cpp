@@ -384,6 +384,7 @@ bool MainWindow::openProject(const QString& root)
     const QList<ShapeType>& types = m_project->config().shapeTypes;
     m_rectangleTool->setEnabled(types.contains(ShapeType::Rectangle));
     m_polygonTool->setEnabled(types.contains(ShapeType::Polygon));
+    m_rotationTool->setEnabled(types.contains(ShapeType::Rotation));
     m_selectTool->setChecked(true);
     m_canvas->setTool(Canvas::Tool::Select);
     buildImageLabelPanel();
