@@ -30,12 +30,13 @@ struct Mask {
     int width = 0;
     int height = 0;
     std::vector<unsigned char> pixels;
+    unsigned char color = 1;
 
-    void set(int x, int y) { pixels[size_t(y) * size_t(width) + size_t(x)] = 1; }
+    void set(int x, int y) { pixels[size_t(y) * size_t(width) + size_t(x)] = color; }
     void hline(int y, int x1, int x2)
     {
         std::fill(pixels.begin() + std::ptrdiff_t(size_t(y) * size_t(width) + size_t(x1)),
-                  pixels.begin() + std::ptrdiff_t(size_t(y) * size_t(width) + size_t(x2) + 1), 1);
+                  pixels.begin() + std::ptrdiff_t(size_t(y) * size_t(width) + size_t(x2) + 1), color);
     }
 };
 
@@ -335,6 +336,26 @@ double rasterizedPolygonArea(const std::vector<RasterPolygon>& polygons)
         fillEdgeCollection(mask, edges);
     }
     return double(std::count(mask.pixels.begin(), mask.pixels.end(), 1));
+}
+
+void fillPolygon(std::vector<unsigned char>& pixels, int width, int height,
+                 const std::vector<std::pair<int, int>>& points, unsigned char value)
+{
+    if (points.empty() || width <= 0 || height <= 0 || pixels.size() != size_t(width) * size_t(height))
+        return;
+    Mask mask;
+    mask.width = width;
+    mask.height = height;
+    mask.pixels.swap(pixels);
+    mask.color = value;
+    std::vector<Point64> converted;
+    converted.reserve(points.size());
+    for (const auto& [x, y] : points)
+        converted.push_back({x, y});
+    std::vector<PolyEdge> edges;
+    collectPolyEdges(mask, converted, edges);
+    fillEdgeCollection(mask, edges);
+    mask.pixels.swap(pixels);
 }
 
 } // namespace liteanno::formats

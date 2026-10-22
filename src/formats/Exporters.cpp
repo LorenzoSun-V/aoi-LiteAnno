@@ -2,12 +2,14 @@
 
 #include "core/FormatVersion.h"
 #include "core/Shape.h"
+#include "core/ShapeType.h"
 #include "formats/JsonText.h"
 #include "formats/PolygonRaster.h"
 
 #include <QFileInfo>
 #include <QIODevice>
 
+#include <algorithm>
 #include <charconv>
 #include <cmath>
 
@@ -102,6 +104,13 @@ Points fromDiagonal(const Points& points)
     return {{a[0], a[1]}, {b[0], a[1]}, {b[0], b[1]}, {a[0], b[1]}};
 }
 
+bool outsideImage(const ExportShape& shape, const ExportImage& image)
+{
+    return std::any_of(shape.points.cbegin(), shape.points.cend(), [&image](const Point& p) {
+        return p[0].value < 0 || p[0].value > image.width || p[1].value < 0 || p[1].value > image.height;
+    });
+}
+
 bool takesShape(ExportFormat format, const QString& type)
 {
     switch (format) {
@@ -114,6 +123,17 @@ bool takesShape(ExportFormat format, const QString& type)
         return type == QLatin1String("polygon");
     case ExportFormat::VocPolygon:
         return type == QLatin1String("rectangle") || type == QLatin1String("polygon");
+    case ExportFormat::YoloObb:
+    case ExportFormat::Dota:
+        return type == QLatin1String("rotation");
+    case ExportFormat::Mask:
+        return type == QLatin1String("polygon");
+    case ExportFormat::LabelMe: {
+        const std::optional<ShapeType> known = shapeTypeFromName(type);
+        return known && isEditableShapeType(*known);
+    }
+    case ExportFormat::Classification:
+        return true;  // shapes are not exported
     }
     return false;
 }
@@ -133,6 +153,16 @@ QString formatText(ExportFormat format)
         return QStringLiteral(u"COCO 检测");
     case ExportFormat::CocoSegmentation:
         return QStringLiteral(u"COCO 分割");
+    case ExportFormat::YoloObb:
+        return QStringLiteral(u"YOLO 旋转框");
+    case ExportFormat::Dota:
+        return QStringLiteral(u"DOTA");
+    case ExportFormat::Mask:
+        return QStringLiteral(u"掩膜");
+    case ExportFormat::LabelMe:
+        return QStringLiteral(u"LabelMe");
+    case ExportFormat::Classification:
+        return QStringLiteral(u"图片分类");
     }
     return QString();
 }
@@ -211,6 +241,16 @@ QString exportFormatName(ExportFormat format)
         return QStringLiteral("coco-det");
     case ExportFormat::CocoSegmentation:
         return QStringLiteral("coco-seg");
+    case ExportFormat::YoloObb:
+        return QStringLiteral("yolo-obb");
+    case ExportFormat::Dota:
+        return QStringLiteral("dota");
+    case ExportFormat::Mask:
+        return QStringLiteral("mask");
+    case ExportFormat::LabelMe:
+        return QStringLiteral("labelme");
+    case ExportFormat::Classification:
+        return QStringLiteral("classify");
     }
     return QString();
 }
@@ -226,13 +266,24 @@ std::optional<ExportFormat> exportFormatFromName(const QString& name)
 
 QList<ExportFormat> exportFormats()
 {
-    return {ExportFormat::YoloDetection, ExportFormat::YoloSegmentation, ExportFormat::VocRectangle,
-            ExportFormat::VocPolygon,    ExportFormat::CocoDetection,    ExportFormat::CocoSegmentation};
+    return {ExportFormat::YoloDetection, ExportFormat::YoloSegmentation, ExportFormat::YoloObb,
+            ExportFormat::VocRectangle,  ExportFormat::VocPolygon,       ExportFormat::CocoDetection,
+            ExportFormat::CocoSegmentation, ExportFormat::Dota,          ExportFormat::Mask,
+            ExportFormat::LabelMe,       ExportFormat::Classification};
 }
 
 bool exportNeedsClassIds(ExportFormat format)
 {
-    return format != ExportFormat::VocRectangle && format != ExportFormat::VocPolygon;
+    switch (format) {
+    case ExportFormat::VocRectangle:
+    case ExportFormat::VocPolygon:
+    case ExportFormat::Dota:
+    case ExportFormat::LabelMe:
+    case ExportFormat::Classification:
+        return false;
+    default:
+        return true;
+    }
 }
 
 ExportImage exportImageOf(const QString& path, const QByteArray& bytes, const AnnotationFile& file)
@@ -294,6 +345,8 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
                                        const QHash<QString, int>& classIds)
 {
     QList<ExportIssue> issues;
+    if (format == ExportFormat::Classification)
+        return issues;  // only the image-level labels count
     for (int i = 0; i < image.shapes.size(); ++i) {
         const ExportShape& shape = image.shapes[i];
         QString reason;
@@ -307,6 +360,11 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
             reason = QStringLiteral(u"矩形的点数不对");
         else if (shape.type == QLatin1String("polygon") && shape.points.size() < 3)
             reason = QStringLiteral(u"多边形少于 3 个点");
+        else if (shape.type == QLatin1String("rotation") && shape.points.size() != 4)
+            reason = QStringLiteral(u"旋转框不是 4 个点");
+        else if ((format == ExportFormat::YoloObb || format == ExportFormat::Dota) && outsideImage(shape, image))
+            // Upstream leaves such boxes out silently; here the image waits for a fix.
+            reason = QStringLiteral(u"旋转框有角点在图片外");
         else if (exportNeedsClassIds(format) && !classIds.contains(shape.label))
             reason = QStringLiteral(u"类别“%1”不在项目的类别列表中").arg(shape.label);
         if (!reason.isEmpty())
@@ -317,16 +375,14 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
 
 int clampedShapes(const ExportImage& image, ExportFormat format)
 {
+    // These write the coordinates as they are; YOLO OBB and DOTA refuse boxes outside.
+    if (format == ExportFormat::YoloObb || format == ExportFormat::Dota || format == ExportFormat::LabelMe
+        || format == ExportFormat::Classification)
+        return 0;
     int count = 0;
     for (const ExportShape& shape : image.shapes) {
-        if (!takesShape(format, shape.type))
-            continue;
-        for (const Point& p : shape.points) {
-            if (p[0].value < 0 || p[0].value > image.width || p[1].value < 0 || p[1].value > image.height) {
-                ++count;
-                break;
-            }
-        }
+        if (takesShape(format, shape.type) && outsideImage(shape, image))
+            ++count;
     }
     return count;
 }
@@ -339,8 +395,16 @@ QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash
     for (const ExportShape& shape : image.shapes) {
         if (!takesShape(format, shape.type) || !classIds.contains(shape.label))
             continue;
-        Points points = clamped(shape.points, image.width, image.height);
         const int classId = classIds.value(shape.label);
+        if (format == ExportFormat::YoloObb) {
+            // Not clamped: boxes outside the image are refused before.
+            out += std::to_string(classId);
+            for (const Point& p : shape.points)
+                out += ' ' + pythonFloatRepr(p[0].value / width) + ' ' + pythonFloatRepr(p[1].value / height);
+            out += '\n';
+            continue;
+        }
+        Points points = clamped(shape.points, image.width, image.height);
         if (format == ExportFormat::YoloDetection) {
             if (points.size() == 2)
                 points = fromDiagonal(points);
@@ -363,6 +427,105 @@ QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash
         }
     }
     return QByteArray(out.data(), qsizetype(out.size()));
+}
+
+QByteArray dotaLabels(const ExportImage& image)
+{
+    std::string out;
+    for (const ExportShape& shape : image.shapes) {
+        if (shape.type != QLatin1String("rotation") || shape.points.size() != 4 || outsideImage(shape, image))
+            continue;
+        for (const Point& p : shape.points)
+            out += pyStr(p[0]) + ' ' + pyStr(p[1]) + ' ';
+        out += shape.label.toStdString() + ' ' + std::to_string(shape.difficult) + '\n';
+    }
+    return QByteArray(out.data(), qsizetype(out.size()));
+}
+
+std::vector<unsigned char> maskPixels(const ExportImage& image, const QHash<QString, int>& values)
+{
+    std::vector<unsigned char> pixels(size_t(std::max(0, image.width)) * size_t(std::max(0, image.height)), 0);
+    for (const ExportShape& shape : image.shapes) {
+        if (shape.type != QLatin1String("polygon") || !values.contains(shape.label))
+            continue;
+        std::vector<std::pair<int, int>> polygon;
+        for (const Point& p : clamped(shape.points, image.width, image.height))
+            polygon.push_back({int(pyInt(p[0])), int(pyInt(p[1]))});
+        fillPolygon(pixels, image.width, image.height, polygon, (unsigned char)values.value(shape.label));
+    }
+    return pixels;
+}
+
+QByteArray maskColorsFile(const QHash<QString, int>& values, const QList<std::pair<int, QString>>& categories)
+{
+    Json colors = Json::object();
+    for (const auto& category : categories)
+        colors[category.second.toStdString()] = values.value(category.second);
+    Json mapping = Json::object();
+    mapping["type"] = "grayscale";
+    mapping["colors"] = std::move(colors);
+    return serializeJson(mapping);
+}
+
+QByteArray labelMeFile(const ExportImage& image, const QByteArray& bytes, const QString& imagePath)
+{
+    const JsonParseResult parsed = parseJson(bytes);
+    const Json empty = Json::object();
+    const Json& source = parsed.ok && parsed.value.is_object() ? parsed.value : empty;
+    // LabelMe's own file: label_file.py of LabelMe 5.
+    Json out = Json::object();
+    out["version"] = "5.5.0";
+    const auto flagsIt = source.find("flags");
+    out["flags"] = flagsIt != source.end() && flagsIt->is_object() ? *flagsIt : Json::object();
+    Json shapes = Json::array();
+    const auto shapesIt = source.find("shapes");
+    for (int i = 0; i < image.shapes.size(); ++i) {
+        const ExportShape& shape = image.shapes[i];
+        if (shapesIt == source.end() || !shapesIt->is_array() || size_t(i) >= shapesIt->size())
+            break;
+        const Json& object = (*shapesIt)[size_t(i)];
+        const auto field = [&object](const char* key) {
+            const auto it = object.find(key);
+            return it != object.end() ? *it : Json();
+        };
+        Json points = Json::array();
+        QString type = shape.type;
+        if (type == QLatin1String("rectangle")) {
+            // LabelMe's rectangles are two corners.
+            Points corners = shape.points.size() == 2 ? fromDiagonal(shape.points) : shape.points;
+            Point low = corners[0];
+            Point high = corners[0];
+            for (const Point& p : corners) {
+                low = {pyMin(low[0], p[0]), pyMin(low[1], p[1])};
+                high = {pyMax(high[0], p[0]), pyMax(high[1], p[1])};
+            }
+            points.push_back(Json::array({pyJson(low[0]), pyJson(low[1])}));
+            points.push_back(Json::array({pyJson(high[0]), pyJson(high[1])}));
+        } else {
+            for (const Point& p : shape.points)
+                points.push_back(Json::array({pyJson(p[0]), pyJson(p[1])}));
+            if (type == QLatin1String("rotation"))
+                type = QStringLiteral("polygon");
+        }
+        Json converted = Json::object();
+        converted["label"] = shape.label.toStdString();
+        converted["points"] = std::move(points);
+        const Json groupId = field("group_id");
+        converted["group_id"] = groupId.is_number_integer() ? groupId : Json();
+        const Json description = field("description");
+        converted["description"] = description.is_string() ? description : Json("");
+        converted["shape_type"] = type.toStdString();
+        const Json flags = field("flags");
+        converted["flags"] = flags.is_object() ? flags : Json::object();
+        converted["mask"] = nullptr;
+        shapes.push_back(std::move(converted));
+    }
+    out["shapes"] = std::move(shapes);
+    out["imagePath"] = imagePath.toStdString();
+    out["imageData"] = nullptr;
+    out["imageHeight"] = image.height;
+    out["imageWidth"] = image.width;
+    return serializeJson(out);
 }
 
 QByteArray vocAnnotation(const ExportImage& image, ExportFormat format, const QString& folder)

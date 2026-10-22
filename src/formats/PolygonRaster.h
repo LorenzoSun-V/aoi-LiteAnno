@@ -13,4 +13,10 @@ using RasterPolygon = std::vector<std::pair<double, double>>;
 // pixels counted. Polygons with fewer than 3 points are ignored.
 double rasterizedPolygonArea(const std::vector<RasterPolygon>& polygons);
 
+// cv2.fillPoly(image, [np.array(points, dtype=np.int32)], value) on a one-channel 8-bit
+// image of `width` x `height` pixels, row by row in `pixels` (label_converter.py,
+// custom_to_mask).
+void fillPolygon(std::vector<unsigned char>& pixels, int width, int height,
+                 const std::vector<std::pair<int, int>>& points, unsigned char value);
+
 } // namespace liteanno::formats

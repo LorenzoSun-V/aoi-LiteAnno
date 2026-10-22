@@ -24,6 +24,10 @@ public:
         Rectangle,
         Polygon,
         Rotation,
+        Point,      // one click
+        Line,       // dragged from one end to the other
+        LineStrip,  // clicked point by point, finished like a polygon
+        Circle,     // dragged from the centre out
     };
 
     explicit Canvas(QWidget* parent = nullptr);
@@ -96,7 +100,7 @@ private:
     enum class Drag {
         None,
         Pan,
-        DrawRectangle,
+        DrawRectangle,  // also rotated boxes, lines and circles: whatever is dragged
         MoveShape,
         MoveVertex,
     };
@@ -107,7 +111,10 @@ private:
     int vertexAt(qsizetype shape, const QPointF& widgetPoint) const;
     bool canEdit(qsizetype index) const;
     PointList displayedPoints(qsizetype index) const;
+    // Finishes the polygon or line strip being clicked.
     void finishPolygon();
+    // The tool clicks its points one by one.
+    bool clicksPoints() const { return m_tool == Tool::Polygon || m_tool == Tool::LineStrip; }
     void zoomAround(const QPointF& anchor, double factor);
     // Arrow keys: the selected shape moves one image pixel, unless that leaves the image.
     void moveSelectedBy(const QPointF& delta);

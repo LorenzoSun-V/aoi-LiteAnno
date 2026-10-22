@@ -348,9 +348,10 @@ void Canvas::cancelDrawing()
 
 void Canvas::finishPolygon()
 {
-    if (m_polygonPoints.size() >= 3) {
+    const bool strip = m_tool == Tool::LineStrip;
+    if (m_polygonPoints.size() >= (strip ? 2 : 3)) {
         Shape shape;
-        shape.type = ShapeType::Polygon;
+        shape.type = strip ? ShapeType::LineStrip : ShapeType::Polygon;
         shape.points = m_polygonPoints;
         m_polygonPoints.clear();
         update();
@@ -378,14 +379,26 @@ void Canvas::mousePressEvent(QMouseEvent* event)
     switch (m_tool) {
     case Tool::Rectangle:
     case Tool::Rotation:
+    case Tool::Line:
+    case Tool::Circle:
         if (!m_readOnly)
             m_drag = Drag::DrawRectangle;
         break;
-    case Tool::Polygon: {
+    case Tool::Point:
+        if (!m_readOnly) {
+            Shape shape;
+            shape.type = ShapeType::Point;
+            shape.points = {clampToImage(m_pressImage)};
+            emit shapeDrawn(shape);
+        }
+        break;
+    case Tool::Polygon:
+    case Tool::LineStrip: {
         if (m_readOnly)
             break;
         const QPointF point = clampToImage(m_pressImage);
-        if (m_polygonPoints.size() >= 3 && distance(imageToWidget(m_polygonPoints.first()), widgetPoint) <= kCloseDistance) {
+        if (m_tool == Tool::Polygon && m_polygonPoints.size() >= 3
+            && distance(imageToWidget(m_polygonPoints.first()), widgetPoint) <= kCloseDistance) {
             finishPolygon();
             break;
         }
@@ -469,7 +482,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
     }
     case Drag::None:
         m_currentImage = clampToImage(imagePoint);
-        if (m_tool == Tool::Polygon && m_polygonPoints.isEmpty())
+        if (clicksPoints() && m_polygonPoints.isEmpty())
             return;
         break;
     }
@@ -484,6 +497,16 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
     case Drag::DrawRectangle: {
         const QPointF end = clampToImage(widgetToImage(event->position()));
         const QPointF start = clampToImage(m_pressImage);
+        if (m_tool == Tool::Line || m_tool == Tool::Circle) {
+            // Lines and circles need only some length.
+            if (distance(start, end) * m_scale >= 2) {
+                Shape shape;
+                shape.type = m_tool == Tool::Line ? ShapeType::Line : ShapeType::Circle;
+                shape.points = {start, end};
+                emit shapeDrawn(shape);
+            }
+            break;
+        }
         if (std::abs(end.x() - start.x()) * m_scale >= 2 && std::abs(end.y() - start.y()) * m_scale >= 2) {
             // A new rotated box starts upright with angle 0, as upstream draws it.
             Shape shape;
@@ -512,7 +535,7 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton)
         return;
-    if (m_tool == Tool::Polygon) {
+    if (clicksPoints()) {
         // The double click's first press already added its point.
         finishPolygon();
         return;
@@ -585,7 +608,7 @@ void Canvas::keyPressEvent(QKeyEvent* event)
         return;
     case Qt::Key_Return:
     case Qt::Key_Enter:
-        if (m_tool == Tool::Polygon) {
+        if (clicksPoints()) {
             finishPolygon();
             return;
         }
@@ -710,8 +733,16 @@ void Canvas::paintEvent(QPaintEvent* /*event*/)
     pen.setCosmetic(true);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
-    if (m_drag == Drag::DrawRectangle)
-        painter.drawRect(QRectF(imageToWidget(clampToImage(m_pressImage)), imageToWidget(m_currentImage)).normalized());
+    if (m_drag == Drag::DrawRectangle) {
+        const QPointF start = imageToWidget(clampToImage(m_pressImage));
+        const QPointF end = imageToWidget(m_currentImage);
+        if (m_tool == Tool::Line)
+            painter.drawLine(start, end);
+        else if (m_tool == Tool::Circle)
+            painter.drawEllipse(start, distance(start, end), distance(start, end));
+        else
+            painter.drawRect(QRectF(start, end).normalized());
+    }
     if (!m_polygonPoints.isEmpty()) {
         QPolygonF line;
         for (const QPointF& p : m_polygonPoints)

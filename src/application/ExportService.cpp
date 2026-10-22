@@ -3,6 +3,7 @@
 #include "application/FileStatus.h"
 #include "application/WorksetStore.h"
 #include "core/Version.h"
+#include "formats/PngFile.h"
 #include "dataset/DirectoryScanner.h"
 
 #include <QDate>
@@ -43,6 +44,26 @@ bool within(const QString& path, const QString& folder)
         return true;
     const QString prefix = folder.endsWith(QLatin1Char('/')) ? folder : folder + QLatin1Char('/');
     return path.startsWith(prefix, pathCase());
+}
+
+// Labels that make a folder name on Windows and Linux: no separators or reserved characters.
+bool usableFolderName(const QString& name)
+{
+    static const QString reserved = QStringLiteral("<>:\"/\\|?*");
+    if (name.trimmed().isEmpty() || name == QLatin1String(".") || name == QLatin1String("..") || name.endsWith(QLatin1Char('.'))
+        || name.endsWith(QLatin1Char(' ')))
+        return false;
+    return std::none_of(name.cbegin(), name.cend(), [](QChar c) { return c.unicode() < 32 || reserved.contains(c); });
+}
+
+QString csvField(const QString& text)
+{
+    if (!text.contains(QLatin1Char(',')) && !text.contains(QLatin1Char('"')) && !text.contains(QLatin1Char('\n'))
+        && !text.contains(QLatin1Char('\r')))
+        return text;
+    QString quoted = text;
+    quoted.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+    return QLatin1Char('"') + quoted + QLatin1Char('"');
 }
 
 QString stemPath(const QString& imagePath)
@@ -262,10 +283,16 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     ExportReport report;
     const ProjectConfig& config = m_project.config();
     const ExportFormat format = request.format;
-    if (config.shapeTypes.isEmpty()) {
+    const bool classification = format == ExportFormat::Classification;
+    if (classification && config.imageLabels.options.isEmpty()) {
+        report.error = QStringLiteral(u"这个项目没有图片级标签，不能导出图片分类。");
+        return report;
+    }
+    if (!classification && config.shapeTypes.isEmpty()) {
         report.error = QStringLiteral(u"这个项目不标形状，不能导出为 %1。").arg(formats::exportFormatName(format));
         return report;
     }
+    const bool singleChoice = config.imageLabels.mode == ImageLabelMode::Single;
     QHash<QString, int> classIds;
     QList<std::pair<int, QString>> categories;
     for (const ClassDef& c : config.classes) {
@@ -276,6 +303,17 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     if (formats::exportNeedsClassIds(format) && classIds.isEmpty()) {
         report.error = QStringLiteral(u"项目文件没有类别列表（classes），%1 需要类别编号。").arg(formats::exportFormatName(format));
         return report;
+    }
+    // Masks: background 0, each class its id + 1 (written to mask_colors.json).
+    QHash<QString, int> maskValues;
+    if (format == ExportFormat::Mask) {
+        for (const ClassDef& c : config.classes) {
+            if (c.id < 0 || c.id > 254) {
+                report.error = QStringLiteral(u"掩膜的像素值是类别编号加 1，类别“%1”的编号 %2 超出了 0–254。").arg(c.name).arg(c.id);
+                return report;
+            }
+            maskValues.insert(c.name, c.id + 1);
+        }
     }
 
     // The output folder: new or empty, and apart from the data so a scan never lists it.
@@ -328,6 +366,24 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             item.reason = image.annotation->file.document().review().skipReason;
         } else if (image.status != AnnotationStatus::Confirmed) {
             item.reason = notDoneReason(image.status);
+        } else if (classification) {
+            const AnnotationDocument& document = image.annotation->file.document();
+            QStringList chosen;
+            for (const QString& option : config.imageLabels.options) {
+                if (document.imageLabel(option).value_or(false))
+                    chosen.append(option);
+            }
+            if (singleChoice && chosen.size() != 1) {
+                item.result = ExportResult::Unconvertible;
+                item.reason = chosen.isEmpty() ? QStringLiteral(u"没有选图片级标签") : QStringLiteral(u"选了不止一个图片级标签");
+            } else if (singleChoice && !usableFolderName(chosen.first())) {
+                item.result = ExportResult::Unconvertible;
+                item.reason = QStringLiteral(u"标签“%1”不能用作文件夹名").arg(chosen.first());
+            } else {
+                item.result = ExportResult::Exported;
+                item.imageLabels = chosen;
+                digests.insert(scoped.path, image.annotation->stamp.digest);
+            }
         } else {
             const formats::ExportImage shapes = formats::exportImageOf(scoped.path, image.bytes, image.annotation->file);
             const QList<formats::ExportIssue> issues = formats::unconvertibleShapes(shapes, format, classIds);
@@ -389,6 +445,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         if (!cocoWriter->begin(&coco, &cocoAnnotations))
             return fail(QStringLiteral(u"无法写入 %1").arg(QDir::toNativeSeparators(coco.fileName())));
     }
+    QStringList csvRows;  // multiple-choice classification
     for (const ExportItem& item : std::as_const(report.items)) {
         ++done;
         if (item.result == ExportResult::Exported || item.result == ExportResult::Negative) {
@@ -400,10 +457,37 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             const formats::ExportImage shapes = formats::exportImageOf(item.image, image.bytes, image.annotation->file);
             const QString stem = output + QLatin1Char('/') + stemPath(item.image);
             bool ok = true;
+            QString imageTarget = output + QLatin1Char('/') + item.image;  // where a copy goes
+            bool copyImage = request.copyImages;
             switch (format) {
             case ExportFormat::YoloDetection:
             case ExportFormat::YoloSegmentation:
+            case ExportFormat::YoloObb:
                 ok = created.write(stem + QStringLiteral(".txt"), formats::yoloLabels(shapes, format, classIds));
+                break;
+            case ExportFormat::Dota:
+                ok = created.write(stem + QStringLiteral(".txt"), formats::dotaLabels(shapes));
+                break;
+            case ExportFormat::Mask:
+                ok = created.write(stem + QStringLiteral(".png"),
+                                   formats::grayscalePng(shapes.width, shapes.height, formats::maskPixels(shapes, maskValues)));
+                break;
+            case ExportFormat::LabelMe:
+                // LabelMe opens the image named in the file, next to it: the image is always copied.
+                ok = created.write(stem + QStringLiteral(".json"),
+                                   formats::labelMeFile(shapes, image.bytes, QFileInfo(item.image).fileName()));
+                copyImage = true;
+                break;
+            case ExportFormat::Classification:
+                if (singleChoice) {
+                    imageTarget = output + QLatin1Char('/') + item.imageLabels.value(0) + QLatin1Char('/') + item.image;
+                    copyImage = true;
+                } else {
+                    QStringList row{csvField(item.image)};
+                    for (const QString& option : config.imageLabels.options)
+                        row.append(item.imageLabels.contains(option) ? QStringLiteral("1") : QStringLiteral("0"));
+                    csvRows.append(row.join(QLatin1Char(',')));
+                }
                 break;
             case ExportFormat::VocRectangle:
             case ExportFormat::VocPolygon:
@@ -420,9 +504,8 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             }
             if (!ok)
                 return fail(created.error());
-            if (request.copyImages) {
-                const QString target = isCoco ? output + QStringLiteral("/images/") + item.image
-                                              : output + QLatin1Char('/') + item.image;
+            if (copyImage) {
+                const QString target = isCoco ? output + QStringLiteral("/images/") + item.image : imageTarget;
                 if (!created.copy(m_project.imageFilePath(item.image), target))
                     return fail(created.error());
             }
@@ -438,8 +521,22 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         return fail(QStringLiteral(u"无法写入 %1").arg(QDir::toNativeSeparators(coco.fileName())));
     coco.close();
 
+    if (classification && !singleChoice) {
+        QStringList header{QStringLiteral("image")};
+        for (const QString& option : config.imageLabels.options)
+            header.append(csvField(option));
+        csvRows.prepend(header.join(QLatin1Char(',')));
+        // With a byte order mark, so that Excel reads the Chinese names.
+        if (!created.write(output + QStringLiteral("/labels.csv"), "\xEF\xBB\xBF" + (csvRows.join(QLatin1Char('\n')) + QLatin1Char('\n')).toUtf8()))
+            return fail(created.error());
+    }
+    if (format == ExportFormat::Mask) {
+        if (!created.write(output + QStringLiteral("/mask_colors.json"), formats::maskColorsFile(maskValues, categories)))
+            return fail(created.error());
+    }
+
     // YOLO class names, when the ids are 0, 1, 2...
-    if (format == ExportFormat::YoloDetection || format == ExportFormat::YoloSegmentation) {
+    if (format == ExportFormat::YoloDetection || format == ExportFormat::YoloSegmentation || format == ExportFormat::YoloObb) {
         bool contiguous = true;
         QStringList names;
         for (int i = 0; i < categories.size(); ++i) {

@@ -307,7 +307,7 @@ int main(int argc, char* argv[])
         {QStringLiteral("shape-types"), QStringLiteral(u"init：形状类型，如 rectangle,polygon"), QStringLiteral("types")},
         {QStringLiteral("batch-size"), QStringLiteral(u"init：每批图片数，默认 1000"), QStringLiteral("count")},
         {QStringLiteral("dry-run"), QStringLiteral(u"confirm：只统计，不写入")},
-        {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | voc | voc-polygon | coco-det | coco-seg"),
+        {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | labelme | classify"),
          QStringLiteral("format")},
         {QStringLiteral("out"), QStringLiteral(u"export：导出文件夹，必须是新的或空的"), QStringLiteral("folder")},
         {QStringLiteral("skip-unconvertible"), QStringLiteral(u"export：跳过有无法转换对象的图片，继续导出")},

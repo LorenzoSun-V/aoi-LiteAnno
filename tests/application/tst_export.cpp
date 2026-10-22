@@ -186,6 +186,81 @@ private slots:
         QCOMPARE(items[1].toObject().value(QStringLiteral("result")).toString(), QStringLiteral("unconvertible"));
     }
 
+    // YOLO OBB and DOTA write corners as they are; a rotated box with a corner outside the
+    // image is not left out silently, as upstream does, but stops the export.
+    void rotatedBoxesOutsideTheImage()
+    {
+        Project project;
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rotation"], )"
+                  R"("classes": [{"id": 0, "name": "scratch"}]})");
+        const QByteArray inside = R"({"label": "scratch", "points": [[10, 10], [50, 10], [50, 40], [10, 40]], )"
+                                  R"("shape_type": "rotation", "direction": 0})";
+        const QByteArray outside = R"({"label": "scratch", "points": [[-2.5, 10], [50, 8], [52, 40], [-0.5, 42]], )"
+                                   R"("shape_type": "rotation", "direction": 0.04})";
+        project.image(QStringLiteral("a.png"), inside, true);
+        project.image(QStringLiteral("b.png"), outside, true);
+        const auto session = project.open();
+        const ExportService service(*session, imaging::readImageInfo);
+        for (const formats::ExportFormat format : {formats::ExportFormat::YoloObb, formats::ExportFormat::Dota}) {
+            ExportRequest request;
+            request.format = format;
+            request.outputDir = project.output(format == formats::ExportFormat::Dota ? "dota" : "obb");
+            ExportReport report = service.run(request, {});
+            QVERIFY(!report.written);
+            QCOMPARE(report.unconvertible().size(), 1);
+            QVERIFY(report.unconvertible()[0].reason.contains(QStringLiteral(u"图片外")));
+            QVERIFY(!QFileInfo::exists(request.outputDir));
+            request.skipUnconvertible = true;
+            report = service.run(request, {});
+            QVERIFY(report.written);
+            QVERIFY(QFileInfo::exists(request.outputDir + QStringLiteral("/a.txt")));
+            QVERIFY(!QFileInfo::exists(request.outputDir + QStringLiteral("/b.txt")));
+        }
+        QCOMPARE(readFile(project.output("dota") + QStringLiteral("/a.txt")), QByteArray("10 10 50 10 50 40 10 40 scratch 0\n"));
+    }
+
+    // Image classification: single choice copies each image into its label's folder; multiple
+    // choice writes labels.csv.
+    void classification()
+    {
+        Project project;
+        const QByteArray config = R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", )"
+                                  R"("imageLabels": {"mode": "%1", "options": ["OK", "NG", "划伤,轻"]}})";
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")), QByteArray(config).replace("%1", "single"));
+        const auto labelled = [&project](const char* path, const QByteArray& flags, bool checked) {
+            project.image(QString::fromLatin1(path), QByteArray(), checked);
+            const QString json = project.data.filePath(QString::fromLatin1(path).replace(QStringLiteral(".png"), QStringLiteral(".json")));
+            writeFile(json, readFile(json).replace(R"("flags": {})", R"("flags": )" + flags));
+        };
+        labelled("line1/a.png", R"({"OK": true, "NG": false, "划伤,轻": false})", true);
+        labelled("line1/b.png", R"({"OK": false, "NG": true, "划伤,轻": false})", true);
+        labelled("line2/a.png", R"({"OK": false, "NG": true, "划伤,轻": false})", true);
+        labelled("line2/c.png", R"({"OK": true, "NG": false, "划伤,轻": false})", false);
+        {
+            const auto session = project.open();
+            ExportRequest request;
+            request.format = formats::ExportFormat::Classification;
+            request.outputDir = project.output("single");
+            const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
+            QVERIFY2(report.written, qPrintable(report.error));
+            const QStringList expected = {QStringLiteral("NG/line1/b.png"), QStringLiteral("NG/line2/a.png"),
+                                          QStringLiteral("OK/line1/a.png"), QStringLiteral("liteanno-export.json")};
+            QCOMPARE(filesUnder(request.outputDir), expected);
+        }
+
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")), QByteArray(config).replace("%1", "multi"));
+        labelled("line1/a.png", R"({"OK": true, "NG": false, "划伤,轻": true})", true);
+        const auto session = project.open();
+        ExportRequest request;
+        request.format = formats::ExportFormat::Classification;
+        request.outputDir = project.output("multi");
+        const ExportReport report = ExportService(*session, imaging::readImageInfo).run(request, {});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(readFile(request.outputDir + QStringLiteral("/labels.csv")),
+                 QStringLiteral(u"\uFEFFimage,OK,NG,\"划伤,轻\"\nline1/a.png,1,0,1\nline1/b.png,0,1,0\nline2/a.png,0,1,0\n").toUtf8());
+    }
+
     void outputFolderRules()
     {
         Project project;

@@ -13,6 +13,8 @@ add_library(liteanno_formats STATIC
     Exporters.h
     PolygonRaster.cpp
     PolygonRaster.h
+    PngFile.cpp
+    PngFile.h
     WorksetFiles.cpp
     WorksetFiles.h
 )

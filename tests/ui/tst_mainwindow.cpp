@@ -742,7 +742,9 @@ private slots:
             {"copy_polygon", "Ctrl+C"},       {"paste_polygon", "Ctrl+V"},
             {"hide_selected_polygons", "S"},  {"show_hidden_polygons", "W"},
             {"toggle_visibility_shapes", "Ctrl+H"}, {"show_labels", "Ctrl+L"},
-            {"create_rotation", "O"},
+            {"create_rotation", "O"},         {"create_point", "Shift+P"},
+            {"create_line", "Shift+L"},       {"create_linestrip", "Shift+S"},
+            {"create_circle", "Shift+C"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
@@ -888,6 +890,56 @@ private slots:
         const QJsonObject shape = readJson(project.json(1))[QStringLiteral("shapes")].toArray()[0].toObject();
         QCOMPARE(shape[QStringLiteral("shape_type")].toString(), QStringLiteral("rotation"));
         QCOMPARE(shape[QStringLiteral("direction")].toDouble(), moved.direction);
+    }
+
+    // Points, lines, line strips and circles, with upstream's keys.
+    void otherShapes()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+
+        QTest::keyClick(canvas, Qt::Key_P, Qt::ShiftModifier);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Point);
+        click(canvas, QPointF(30, 40));
+        QTest::keyClick(canvas, Qt::Key_L, Qt::ShiftModifier);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Line);
+        drag(canvas, QPointF(10, 10), QPointF(90, 50));
+        QTest::keyClick(canvas, Qt::Key_C, Qt::ShiftModifier);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Circle);
+        drag(canvas, QPointF(150, 50), QPointF(170, 50));
+        QTest::keyClick(canvas, Qt::Key_S, Qt::ShiftModifier);
+        QCOMPARE(canvas->tool(), Canvas::Tool::LineStrip);
+        click(canvas, QPointF(20, 80));
+        click(canvas, QPointF(60, 90));
+        QTest::keyClick(canvas, Qt::Key_Return);
+
+        const QList<Shape>& shapes = w.document().shapes();
+        QCOMPARE(shapes.size(), 4);
+        QCOMPARE(shapes[0].type, ShapeType::Point);
+        QCOMPARE(shapes[0].points.size(), 1);
+        QVERIFY(qAbs(shapes[0].points[0].x() - 30) < 1);
+        QCOMPARE(shapes[1].type, ShapeType::Line);
+        QCOMPARE(shapes[1].points.size(), 2);
+        QVERIFY(qAbs(shapes[1].points[1].y() - 50) < 1);
+        QCOMPARE(shapes[2].type, ShapeType::Circle);
+        QVERIFY(qAbs(shapes[2].points[0].x() - 150) < 1);
+        QVERIFY(qAbs(shapes[2].points[1].x() - 170) < 1);
+        QCOMPARE(shapes[3].type, ShapeType::LineStrip);
+        QCOMPARE(shapes[3].points.size(), 2);
+        // All can be confirmed.
+        QVERIFY(w.window.confirmCurrent());
+
+        // A point is selected and moved like any shape.
+        QTest::keyClick(canvas, Qt::Key_J, Qt::ControlModifier);
+        click(canvas, shapes[0].points[0]);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        const QPointF before = shapes[0].points[0];
+        QTest::keyClick(canvas, Qt::Key_Right);
+        QCOMPARE(w.document().shapes()[0].points[0], before + QPointF(1, 0));
     }
 
     void keyboardAndMouseLikeXAnyLabeling()

@@ -74,6 +74,7 @@ struct ExportItem {
     QString status;  // annotationStatusName(), empty when the file was not read
     QString reason;
     int clampedObjects = 0;
+    QStringList imageLabels;  // classification: the image-level labels chosen
 };
 
 struct ExportReport {
