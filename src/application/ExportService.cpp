@@ -502,7 +502,9 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
                 ok = created.write(stem + QStringLiteral(".txt"), formats::dotaLabels(shapes));
                 break;
             case ExportFormat::Mask:
-                ok = created.write(stem + QStringLiteral(".png"),
+                // Masks in masks/, copied images in images/: a mask has the image's own name,
+                // and the data folder may have an images/ folder of its own.
+                ok = created.write(output + QStringLiteral("/masks/") + stemPath(item.image) + QStringLiteral(".png"),
                                    formats::grayscalePng(shapes.width, shapes.height, formats::maskPixels(shapes, maskValues)));
                 break;
             case ExportFormat::LabelMe:
@@ -538,7 +540,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             if (!ok)
                 return fail(created.error());
             if (copyImage) {
-                // COCO and masks put the images apart: a mask has the image's own name.
+                // COCO and masks keep the images apart from what they write.
                 const QString target = isCoco || format == ExportFormat::Mask ? output + QStringLiteral("/images/") + item.image
                                                                               : imageTarget;
                 if (!created.copy(m_project.imageFilePath(item.image), target))
