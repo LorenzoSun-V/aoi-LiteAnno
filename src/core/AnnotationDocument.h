@@ -36,6 +36,8 @@ public:
     // Content edits (format spec 4.2). They clear the confirmation and the skip state.
     // Only editable shapes can be changed; any shape can be removed.
     bool setShapePoints(qsizetype index, const PointList& points);
+    // A rotated box turned: new corners and angle together.
+    bool setShapeRotation(qsizetype index, const RotatedBox& box);
     bool setShapeLabel(qsizetype index, const QString& label);
     // Returns the index of the new shape, or -1 when it is not an editable shape this
     // build can create.

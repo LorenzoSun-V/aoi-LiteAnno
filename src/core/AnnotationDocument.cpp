@@ -1,6 +1,7 @@
 #include "core/AnnotationDocument.h"
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace liteanno {
@@ -34,14 +35,26 @@ bool AnnotationDocument::setShapePoints(qsizetype index, const PointList& points
     Shape& shape = m_shapes[index];
     if (!acceptsPointCount(shape.type, points.size()) || !allFinite(points))
         return false;
-    // Moving the corners of a rotated box would leave upstream's stored angle ("direction")
-    // stale; corner edits come with the rotation tool, like new rotated boxes.
-    if (shape.type == ShapeType::Rotation)
-        return false;
     const PointList normalized = shape.type == ShapeType::Rectangle ? canonicalRectangle(points) : points;
     if (exactlyEqual(shape.points, normalized))
         return false;
     shape.points = normalized;
+    contentEdited();
+    return true;
+}
+
+bool AnnotationDocument::setShapeRotation(qsizetype index, const RotatedBox& box)
+{
+    if (!isEditable(index))
+        return false;
+    Shape& shape = m_shapes[index];
+    if (shape.type != ShapeType::Rotation || box.points.size() != 4 || !allFinite(box.points)
+        || !std::isfinite(box.direction))
+        return false;
+    if (exactlyEqual(shape.points, box.points) && shape.direction == box.direction)
+        return false;
+    shape.points = box.points;
+    shape.direction = box.direction;
     contentEdited();
     return true;
 }
@@ -61,9 +74,7 @@ qsizetype AnnotationDocument::addShape(Shape shape)
         || !acceptsPointCount(shape.type, shape.points.size()) || !allFinite(shape.points)) {
         return -1;
     }
-    // Upstream stores a rotation angle ("direction") next to the corners. New rotated boxes
-    // come with the rotation tool, which has to follow upstream's angle convention.
-    if (shape.type == ShapeType::Rotation)
+    if (!std::isfinite(shape.direction))
         return -1;
     if (shape.type == ShapeType::Rectangle)
         shape.points = canonicalRectangle(shape.points);

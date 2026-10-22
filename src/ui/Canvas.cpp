@@ -50,6 +50,8 @@ void Canvas::setImage(const QImage& image)
 {
     m_image = image;
     m_selected = -1;
+    m_hidden.clear();
+    m_hideAllPending = !m_shapesVisible;
     cancelDrawing();
     m_fitPending = true;
     fitToWindow();
@@ -61,6 +63,11 @@ void Canvas::setDocument(const AnnotationDocument* document, bool readOnly)
     const bool otherDocument = document != m_document || readOnly != m_readOnly;
     m_document = document;
     m_readOnly = readOnly;
+    if (m_document && m_hideAllPending) {
+        m_hideAllPending = false;
+        for (const Shape& shape : m_document->shapes())
+            m_hidden.append(shape.id);
+    }
     if (!m_document || m_selected >= m_document->shapes().size()) {
         m_selected = -1;
         if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
@@ -87,6 +94,10 @@ void Canvas::setTool(Tool tool)
 
 void Canvas::setSelectedShape(qsizetype index)
 {
+    if (isHidden(index)) {
+        m_hidden.removeAll(m_document->shapes()[index].id);
+        emit visibilityChanged();
+    }
     if (m_selected == index)
         return;
     m_selected = index;
@@ -95,6 +106,70 @@ void Canvas::setSelectedShape(qsizetype index)
         m_drag = Drag::None;
         m_dragPoints.clear();
     }
+    update();
+}
+
+bool Canvas::isHidden(qsizetype index) const
+{
+    return m_document && index >= 0 && index < m_document->shapes().size()
+           && m_hidden.contains(m_document->shapes()[index].id);
+}
+
+bool Canvas::hideSelected()
+{
+    if (!m_document || m_selected < 0 || m_selected >= m_document->shapes().size())
+        return false;
+    if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex) {
+        m_drag = Drag::None;
+        m_dragPoints.clear();
+    }
+    m_hidden.append(m_document->shapes()[m_selected].id);
+    m_selected = -1;
+    emit selectionChanged(-1);
+    emit visibilityChanged();
+    update();
+    return true;
+}
+
+bool Canvas::showLastHidden()
+{
+    // Shapes deleted meanwhile are skipped.
+    while (!m_hidden.isEmpty()) {
+        const quint64 id = m_hidden.takeLast();
+        if (m_document && std::any_of(m_document->shapes().cbegin(), m_document->shapes().cend(),
+                                      [id](const Shape& shape) { return shape.id == id; })) {
+            emit visibilityChanged();
+            update();
+            return true;
+        }
+    }
+    return false;
+}
+
+void Canvas::setShapesVisible(bool visible)
+{
+    m_shapesVisible = visible;
+    m_hideAllPending = false;
+    m_hidden.clear();
+    if (!visible && m_document) {
+        for (const Shape& shape : m_document->shapes())
+            m_hidden.append(shape.id);
+        if (m_selected >= 0) {
+            if (m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex) {
+                m_drag = Drag::None;
+                m_dragPoints.clear();
+            }
+            m_selected = -1;
+            emit selectionChanged(-1);
+        }
+    }
+    emit visibilityChanged();
+    update();
+}
+
+void Canvas::setLabelsVisible(bool visible)
+{
+    m_labelsVisible = visible;
     update();
 }
 
@@ -173,6 +248,17 @@ void Canvas::moveSelectedBy(const QPointF& delta)
     emit shapePointsChanged(m_selected, points);
 }
 
+bool Canvas::rotateSelectedBy(double degrees)
+{
+    if (!canEdit(m_selected) || m_drag != Drag::None)
+        return false;
+    const Shape& shape = m_document->shapes()[m_selected];
+    if (shape.type != ShapeType::Rotation || shape.points.size() != 4)
+        return false;
+    emit shapeRotated(m_selected, rotateBox({shape.points, shape.direction}, radians(degrees)));
+    return true;
+}
+
 void Canvas::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
@@ -193,8 +279,7 @@ bool Canvas::canEdit(qsizetype index) const
     if (m_readOnly || !m_document || index < 0 || index >= m_document->shapes().size())
         return false;
     const Shape& shape = m_document->shapes()[index];
-    // Rotated boxes keep their corners until the rotation tool maintains "direction".
-    return shape.kind == ShapeKind::Editable && shape.type != ShapeType::Rotation && !shape.locked;
+    return shape.kind == ShapeKind::Editable && !shape.locked && !isHidden(index);
 }
 
 PointList Canvas::displayedPoints(qsizetype index) const
@@ -214,7 +299,7 @@ qsizetype Canvas::shapeAt(const QPointF& imagePoint) const
     for (qsizetype i = shapes.size() - 1; i >= 0; --i) {
         const Shape& shape = shapes[i];
         const PointList& points = shape.points;
-        if (points.isEmpty())
+        if (points.isEmpty() || m_hidden.contains(shape.id))
             continue;
         switch (shape.type) {
         case ShapeType::Rectangle:
@@ -292,6 +377,7 @@ void Canvas::mousePressEvent(QMouseEvent* event)
 
     switch (m_tool) {
     case Tool::Rectangle:
+    case Tool::Rotation:
         if (!m_readOnly)
             m_drag = Drag::DrawRectangle;
         break;
@@ -369,7 +455,10 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
     case Drag::MoveVertex: {
         const Shape& shape = m_document->shapes()[m_selected];
         const QPointF point = clampToImage(imagePoint);
-        if (shape.type == ShapeType::Rectangle && shape.points.size() == 4) {
+        if (shape.type == ShapeType::Rotation && shape.points.size() == 4) {
+            // As upstream, the corners of a rotated box may leave the image.
+            m_dragPoints = moveBoxCorner({shape.points, shape.direction}, m_dragVertex, imagePoint);
+        } else if (shape.type == ShapeType::Rectangle && shape.points.size() == 4) {
             // Corners are stored in order; the opposite corner stays.
             m_dragPoints = canonicalRectangle({shape.points[(m_dragVertex + 2) % 4], point});
         } else {
@@ -396,8 +485,9 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
         const QPointF end = clampToImage(widgetToImage(event->position()));
         const QPointF start = clampToImage(m_pressImage);
         if (std::abs(end.x() - start.x()) * m_scale >= 2 && std::abs(end.y() - start.y()) * m_scale >= 2) {
+            // A new rotated box starts upright with angle 0, as upstream draws it.
             Shape shape;
-            shape.type = ShapeType::Rectangle;
+            shape.type = m_tool == Tool::Rotation ? ShapeType::Rotation : ShapeType::Rectangle;
             shape.points = canonicalRectangle({start, end});
             emit shapeDrawn(shape);
         }
@@ -470,6 +560,17 @@ void Canvas::keyPressEvent(QKeyEvent* event)
             const int key = event->key();
             moveSelectedBy(QPointF(key == Qt::Key_Left ? -1 : key == Qt::Key_Right ? 1 : 0,
                                    key == Qt::Key_Up ? -1 : key == Qt::Key_Down ? 1 : 0));
+            return;
+        }
+        break;
+    // Upstream's keys for turning a rotated box: Z and V by 1°, X and C by 0.1°.
+    case Qt::Key_Z:
+    case Qt::Key_X:
+    case Qt::Key_C:
+    case Qt::Key_V:
+        if (m_tool == Tool::Select && event->modifiers() == Qt::NoModifier) {
+            const int key = event->key();
+            rotateSelectedBy(key == Qt::Key_Z ? 1.0 : key == Qt::Key_X ? 0.1 : key == Qt::Key_C ? -0.1 : -1.0);
             return;
         }
         break;
@@ -573,7 +674,7 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
         break;
     }
 
-    if (!shape.label.isEmpty()) {
+    if (m_labelsVisible && !shape.label.isEmpty()) {
         painter.setPen(color);
         painter.drawText(polygon.boundingRect().topLeft() + QPointF(2, -4), shape.label);
     }
@@ -599,8 +700,10 @@ void Canvas::paintEvent(QPaintEvent* /*event*/)
 
     if (m_document) {
         const QList<Shape>& shapes = m_document->shapes();
-        for (qsizetype i = 0; i < shapes.size(); ++i)
-            paintShape(painter, shapes[i], displayedPoints(i), i == m_selected);
+        for (qsizetype i = 0; i < shapes.size(); ++i) {
+            if (!m_hidden.contains(shapes[i].id))
+                paintShape(painter, shapes[i], displayedPoints(i), i == m_selected);
+        }
     }
 
     QPen pen(QColor(255, 220, 0), 1.5);

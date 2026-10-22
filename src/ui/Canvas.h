@@ -23,6 +23,7 @@ public:
         Select,
         Rectangle,
         Polygon,
+        Rotation,
     };
 
     explicit Canvas(QWidget* parent = nullptr);
@@ -37,7 +38,22 @@ public:
     void setTool(Tool tool);
 
     qsizetype selectedShape() const { return m_selected; }
+    // Selecting a hidden shape shows it again.
     void setSelectedShape(qsizetype index);
+
+    // What is shown; nothing of it is saved. Hidden shapes are not drawn and cannot be
+    // clicked. A new image starts with every shape shown, unless all shapes are switched off.
+    // "S": hides the selected shape.
+    bool hideSelected();
+    // "W": shows the shape hidden last.
+    bool showLastHidden();
+    // Ctrl+H: shows or hides all shapes; stays so for the next images.
+    void setShapesVisible(bool visible);
+    bool shapesVisible() const { return m_shapesVisible; }
+    bool isHidden(qsizetype index) const;
+    // Ctrl+L: the class names next to the shapes; big names can cover small boxes.
+    void setLabelsVisible(bool visible);
+    bool labelsVisible() const { return m_labelsVisible; }
 
     // Image and widget coordinates.
     QPointF imageToWidget(const QPointF& point) const;
@@ -55,6 +71,10 @@ public:
 signals:
     void shapeDrawn(const liteanno::Shape& shape);
     void shapePointsChanged(qsizetype index, const liteanno::PointList& points);
+    // Z/X/C/V turned the selected rotated box.
+    void shapeRotated(qsizetype index, const liteanno::RotatedBox& box);
+    // A shape was hidden or shown.
+    void visibilityChanged();
     void selectionChanged(qsizetype index);
     // The user asked to change the label of the selected shape (double click).
     void labelEditRequested(qsizetype index);
@@ -91,6 +111,8 @@ private:
     void zoomAround(const QPointF& anchor, double factor);
     // Arrow keys: the selected shape moves one image pixel, unless that leaves the image.
     void moveSelectedBy(const QPointF& delta);
+    // Z/X/C/V: turns the selected rotated box by `degrees`, as upstream's keys do.
+    bool rotateSelectedBy(double degrees);
     void cancelDrawing();
     QColor colorFor(const QString& label) const;
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
@@ -114,6 +136,11 @@ private:
     int m_dragVertex = -1;
     PointList m_dragPoints;      // the selected shape's points during a move
     PointList m_polygonPoints;   // a polygon being drawn
+
+    QList<quint64> m_hidden;  // ids of hidden shapes, in the order they were hidden
+    bool m_shapesVisible = true;
+    bool m_hideAllPending = false;  // all shapes are off: hide those of the next document
+    bool m_labelsVisible = true;
 };
 
 } // namespace liteanno::ui

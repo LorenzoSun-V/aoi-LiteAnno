@@ -24,11 +24,18 @@ struct Shape {
     ShapeType type = ShapeType::Polygon;  // not meaningful for unrecognized objects
     QString label;
     PointList points;
+    // Rotated boxes only: upstream's angle in radians, "direction" in the file. The corners
+    // are what counts (format spec 4.2); the angle is kept in step for upstream.
+    double direction = 0;
     QString description;
     // String values of the "attributes" object, for the confirm conditions (format spec 5.3).
     // Not written back: the object on disk stays as it is.
     QHash<QString, QString> attributes;
     bool locked = false;
+    // A pasted shape: the JSON object it was copied from. Fields this program does not edit
+    // (score, group_id, difficult, flags, attributes, ...) are written as they were, as
+    // upstream's paste keeps them.
+    QByteArray copiedObject;
 };
 
 } // namespace liteanno

@@ -21,4 +21,25 @@ bool allFinite(const PointList& points);
 // diagonal form and four points in any order. Returns an empty list for empty input.
 PointList canonicalRectangle(const PointList& points);
 
+// Rotated boxes (shape_type "rotation"). Upstream keeps four corners and an angle,
+// "direction", in radians in [0, 2π). These follow upstream's canvas.py step by step, so
+// that a box edited here holds the numbers upstream would write.
+struct RotatedBox {
+    PointList points;
+    double direction = 0;
+};
+
+// The box turned by `theta` radians about the middle of corners 0 and 2, as the keys
+// Z/X/C/V do (canvas.py, bounded_rotate_shapes). Expects four corners.
+RotatedBox rotateBox(const RotatedBox& box, double theta);
+
+// The box with corner `index` moved to `position`: the opposite corner stays and the sides
+// keep the box's angle (canvas.py, bounded_move_vertex with get_adjoint_points).
+PointList moveBoxCorner(const RotatedBox& box, int index, const QPointF& position);
+
+// Python's float modulo: the result has the sign of `divisor`.
+double pythonModulo(double value, double divisor);
+// Python's math.radians.
+double radians(double degrees);
+
 } // namespace liteanno

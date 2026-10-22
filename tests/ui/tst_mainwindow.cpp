@@ -739,6 +739,10 @@ private slots:
             {"edit_polygon", "Ctrl+J"},       {"delete_polygon", "Delete"},
             {"undo", "Ctrl+Z"},               {"edit_label", "Ctrl+E"},
             {"open_next_unchecked", "Ctrl+Shift+D"}, {"open_prev_unchecked", "Ctrl+Shift+A"},
+            {"copy_polygon", "Ctrl+C"},       {"paste_polygon", "Ctrl+V"},
+            {"hide_selected_polygons", "S"},  {"show_hidden_polygons", "W"},
+            {"toggle_visibility_shapes", "Ctrl+H"}, {"show_labels", "Ctrl+L"},
+            {"create_rotation", "O"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
@@ -766,6 +770,124 @@ private slots:
             for (const QKeySequence& keys : action->shortcuts())
                 QVERIFY2(!upstreamElsewhere.contains(keys.toString()), qPrintable(action->text() + QLatin1Char(' ') + keys.toString()));
         }
+    }
+
+    // Ctrl+C / Ctrl+V copy the selected shape, also into the next image; S hides it, W shows
+    // it again, Ctrl+H switches all shapes off and on; Ctrl+L the class names.
+    void copyPasteAndHide()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.drawRectangle(QPointF(100, 20), QPointF(150, 70));
+        QCOMPARE(w.document().shapes().size(), 2);
+        canvas->setSelectedShape(0);
+        QTest::keyClick(canvas, Qt::Key_C, Qt::ControlModifier);
+        QTest::keyClick(canvas, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(w.document().shapes().size(), 3);
+        QVERIFY(exactlyEqual(w.document().shapes()[2].points, w.document().shapes()[0].points));
+        QCOMPARE(canvas->selectedShape(), qsizetype(2));
+        QVERIFY(w.window.nextImage());
+        QTest::keyClick(canvas, Qt::Key_V, Qt::ControlModifier);
+        QCOMPARE(w.document().shapes().size(), 1);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("scratch"));
+        QVERIFY(w.window.previousImage());
+
+        // S hides the selected shape: not drawn, not clickable, marked in the list.
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("shapeList"));
+        canvas->setSelectedShape(1);
+        QTest::keyClick(canvas, Qt::Key_S);
+        QVERIFY(canvas->isHidden(1));
+        QCOMPARE(canvas->selectedShape(), qsizetype(-1));
+        QVERIFY(list->item(1)->text().contains(QStringLiteral(u"已隐藏")));
+        click(canvas, QPointF(125, 45));
+        QCOMPARE(canvas->selectedShape(), qsizetype(-1));
+        canvas->setSelectedShape(0);
+        QTest::keyClick(canvas, Qt::Key_S);
+        // W shows the one hidden last.
+        QTest::keyClick(canvas, Qt::Key_W);
+        QVERIFY(!canvas->isHidden(0));
+        QVERIFY(canvas->isHidden(1));
+        QTest::keyClick(canvas, Qt::Key_W);
+        QVERIFY(!canvas->isHidden(1));
+        QVERIFY(!w.window.findChild<QListWidget*>(QStringLiteral("shapeList"))->item(1)->text().contains(QStringLiteral(u"已隐藏")));
+
+        // Ctrl+H: all off, also on the next image, and on again.
+        QTest::keyClick(canvas, Qt::Key_H, Qt::ControlModifier);
+        QVERIFY(!canvas->shapesVisible());
+        for (int i = 0; i < 3; ++i)
+            QVERIFY(canvas->isHidden(i));
+        QVERIFY(w.window.nextImage());
+        QVERIFY(canvas->isHidden(0));
+        // A shape drawn meanwhile is shown.
+        w.drawRectangle(QPointF(30, 30), QPointF(60, 60));
+        QVERIFY(!canvas->isHidden(1));
+        QTest::keyClick(canvas, Qt::Key_H, Qt::ControlModifier);
+        QVERIFY(!canvas->isHidden(0));
+
+        // Ctrl+L: class names off and on; nothing changes in the file.
+        QVERIFY(canvas->labelsVisible());
+        QTest::keyClick(canvas, Qt::Key_L, Qt::ControlModifier);
+        QVERIFY(!canvas->labelsVisible());
+        QTest::keyClick(canvas, Qt::Key_L, Qt::ControlModifier);
+        QVERIFY(canvas->labelsVisible());
+    }
+
+    // O draws a rotated box upright; Z/V turn it by 1°, X/C by 0.1°, as upstream; dragging a
+    // corner keeps the angle. The file gets upstream's numbers.
+    void rotatedBoxes()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        QTest::keyClick(canvas, Qt::Key_O);
+        QCOMPARE(canvas->tool(), Canvas::Tool::Rotation);
+        drag(canvas, QPointF(40, 20), QPointF(120, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+        const Shape drawn = w.document().shapes()[0];
+        QCOMPARE(drawn.type, ShapeType::Rotation);
+        QCOMPARE(drawn.direction, 0.0);
+
+        QTest::keyClick(canvas, Qt::Key_J, Qt::ControlModifier);
+        canvas->setSelectedShape(0);
+        QTest::keyClick(canvas, Qt::Key_Z);
+        QTest::keyClick(canvas, Qt::Key_X);
+        QTest::keyClick(canvas, Qt::Key_C);
+        QTest::keyClick(canvas, Qt::Key_C);
+        QTest::keyClick(canvas, Qt::Key_V);
+        RotatedBox expected{drawn.points, 0};
+        for (double degrees : {1.0, 0.1, -0.1, -0.1, -1.0})
+            expected = rotateBox(expected, radians(degrees));
+        const Shape turned = w.document().shapes()[0];
+        QVERIFY(exactlyEqual(turned.points, expected.points));
+        QCOMPARE(turned.direction, expected.direction);
+        // Turned back by 0.1° in all: upstream's angle is then 0.1° in radians.
+        QVERIFY(qAbs(turned.direction - radians(0.1)) < 1e-12);
+
+        // Each turn is one undo step: Ctrl+Z takes back the last V.
+        QTest::keyClick(canvas, Qt::Key_Z, Qt::ControlModifier);
+        QVERIFY(qAbs(w.document().shapes()[0].direction - (2 * 3.141592653589793 - radians(0.9))) < 1e-12);
+
+        // A corner moved with the mouse keeps the angle.
+        canvas->setSelectedShape(0);
+        const RotatedBox before{w.document().shapes()[0].points, w.document().shapes()[0].direction};
+        drag(canvas, before.points[2], before.points[2] + QPointF(10, 5));
+        const Shape moved = w.document().shapes()[0];
+        QCOMPARE(moved.direction, before.direction);
+        QVERIFY(!exactlyEqual(moved.points, before.points));
+        QVERIFY(exactlyEqual(moved.points, moveBoxCorner(before, 2, moved.points[2])));
+
+        w.window.saveNow();
+        w.window.flushSaves();
+        const QJsonObject shape = readJson(project.json(1))[QStringLiteral("shapes")].toArray()[0].toObject();
+        QCOMPARE(shape[QStringLiteral("shape_type")].toString(), QStringLiteral("rotation"));
+        QCOMPARE(shape[QStringLiteral("direction")].toDouble(), moved.direction);
     }
 
     void keyboardAndMouseLikeXAnyLabeling()

@@ -227,6 +227,78 @@ private slots:
         LITEANNO_COMPARE_JSON(shape, json(R"({"label": "b", "points": [[1, 1], [5, 1], [5, 5]], "shape_type": "polygon"})"));
     }
 
+    // Format spec 4.2: upstream writes the angle of every rotated box. A new one holds the
+    // integer 0, as upstream's new boxes do; a turned one its angle.
+    void rotatedBoxAngle()
+    {
+        AnnotationFile annotation = AnnotationFile::createNew(imageInfo("0001.bmp", 100, 100));
+        Shape box;
+        box.type = ShapeType::Rotation;
+        box.label = QStringLiteral("crack");
+        box.points = {QPointF(10, 10), QPointF(30, 10), QPointF(30, 20), QPointF(10, 20)};
+        QCOMPARE(annotation.document().addShape(box), qsizetype(0));
+        Json shape = saved(annotation)["shapes"][0];
+        const std::vector<std::string> expectedKeys{"label", "score", "points", "group_id", "description", "difficult",
+                                                    "shape_type", "flags", "attributes", "kie_linking", "direction"};
+        QCOMPARE(keys(shape), expectedKeys);
+        QVERIFY(shape["direction"].is_number_integer());
+        QCOMPARE(shape["direction"].get<int>(), 0);
+
+        const RotatedBox turned = rotateBox({box.points, 0}, radians(1.0));
+        QVERIFY(annotation.document().setShapeRotation(0, turned));
+        shape = saved(annotation)["shapes"][0];
+        QVERIFY(shape["direction"].is_number_float());
+        QCOMPARE(shape["direction"].get<double>(), turned.direction);
+
+        // Read back, unedited: the same value; a corner edit keeps it.
+        AnnotationFile reread = AnnotationFile::fromBytes(annotation.toBytes(), imageInfo("0001.bmp", 100, 100));
+        QCOMPARE(reread.document().shapes().at(0).direction, turned.direction);
+        QVERIFY(reread.document().setShapePoints(0, moveBoxCorner(turned, 0, QPointF(5, 5))));
+        QCOMPARE(saved(reread)["shapes"][0]["direction"].get<double>(), turned.direction);
+    }
+
+    // A rotated box without an angle is read with angle 0; editing it adds the key.
+    void missingAngleIsCompletedOnEdit()
+    {
+        const QByteArray original = R"({"shapes": [{"label": "a", "points": [[1, 1], [5, 1], [5, 5], [1, 5]],
+            "shape_type": "rotation"}], "imagePath": "0007.png", "imageData": null, "imageHeight": 10, "imageWidth": 10})";
+        AnnotationFile annotation = AnnotationFile::fromBytes(original, imageInfo("0007.png", 10, 10));
+        QCOMPARE(annotation.document().shapes().at(0).direction, 0.0);
+        QVERIFY(annotation.document().setShapeLabel(0, QStringLiteral("b")));
+        QVERIFY(!saved(annotation)["shapes"][0].contains("direction"));
+        QVERIFY(annotation.document().setShapePoints(0, {QPointF(1, 1), QPointF(6, 1), QPointF(6, 5), QPointF(1, 5)}));
+        LITEANNO_COMPARE_JSON(saved(annotation)["shapes"][0]["direction"], json("0.0"));
+    }
+
+    // Upstream's paste keeps every field of the copied object; only what the copy changes
+    // (label, points, ...) is written anew, and unknown fields come first, as in to_dict().
+    void pastedShapeKeepsTheCopiedFields()
+    {
+        AnnotationFile source = AnnotationFile::fromBytes(fixture("unknown_fields.json"), imageInfo("0005.bmp", 768, 768));
+        const qsizetype index = firstEditableShape(source.document());
+        QVERIFY(index >= 0);
+        const Json original = test::parseOrFail(source.shapeObject(index));
+
+        AnnotationFile target = AnnotationFile::createNew(imageInfo("0009.png", 768, 768));
+        Shape copy = source.document().shapes().at(index);
+        copy.copiedObject = source.shapeObject(index);
+        copy.locked = false;
+        QCOMPARE(target.document().addShape(copy), qsizetype(0));
+        const Json pasted = saved(target)["shapes"][0];
+        for (auto it = original.begin(); it != original.end(); ++it) {
+            if (it.key() == "points" || it.key() == "locked")
+                continue;
+            QVERIFY2(pasted.contains(it.key()), it.key().c_str());
+            LITEANNO_COMPARE_JSON(pasted[it.key()], it.value());
+        }
+        QCOMPARE(pasted["points"].size(), original["points"].size() == 2 ? std::size_t(4) : original["points"].size());
+        QVERIFY(!pasted.contains("locked"));
+        const std::vector<std::string> order = keys(pasted);
+        QCOMPARE(order.at(0), std::string("track_id"));
+        QCOMPARE(order.at(1), std::string("model_meta"));
+        QCOMPARE(order.at(2), std::string("label"));
+    }
+
     // Format spec 13.3: a null shape_type the edit did not touch keeps its value, also when the
     // edit is to the same shape.
     void nullShapeTypeIsKept()
