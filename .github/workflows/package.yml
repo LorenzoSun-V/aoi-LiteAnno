@@ -68,13 +68,41 @@ jobs:
           Get-ChildItem -Recurse $dir | Select-Object -ExpandProperty FullName
 
       - name: Start-up check
-        # The packaged program starts and quits on a machine without Qt on the PATH.
+        # The packaged program starts and quits on a machine without Qt on the PATH. A hang
+        # fails within a minute and leaves Qt's log and a screenshot of the desktop behind.
+        timeout-minutes: 5
         run: |
+          $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
           $env:PATH = "C:\Windows\System32;C:\Windows"
-          $p = Start-Process -FilePath "dist/$env:PACKAGE_NAME/LiteAnno.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          Remove-Item Env:QT_PLUGIN_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
+          & "$dir\liteanno-cli.exe" --version
+          if ($LASTEXITCODE -ne 0) { Write-Error "liteanno-cli.exe exited with $LASTEXITCODE"; exit 1 }
+          $env:QT_FORCE_STDERR_LOGGING = "1"
+          $env:QT_DEBUG_PLUGINS = "1"
+          New-Item -ItemType Directory -Force startup-check | Out-Null
+          $p = Start-Process -FilePath "$dir\LiteAnno.exe" -ArgumentList "--smoke-test" -PassThru `
+              -RedirectStandardError startup-check/stderr.txt -RedirectStandardOutput startup-check/stdout.txt
+          $null = $p.Handle  # keeps the exit code readable after the process ends
+          $finished = $p.WaitForExit(60000)
+          if (-not $finished) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save("$PWD\startup-check\screen.png")
+            Stop-Process -Id $p.Id -Force
+          }
+          Get-Content startup-check/stderr.txt -ErrorAction SilentlyContinue | Select-Object -Last 80
+          if (-not $finished) { Write-Error "LiteAnno.exe --smoke-test did not quit within 60 s"; exit 1 }
           if ($p.ExitCode -ne 0) { Write-Error "LiteAnno.exe exited with $($p.ExitCode)"; exit 1 }
-          & "dist/$env:PACKAGE_NAME/liteanno-cli.exe" --version
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Keep the start-up check output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-check
+          path: startup-check
+          if-no-files-found: ignore
 
       - name: Zip
         run: Compress-Archive -Path "dist/$env:PACKAGE_NAME" -DestinationPath "dist/$env:PACKAGE_NAME.zip"
