@@ -335,8 +335,14 @@ void MainWindow::buildUi()
     m_confirmButton->setToolTip(QStringLiteral(u"确认这张图片 (Ctrl+Alt+K)"));
     connect(m_confirmButton, &QPushButton::clicked, this, [this] { confirmCurrent(); });
     layout->addWidget(m_confirmButton);
-    m_skipButton = new QPushButton(QStringLiteral(u"跳过…  Ctrl+Alt+S"));
-    m_skipButton->setToolTip(QStringLiteral(u"跳过这张图片，需要写明原因 (Ctrl+Alt+S)"));
+    // The one-hand keys, on the panel: people at the line do not hover for tooltips.
+    auto* keysHint = new QLabel(QStringLiteral(u"F 确认并下一张　　E 跳过"));
+    keysHint->setObjectName(QStringLiteral("reviewKeys"));
+    keysHint->setProperty("role", QStringLiteral("secondary"));
+    keysHint->setAlignment(Qt::AlignCenter);
+    layout->addWidget(keysHint);
+    m_skipButton = new QPushButton(QStringLiteral(u"跳过…"));
+    m_skipButton->setToolTip(QStringLiteral(u"跳过这张图片，需要写明原因 (E)"));
     connect(m_skipButton, &QPushButton::clicked, this, [this] { skipCurrent(); });
     layout->addWidget(m_skipButton);
     m_unskipButton = new QPushButton(QStringLiteral(u"取消跳过"));
@@ -401,11 +407,15 @@ void MainWindow::buildUi()
     QAction* checkAction = named(editMenu->addAction(QStringLiteral(u"确认当前图片"), this, [this] { confirmCurrent(); }),
                                  "toggle_annotation_checked");
     checkAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+K")));
-    // X-AnyLabeling has no skip; Ctrl+Alt+S (S for skip) sits next to its Ctrl+Alt+K and no
-    // upstream action uses it.
+    // One-hand keys next to A/D (the user's choice). Upstream uses F and E only in its automatic
+    // labelling, which this program does not have; it has no skip, so Ctrl+Alt+S (next to its
+    // Ctrl+Alt+K) is taken by nothing there either.
+    QAction* confirmNext = named(editMenu->addAction(QStringLiteral(u"确认并下一张"), this, [this] { confirmAndNext(); }),
+                                 "confirm_and_next");
+    confirmNext->setShortcut(QKeySequence(QStringLiteral("F")));
     QAction* skipAction =
         named(editMenu->addAction(QStringLiteral(u"跳过当前图片…"), this, [this] { skipCurrent(); }), "skip_image");
-    skipAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+S")));
+    skipAction->setShortcuts({QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))});
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral(u"视图(&V)"));
     QAction* zoomIn = named(viewMenu->addAction(QStringLiteral(u"放大"), this, [this] { m_canvas->zoomBy(1.1); }), "zoom_in");
@@ -2146,6 +2156,16 @@ bool MainWindow::confirmCurrent()
     return true;
 }
 
+bool MainWindow::confirmAndNext()
+{
+    m_shapeForm->commitPending();
+    // An image confirmed before just moves on; one that cannot be confirmed stays.
+    if (!m_session || (!m_session->document().review().checked && !confirmCurrent()))
+        return false;
+    nextImage();
+    return true;
+}
+
 bool MainWindow::skipCurrent()
 {
     m_shapeForm->commitPending();
@@ -2332,9 +2352,7 @@ void MainWindow::refresh()
     const bool checked = hasSession && m_session->document().review().checked;
     const bool noShapes = hasSession && m_session->document().shapes().isEmpty();
     const bool shapeProject = m_project && !m_project->config().shapeTypes.isEmpty();
-    // The key is on the button: people at the line do not hover for tooltips.
-    m_confirmButton->setText((noShapes && shapeProject ? QStringLiteral(u"确认无目标") : QStringLiteral(u"确认"))
-                             + QStringLiteral(u"  Ctrl+Alt+K"));
+    m_confirmButton->setText(noShapes && shapeProject ? QStringLiteral(u"确认无目标") : QStringLiteral(u"确认"));
     m_confirmButton->setEnabled(editable && blockers.isEmpty() && !checked);
     const bool skipped = hasSession && m_session->document().review().skip == SkipState::Skipped;
     m_skipButton->setEnabled(editable);

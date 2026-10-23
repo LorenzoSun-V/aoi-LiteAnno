@@ -114,6 +114,8 @@ public:
 
     // The actions of the panel, as buttons and menu entries do them.
     bool confirmCurrent();
+    // F: confirms the image (unless it is already) and opens the next one.
+    bool confirmAndNext();
     bool skipCurrent();
     bool unskipCurrent();
     bool undo();

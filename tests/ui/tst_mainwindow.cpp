@@ -739,7 +739,7 @@ private slots:
         QCOMPARE(w.window.imageCount(), 3);
         QCOMPARE(w.window.currentIndex(), 0);
         // No shapes yet: the button confirms an image without objects.
-        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认无目标  Ctrl+Alt+K"));
+        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认无目标"));
         QVERIFY(w.confirmButton()->isEnabled());
 
         w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
@@ -748,7 +748,7 @@ private slots:
         QCOMPARE(shape.label, QStringLiteral("scratch"));
         QCOMPARE(shape.type, ShapeType::Rectangle);
         QVERIFY(qAbs(shape.points[0].x() - 20) < 1 && qAbs(shape.points[2].y() - 60) < 1);
-        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认  Ctrl+Alt+K"));
+        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认"));
 
         // Moving it with the select tool.
         const PointList before = w.document().shapes()[0].points;
@@ -1192,10 +1192,44 @@ private slots:
             {"create_line", "Shift+L"},       {"create_linestrip", "Shift+S"},
             {"create_circle", "Shift+C"},
             // Not in X-AnyLabeling: keys no upstream action uses.
-            {"skip_image", "Ctrl+Alt+S"},     {"show_shortcuts", "F1"},
+            {"confirm_and_next", "F"},        {"show_shortcuts", "F1"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
+    }
+
+    // F confirms the image and opens the next one; at the last image it only confirms.
+    void confirmAndNextWithF()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.imageCount(), 3);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // Confirmed already: F just moves on.
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.document().review().checked);
+    }
+
+    void skipKeys()
+    {
+        Project project;
+        Window w(project.options());
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(skip);
+        QCOMPARE(skip->shortcuts(),
+                 (QList<QKeySequence>{QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))}));
     }
 
     void shortcutsMatchXAnyLabeling()
@@ -1217,7 +1251,7 @@ private slots:
         const auto rows = w.window.shortcutList();
         QStringList keys;
         for (const auto& row : rows)
-            keys.append(row.second);
+            keys.append(row.second.split(QStringLiteral(u"、")));
         for (const QAction* action : w.window.findChildren<QAction*>()) {
             if (!action->shortcut().isEmpty())
                 QVERIFY2(keys.contains(action->shortcut().toString(QKeySequence::NativeText)), qPrintable(action->text()));
@@ -1229,6 +1263,8 @@ private slots:
         }
         QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+K")));
         QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+S")));
+        QVERIFY(keys.contains(QStringLiteral("F")));
+        QVERIFY(keys.contains(QStringLiteral("E")));
         QVERIFY(keys.contains(QStringLiteral(u"Esc")));
     }
 
@@ -1554,11 +1590,14 @@ private slots:
         // Ctrl+Alt+K confirms the image.
         QTest::keyClick(canvas, Qt::Key_K, Qt::ControlModifier | Qt::AltModifier);
         QVERIFY(w.document().review().checked);
-        // Ctrl+Alt+S skips it, with the reason asked for.
+        // E (and Ctrl+Alt+S) skips it, with the reason asked for.
         w.answers.skipReason = QStringLiteral(u"图片模糊");
-        QTest::keyClick(canvas, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        QTest::keyClick(canvas, Qt::Key_E);
         QCOMPARE(w.document().review().skip, SkipState::Skipped);
         QCOMPARE(w.document().review().skipReason, QStringLiteral(u"图片模糊"));
+        QVERIFY(w.window.unskipCurrent());
+        QTest::keyClick(canvas, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
         QVERIFY(w.window.unskipCurrent());
 
         // The wheel scrolls, Ctrl + wheel zooms; Ctrl+= is the original size, Ctrl+F fits.
