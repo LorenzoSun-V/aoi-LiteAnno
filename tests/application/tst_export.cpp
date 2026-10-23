@@ -316,6 +316,68 @@ private slots:
         QVERIFY(QFileInfo::exists(projectFile));
     }
 
+    // Review of #11, round 2: a record folder that cannot be listed is not an empty one, and
+    // a record that cannot be used holds init back until it is moved aside.
+    void initWaitsForRecordsItCannotSee()
+    {
+        QTemporaryDir data;
+        QTemporaryDir local;
+        const QString projectFile = data.filePath(QStringLiteral("liteanno/project.json"));
+        const auto init = [&] {
+            QProcess process;
+            process.start(QStringLiteral(LITEANNO_CLI),
+                          {QStringLiteral("init"), data.path(), QStringLiteral("--local-data"), local.path()});
+            if (!process.waitForFinished(60000))
+                qFatal("liteanno-cli did not finish");
+            return process.exitCode();
+        };
+        const LocalDataPaths paths(local.path());
+        ProjectLocation location;
+        {
+            ProjectSession::OpenResult open = ProjectSession::open(data.path(), paths);
+            QVERIFY(open.session);
+            location = open.session->location();
+        }
+        const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+        QVERIFY(QDir().mkpath(QFileInfo(dir).absolutePath()));
+
+        // Not a folder: cannot be listed.
+        writeFile(dir, "not a folder");
+        QVERIFY(!RecoveryService(paths, location).scan().error.isEmpty());
+        QVERIFY(init() != 0);
+        QVERIFY(!QFileInfo::exists(projectFile));
+        QVERIFY(QFile::remove(dir));
+
+        // A damaged record: init refuses until it is moved aside, kept as it is.
+        QVERIFY(QDir().mkpath(dir));
+        writeFile(dir + QStringLiteral("/0001.json"), "{\"formatVersion\": \"1.0\", \"proj");
+        QCOMPARE(RecoveryService(paths, location).scan().unusable.size(), 1);
+        QVERIFY(init() != 0);
+        QVERIFY(moveRecordToUnusable(dir + QStringLiteral("/0001.json")));
+        const RecoveryScan after = RecoveryService(paths, location).scan();
+        QVERIFY(after.candidates.isEmpty() && after.unusable.isEmpty() && after.error.isEmpty());
+        QCOMPARE(QDir(dir + QStringLiteral("/unusable")).entryList(QDir::Files).size(), 1);
+
+#ifndef Q_OS_WIN
+        // A folder this user may not read (as the review found it).
+        QVERIFY(QFile::setPermissions(dir, QFileDevice::Permissions()));
+        const bool readable = QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size() > 0;
+        const int refused = readable ? 1 : init();
+        const bool created = QFileInfo::exists(projectFile);
+        QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        if (!readable) {
+            QVERIFY(refused != 0);
+            QVERIFY(!created);
+        }
+#endif
+        QCOMPARE(init(), 0);
+        QVERIFY(QFileInfo::exists(projectFile));
+#ifndef Q_OS_WIN
+        if (readable)
+            QSKIP("this user reads folders without permission (root)");
+#endif
+    }
+
     void classesFileRules()
     {
         QCOMPARE(formats::parseClassesFile("a\nb c\n").names, (QStringList{QStringLiteral("a"), QStringLiteral("b c")}));

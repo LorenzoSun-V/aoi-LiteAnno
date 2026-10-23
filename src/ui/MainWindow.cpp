@@ -683,6 +683,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
     m_prompts.exportOptions = held(std::move(prompts.exportOptions));
     m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
+    m_prompts.setAsideUnusable = held(std::move(prompts.setAsideUnusable));
 }
 
 void MainWindow::setImages(QList<dataset::CatalogEntry> images)
@@ -1212,6 +1213,38 @@ void MainWindow::resolveRecoveryRecords()
     dropSession();
     m_deferredRecords.clear();
     handleRecoveryRecords();
+    // Records this program cannot use stay until the user moves them aside here: otherwise
+    // nothing ever clears them (liteanno-cli init waits for none to be left, 13.6).
+    const RecoveryService recovery(m_project->paths(), m_project->location());
+    const application::RecoveryScan scan = recovery.scan();
+    const QString folder =
+        QDir::toNativeSeparators(m_project->paths().recoveryDir(m_project->location().projectId, m_project->location().bindingId));
+    if (!scan.error.isEmpty()) {
+        m_prompts.message(QStringLiteral(u"无法读取恢复记录"),
+                          QStringLiteral(u"无法读取本机恢复记录文件夹 %1（%2），里面可能有未写入的编辑。请检查这个文件夹的权限。")
+                              .arg(folder, scan.error));
+    } else if (!scan.unusable.isEmpty()) {
+        QStringList lines;
+        for (const application::UnusableRecord& record : scan.unusable.mid(0, 10))
+            lines.append(QStringLiteral(u"%1：%2").arg(QFileInfo(record.recordPath).fileName(), record.error));
+        if (scan.unusable.size() > 10)
+            lines.append(QStringLiteral(u"……共 %1 份").arg(scan.unusable.size()));
+        const QString text = QStringLiteral(u"有 %1 份恢复记录本程序无法使用（损坏、版本更新或属于别的位置）：\n%2\n\n"
+                                            u"可以把它们原样移到 %3 下的 unusable 文件夹保留，交给工程师查看；不会删除。")
+                                 .arg(scan.unusable.size())
+                                 .arg(lines.join(QLatin1Char('\n')), folder);
+        if (m_prompts.setAsideUnusable(text)) {
+            QStringList stuck;
+            for (const application::UnusableRecord& record : scan.unusable) {
+                if (!application::moveRecordToUnusable(record.recordPath))
+                    stuck.append(QFileInfo(record.recordPath).fileName());
+            }
+            if (!stuck.isEmpty()) {
+                m_prompts.message(QStringLiteral(u"没有全部移走"),
+                                  QStringLiteral(u"有 %1 份记录没能移动（例如 %2），仍留在原处。").arg(stuck.size()).arg(stuck.first()));
+            }
+        }
+    }
     if (m_current >= 0)
         loadCurrentImage();
 }
@@ -1295,8 +1328,11 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
                                   .arg(candidate.record.imagePath, result.error));
         }
     }
-    if (onlyImage.isEmpty() && !scan.unusable.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留；保存同一张图片前会把它移到恢复目录下的 unusable 文件夹。")
+    if (onlyImage.isEmpty() && !scan.error.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"无法读取本机恢复记录文件夹（%1），里面可能有未写入的编辑。请检查权限。").arg(scan.error),
+                                 15000);
+    } else if (onlyImage.isEmpty() && !scan.unusable.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留；可在“文件 > 处理未写入的编辑”中移到 unusable 文件夹。")
                                      .arg(scan.unusable.size()), 15000);
     }
 }

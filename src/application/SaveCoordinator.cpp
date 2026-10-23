@@ -54,22 +54,27 @@ QString moveAsideIfNotOurs(const QString& recordPath, const ProjectLocation& loc
             && parsed.record->bindingId == location.bindingId && parsed.record->imagePath == imagePath)
             return QString();  // an earlier save of this image; the new record supersedes it
     }
+    return moveRecordToUnusable(recordPath)
+               ? QString()
+               : QStringLiteral("an unusable recovery record is in the way and cannot be moved: ") + recordPath;
+}
+
+} // namespace
+
+bool moveRecordToUnusable(const QString& recordPath)
+{
     const QFileInfo info(recordPath);
     const QString asideDir = info.dir().filePath(QStringLiteral("unusable"));
     if (!QDir().mkpath(asideDir))
-        return QStringLiteral("an unusable recovery record is in the way and cannot be moved: ") + recordPath;
+        return false;
     const QString stamp = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd-HHmmss-zzz"));
     QString target = asideDir + QLatin1Char('/') + info.completeBaseName() + QLatin1Char('-') + stamp + QLatin1String(".json");
     for (int i = 2; QFile::exists(target); ++i) {
         target = asideDir + QLatin1Char('/') + info.completeBaseName() + QLatin1Char('-') + stamp + QLatin1Char('-')
                  + QString::number(i) + QLatin1String(".json");
     }
-    if (!QFile::rename(recordPath, target))
-        return QStringLiteral("an unusable recovery record is in the way and cannot be moved: ") + recordPath;
-    return QString();
+    return QFile::rename(recordPath, target);
 }
-
-} // namespace
 
 bool SaveCoordinator::discardRecoveryRecord(const QString& imagePath) const
 {

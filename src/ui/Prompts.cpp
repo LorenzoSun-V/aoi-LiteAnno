@@ -278,6 +278,14 @@ Prompts Prompts::dialogs(QWidget* parent)
         box.exec();
         return box.clickedButton() != stop;
     };
+    prompts.setAsideUnusable = [parent](const QString& text) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral(u"无法使用的恢复记录"), text, QMessageBox::NoButton, parent);
+        QPushButton* keep = box.addButton(QStringLiteral(u"先不动"), QMessageBox::RejectRole);
+        box.addButton(QStringLiteral(u"移到 unusable 文件夹"), QMessageBox::AcceptRole);
+        box.setDefaultButton(keep);
+        box.exec();
+        return box.clickedButton() != keep;
+    };
     prompts.chooseBatch = [parent](const QStringList& batches, int current) -> std::optional<int> {
         bool ok = false;
         const QString chosen = QInputDialog::getItem(parent, QStringLiteral(u"选择批次"), QStringLiteral(u"批次："), batches,

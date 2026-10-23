@@ -3,6 +3,9 @@
 // Runs offscreen; the prompts are replaced so nothing modal blocks.
 
 #include "application/LocalDataPaths.h"
+#include "application/ProjectSession.h"
+#include "application/RecoveryService.h"
+#include "platform/VolumeBinding.h"
 #include "ui/MainWindow.h"
 #include "ui/Prompts.h"
 
@@ -130,6 +133,8 @@ struct Answers {
     std::function<void()> duringExternalChange;
     std::function<void()> duringLabel;
 
+    QStringList unusableTexts;
+    bool setAsideUnusable = false;
     QStringList labelsOffered;
     bool labelFreeText = false;
     ExportQuestion exportQuestion;
@@ -181,6 +186,10 @@ struct Answers {
         p.skipUnconvertible = [this](const QString& text) {
             unconvertibleTexts.append(text);
             return skipUnconvertible;
+        };
+        p.setAsideUnusable = [this](const QString& text) {
+            unusableTexts.append(text);
+            return setAsideUnusable;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -275,6 +284,41 @@ private slots:
         QVERIFY(!w.window.hasProject());
         QCOMPARE(w.answers.messages.size(), 1);
         QVERIFY2(w.answers.messages[0].contains(QStringLiteral("/batchSize")), qPrintable(w.answers.messages[0]));
+    }
+
+    // Review of #11, round 2: "处理未写入的编辑" also deals with records the program cannot
+    // use, which liteanno-cli init otherwise waits for forever.
+    void unusableRecordsCanBeMovedAside()
+    {
+        Project project;
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        const application::LocalDataPaths paths(project.local.path());
+        const QString root = QDir::cleanPath(QFileInfo(project.data.path()).absoluteFilePath());
+        const QString bindingId = platform::bindingIdForDirectory(root);
+        const application::ProjectLocation location{application::plainFolderConfig(bindingId).projectId, bindingId, root};
+        const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+        QVERIFY(QDir().mkpath(dir));
+        writeFile(dir + QStringLiteral("/0001.json"), "{\"formatVersion\": \"1.0\", \"proj");
+
+        w.answers.setAsideUnusable = false;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 1);
+        QVERIFY2(w.answers.unusableTexts[0].contains(QStringLiteral("0001.json")), qPrintable(w.answers.unusableTexts[0]));
+        QVERIFY(QFile::exists(dir + QStringLiteral("/0001.json")));
+
+        w.answers.setAsideUnusable = true;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
+        QVERIFY(!QFile::exists(dir + QStringLiteral("/0001.json")));
+        QCOMPARE(QDir(dir + QStringLiteral("/unusable")).entryList(QDir::Files).size(), 1);
+        const application::RecoveryScan scan = application::RecoveryService(paths, location).scan();
+        QVERIFY(scan.candidates.isEmpty() && scan.unusable.isEmpty());
+
+        // Nothing left: not asked again.
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
     }
 
     // Review of #11, 5: a name chosen in the program's own class dialog stays as the

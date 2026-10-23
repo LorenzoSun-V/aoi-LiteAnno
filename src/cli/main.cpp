@@ -106,6 +106,13 @@ int init(const QCommandLineParser& parser, const Common& common)
         return Failed;
     }
     const application::RecoveryScan records = application::RecoveryService(folder->paths(), folder->location()).scan();
+    if (!records.error.isEmpty()) {
+        printError(QStringLiteral(u"无法读取这个文件夹在本机的恢复记录（%1：%2），不能确认没有未写入的编辑，没有创建项目文件。")
+                       .arg(QDir::toNativeSeparators(folder->paths().recoveryDir(folder->location().projectId,
+                                                                                 folder->location().bindingId)),
+                            records.error));
+        return Failed;
+    }
     if (!records.candidates.isEmpty() || !records.unusable.isEmpty()) {
         printError(QStringLiteral(u"这个文件夹在本机还有 %1 份没有写入标注文件的编辑。请先用窗口打开这个文件夹，"
                                   u"在“文件 > 处理未写入的编辑”中处理完，再创建项目文件。")
