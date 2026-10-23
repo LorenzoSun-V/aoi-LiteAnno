@@ -206,6 +206,8 @@ void Canvas::fitToWindow()
     m_offset = QPointF((width() - m_image.width() * m_scale) / 2, (height() - m_image.height() * m_scale) / 2);
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
+    reportCursor();
 }
 
 void Canvas::zoomAround(const QPointF& anchor, double factor)
@@ -219,6 +221,8 @@ void Canvas::zoomAround(const QPointF& anchor, double factor)
     m_offset = anchor - imagePoint * m_scale;
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
+    reportCursor();
 }
 
 void Canvas::zoomBy(double factor)
@@ -439,6 +443,9 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF widgetPoint = event->position();
     const QPointF imagePoint = widgetToImage(widgetPoint);
+    m_mouseWidget = widgetPoint;
+    m_mouseOver = true;
+    reportCursor();
     if ((m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
         && (!m_document || m_selected < 0 || m_selected >= m_document->shapes().size())) {
         m_drag = Drag::None;
@@ -449,6 +456,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
         m_offset += widgetPoint - m_pressWidget;
         m_pressWidget = widgetPoint;
         m_fitPending = false;
+        reportCursor();
         break;
     case Drag::DrawRectangle:
         m_currentImage = clampToImage(imagePoint);
@@ -578,6 +586,7 @@ void Canvas::wheelEvent(QWheelEvent* event)
     m_offset += step;
     m_fitPending = false;
     update();
+    reportCursor();
 }
 
 void Canvas::keyPressEvent(QKeyEvent* event)
@@ -657,6 +666,23 @@ void Canvas::focusOutEvent(QFocusEvent* event)
 {
     m_spaceHeld = false;
     QWidget::focusOutEvent(event);
+}
+
+void Canvas::leaveEvent(QEvent* event)
+{
+    m_mouseOver = false;
+    reportCursor();
+    QWidget::leaveEvent(event);
+}
+
+void Canvas::reportCursor()
+{
+    if (!m_mouseOver || m_image.isNull()) {
+        emit cursorMoved(QPointF(), false);
+        return;
+    }
+    const QPointF imagePoint = widgetToImage(m_mouseWidget);
+    emit cursorMoved(imagePoint, QRectF(QPointF(0, 0), QSizeF(m_image.size())).contains(imagePoint));
 }
 
 QColor Canvas::colorFor(const QString& label) const

@@ -276,6 +276,10 @@ private:
     bool m_handlingResults = false;
 
     Canvas* m_canvas = nullptr;
+    QWidget* m_navBar = nullptr;  // under the canvas
+    QLabel* m_cursorLabel = nullptr;
+    QLabel* m_positionLabel = nullptr;
+    QLabel* m_zoomLabel = nullptr;
     QListWidget* m_imageList = nullptr;
     QListWidget* m_shapeList = nullptr;
     QLabel* m_imageStatus = nullptr;  // the image's path

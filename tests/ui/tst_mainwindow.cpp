@@ -34,6 +34,7 @@
 #include <QTimer>
 #include <QTest>
 #include <QThread>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <atomic>
@@ -511,6 +512,57 @@ private slots:
         QCOMPARE(readableTextOn(QColor(0x00, 0xFF, 0x00)), dark);
         QCOMPARE(readableTextOn(QColor(0x1F, 0x6F, 0xEB)), QColor(Qt::white));
         QCOMPARE(readableTextOn(QColor(0x80, 0x00, 0x00)), QColor(Qt::white));
+    }
+
+    // The bar under the canvas: the image's place in the list, the zoom and the mouse.
+    void navigationBar()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* position = w.window.findChild<QLabel*>(QStringLiteral("positionLabel"));
+        auto* zoom = w.window.findChild<QLabel*>(QStringLiteral("zoomLabel"));
+        auto* cursor = w.window.findChild<QLabel*>(QStringLiteral("cursorLabel"));
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(position->text(), QStringLiteral("2 / 3"));
+
+        QCOMPARE(zoom->text(), QStringLiteral("%1%").arg(qRound(w.window.canvas()->zoom() * 100)));
+        w.window.canvas()->zoomToOriginalSize();
+        QCOMPARE(zoom->text(), QStringLiteral("100%"));
+        w.window.canvas()->zoomBy(2);
+        QCOMPARE(zoom->text(), QStringLiteral("200%"));
+
+        // The buttons are the menu actions: "上一张" goes back.
+        auto* bar = w.window.findChild<QWidget*>(QStringLiteral("navBar"));
+        for (QToolButton* button : bar->findChildren<QToolButton*>()) {
+            if (button->defaultAction() && button->defaultAction()->objectName() == QLatin1String("open_prev"))
+                button->click();
+        }
+        QCOMPARE(w.window.currentIndex(), 0);
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+
+        Canvas* canvas = w.window.canvas();
+        canvas->fitToWindow();
+        const QPoint centre = canvas->rect().center();
+        QTest::mouseMove(canvas, centre);
+        QTRY_VERIFY2(cursor->text().startsWith(QStringLiteral("x ")), qPrintable(cursor->text()));
+
+        // Review of #14: zooming or panning under a still mouse updates the position shown.
+        QTest::mouseMove(canvas, centre + QPoint(40, 20));
+        QTRY_VERIFY(cursor->text().startsWith(QStringLiteral("x ")));
+        const QString before = cursor->text();
+        w.window.findChild<QAction*>(QStringLiteral("zoom_in"))->trigger();
+        QVERIFY2(cursor->text() != before, qPrintable(before));
+        const QString zoomed = cursor->text();
+        QWheelEvent scroll(QPointF(centre + QPoint(40, 20)), canvas->mapToGlobal(QPointF(centre + QPoint(40, 20))),
+                           QPoint(), QPoint(0, -240), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(canvas, &scroll);  // a plain wheel scrolls the view
+        QVERIFY2(cursor->text() != zoomed, qPrintable(zoomed));
+
+        QTest::mouseMove(canvas, QPoint(1, 1));  // the margin around the image
+        canvas->fitToWindow();
+        QTRY_VERIFY(cursor->text().isEmpty());
     }
 
     void projectOpenElsewhereIsLocked()
@@ -1303,9 +1355,12 @@ private slots:
         QTest::keyClick(canvas, Qt::Key_Down);
         QCOMPARE(w.document().shapes()[0].points[0], drawn[0] + QPointF(1, 1));
         // Not out of the image: the shape stays where it is.
+        // (The point was clicked at a screen pixel, so it need not be on a whole image pixel:
+        // it stops at less than one pixel from the edge.)
         for (int i = 0; i < 20; ++i)
             QTest::keyClick(canvas, Qt::Key_Up);
-        QCOMPARE(w.document().shapes()[0].points[0].y(), 0.0);
+        const double start = drawn[0].y() + 1;
+        QCOMPARE(w.document().shapes()[0].points[0].y(), start - std::floor(start));
 
         // Ctrl+E changes the class.
         w.answers.label = QStringLiteral("dent");
