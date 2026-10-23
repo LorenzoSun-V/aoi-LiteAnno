@@ -42,7 +42,7 @@ jobs:
 
       - name: Static Qt from the cache
         id: qt-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.QT_STATIC_PREFIX }}
           key: qt-static-${{ env.QT_VERSION }}-${{ hashFiles('.github/scripts/build-static-qt.ps1', 'cmake/LiteAnnoToolchainPin.cmake') }}
@@ -52,19 +52,22 @@ jobs:
         timeout-minutes: 150
         run: .github/scripts/build-static-qt.ps1 -Version $env:QT_VERSION -Prefix $env:QT_STATIC_PREFIX -WorkDir "$env:RUNNER_TEMP\qt-src"
 
+      # Saved right away, so a later failing step does not throw the build away.
+      - name: Keep the static Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.QT_STATIC_PREFIX }}
+          key: ${{ steps.qt-cache.outputs.cache-primary-key }}
+
       - name: Qt's Chinese translation
         # qtbase_zh_CN.qm from the official build of the same version; the program carries it.
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: ${{ env.QT_VERSION }}
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          archives: qttranslations
-          dir: ${{ runner.temp }}\qt-translations
-          set-env: false
-          aqtversion: "==3.3.0"
-          cache: true
+        run: |
+          python -m pip install --disable-pip-version-check "aqtinstall==3.3.0"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          python -m aqt install-qt windows desktop $env:QT_VERSION win64_msvc2022_64 --archives qttranslations `
+              --outputdir "$env:RUNNER_TEMP\qt-translations"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Licence texts
         # Everything linked into the programs: Qt and its bundled libraries, nlohmann/json
