@@ -73,6 +73,9 @@ public:
     void rescan();
     // "导出…" (architecture 11): writes the edits first, then exports the files.
     bool exportAnnotations();
+    // "导入…" (architecture 11.2): writes the edits first, then turns label files into
+    // annotation files and opens the current image again.
+    bool importAnnotations();
     // "帮助 > 关于": version, source, and the licences of what is built in.
     void showAbout();
     void showCanvasMenu(const QPoint& globalPosition);

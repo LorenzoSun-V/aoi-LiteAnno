@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "application/ExportService.h"
+#include "application/ImportService.h"
 #include "application/FileStatus.h"
 #include "application/RecoveryService.h"
 #include "core/BundledLicenses.h"
@@ -380,6 +381,7 @@ void MainWindow::buildUi()
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
     // No shortcut: X-AnyLabeling has no such action.
     fileMenu->addAction(QStringLiteral(u"重新扫描文件夹"), this, &MainWindow::rescan);
+    fileMenu->addAction(QStringLiteral(u"导入…"), this, [this] { importAnnotations(); });
     fileMenu->addAction(QStringLiteral(u"导出…"), this, [this] { exportAnnotations(); });
     fileMenu->addSeparator();
     QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
@@ -958,6 +960,116 @@ bool MainWindow::exportAnnotations()
     return true;
 }
 
+bool MainWindow::importAnnotations()
+{
+    if (!m_project)
+        return false;
+    m_shapeForm->commitPending();
+    const Busy busy(this);
+    // The files are changed under the window: its edits go in first.
+    m_idleTimer.stop();
+    flushSaves();
+    writeProgress();
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    const int batchNumber = batch && batch->list ? batch->number : 0;
+    ImportQuestion question;
+    question.batchNumber = batchNumber;
+    question.plainFolder = m_project->isPlainFolder();
+    const std::optional<ImportChoice> choice = m_prompts.importOptions(question);
+    if (!choice)
+        return false;
+    application::ImportRequest request;
+    request.format = choice->format;
+    if (formats::importReadsOneFile(choice->format))
+        request.labelFile = choice->labels;
+    else
+        request.labelDir = choice->labels;
+    request.classesFile = choice->classesFile;
+    request.mappingFile = choice->mappingFile;
+    request.mode = choice->mode;
+    for (auto it = m_heldEdits.cbegin(); it != m_heldEdits.cend(); ++it)
+        request.heldImages.insert(it.key());
+    if (!choice->wholeProject && batchNumber > 0)
+        request.batches = {m_batchStem};
+    const application::ImportService service(*m_project, imaging::readImageInfo, imaging::readMaskImage);
+    const ListHold hold(this);
+    const auto run = [&] {
+        QProgressDialog progress(QStringLiteral(u"正在导入…"), QStringLiteral(u"取消"), 0, 0, this);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(400);
+        return service.run(request, [&](int done, int total) {
+            progress.setMaximum(std::max(total, 0));
+            progress.setValue(done);
+            if (!progress.isVisible())
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            return !progress.wasCanceled() && !m_closeAsked;
+        });
+    };
+    application::ImportReport report = run();
+    const QString formatText = importFormatText(request.format);
+    const auto unconvertibleLines = [](const application::ImportReport& r) {
+        const QList<application::ImportItem> items = r.unconvertible();
+        QStringList lines;
+        for (const application::ImportItem& item : items.mid(0, 10))
+            lines.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
+        if (items.size() > 10)
+            lines.append(QStringLiteral(u"……共 %1 张").arg(items.size()));
+        return lines.join(QLatin1Char('\n'));
+    };
+    if (!m_closeAsked && !report.written && !report.cancelled && !report.unconvertible().isEmpty()) {
+        const QString text = QStringLiteral(u"有 %1 张图片的“%2”标注文件不能导入，这些图片不会改动：\n%3\n\n"
+                                            u"可以跳过这些图片导入其余图片；也可以先修正标注文件再导入。")
+                                 .arg(report.unconvertible().size())
+                                 .arg(formatText, unconvertibleLines(report));
+        if (!m_prompts.skipUnconvertible(text))
+            return false;
+        request.skipUnconvertible = true;
+        report = run();
+    }
+    // Files written by a cancelled or closed import stay; the window shows them.
+    if (report.written) {
+        reloadCurrent();
+        rescan();
+    }
+    if (m_closeAsked)
+        return report.written;
+    if (!report.written && !report.error.isEmpty()) {
+        if (!report.cancelled)
+            m_prompts.message(QStringLiteral(u"没有导入"), report.error);
+        return false;
+    }
+    int empty = 0;
+    QStringList notWritten;
+    for (const application::ImportItem& item : report.items) {
+        if (item.result == application::ImportResult::Imported && item.shapes == 0)
+            ++empty;
+        if (item.result == application::ImportResult::NotWritten && notWritten.size() < 10)
+            notWritten.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
+    }
+    QString text = QStringLiteral(u"已导入 %1 张图片（其中标注文件里没有对象的 %2 张），都要逐张检查后确认。\n"
+                                  u"已有标注而没有改动 %3 张，没有标注文件 %4 张，没有写入 %5 张，无法转换 %6 张，"
+                                  u"标注文件里没有对象而不用写入 %7 张。")
+                       .arg(report.count(application::ImportResult::Imported))
+                       .arg(empty)
+                       .arg(report.count(application::ImportResult::HasAnnotation))
+                       .arg(report.count(application::ImportResult::NoLabelFile))
+                       .arg(report.count(application::ImportResult::NotWritten))
+                       .arg(report.count(application::ImportResult::Unconvertible))
+                       .arg(report.count(application::ImportResult::Unchanged));
+    if (report.cancelled)
+        text.prepend(QStringLiteral(u"导入已取消，取消前写入的图片保留。\n"));
+    if (!notWritten.isEmpty())
+        text += QStringLiteral(u"\n\n没有写入的图片：\n%1").arg(notWritten.join(QLatin1Char('\n')));
+    if (!report.unmatched.isEmpty()) {
+        QStringList names;
+        for (const application::UnmatchedLabel& label : report.unmatched.mid(0, 10))
+            names.append(QStringLiteral(u"%1：%2").arg(label.fileName, label.reason));
+        text += QStringLiteral(u"\n\nCOCO 文件里有 %1 张图片在文件夹里找不到：\n%2").arg(report.unmatched.size()).arg(names.join(QLatin1Char('\n')));
+    }
+    m_prompts.message(report.written ? QStringLiteral(u"导入完成") : QStringLiteral(u"没有导入"), text);
+    return report.written;
+}
+
 void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
 {
     if (!unreadable.isEmpty()) {
@@ -1052,6 +1164,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
     m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
     m_prompts.exportOptions = held(std::move(prompts.exportOptions));
+    m_prompts.importOptions = held(std::move(prompts.importOptions));
     m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
     m_prompts.setAsideUnusable = held(std::move(prompts.setAsideUnusable));
 }

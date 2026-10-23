@@ -112,4 +112,49 @@ QStringList missingImageFormats()
     return missing;
 }
 
+RgbImage readMaskImage(const QString& path)
+{
+    RgbImage result;
+    QImageReader reader(path);
+    reader.setDecideFormatFromContent(true);
+    reader.setAutoTransform(false);
+    if (reader.format() != "png") {
+        result.error = reader.canRead() ? QStringLiteral(u"掩膜必须是 PNG 图片（JPEG 等有损格式会改变类别值）")
+                                        : QStringLiteral(u"读不出图片：%1").arg(reader.errorString());
+        return result;
+    }
+    QImage image = reader.read();
+    if (image.isNull()) {
+        result.error = QStringLiteral(u"读不出图片：%1").arg(reader.errorString());
+        return result;
+    }
+    switch (image.format()) {
+    case QImage::Format_Grayscale16:
+    case QImage::Format_RGBX64:
+    case QImage::Format_RGBA64:
+    case QImage::Format_RGBA64_Premultiplied:
+        result.error = QStringLiteral(u"掩膜必须是 8 位图片，这张是 16 位的");
+        return result;
+    default:
+        break;
+    }
+    // Straight alpha is dropped as OpenCV drops it; a premultiplied format would have changed
+    // the colours, and Qt's PNG reader does not give one.
+    if (image.format() == QImage::Format_ARGB32_Premultiplied || image.format() == QImage::Format_RGBA8888_Premultiplied) {
+        result.error = QStringLiteral(u"掩膜的透明度无法按原值读取");
+        return result;
+    }
+    if (image.hasAlphaChannel())
+        image = image.convertToFormat(QImage::Format_ARGB32);
+    image = image.convertToFormat(QImage::Format_RGB888);
+    result.width = image.width();
+    result.height = image.height();
+    result.rgb.resize(std::size_t(result.width) * std::size_t(result.height) * 3);
+    for (int y = 0; y < result.height; ++y) {
+        const uchar* line = image.constScanLine(y);
+        std::copy(line, line + std::size_t(result.width) * 3, result.rgb.begin() + std::ptrdiff_t(y) * result.width * 3);
+    }
+    return result;
+}
+
 } // namespace liteanno::imaging

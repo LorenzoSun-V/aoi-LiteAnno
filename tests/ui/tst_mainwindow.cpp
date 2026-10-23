@@ -129,6 +129,8 @@ struct Answers {
     int batch = 0;  // the batch chosen from the list offered
     QStringList batchesOffered;
     std::optional<ExportChoice> exportChoice;
+    std::optional<ImportChoice> importChoice;
+    std::optional<ImportQuestion> importQuestion;
     bool skipUnconvertible = false;
     int exportBatchOffered = -1;
     QStringList unconvertibleTexts;
@@ -188,6 +190,10 @@ struct Answers {
             exportBatchOffered = question.batchNumber;
             exportQuestion = question;
             return exportChoice;
+        };
+        p.importOptions = [this](const ImportQuestion& question) {
+            importQuestion = question;
+            return importChoice;
         };
         p.skipUnconvertible = [this](const QString& text) {
             unconvertibleTexts.append(text);
@@ -2652,6 +2658,56 @@ private slots:
         QVERIFY(!w.window.session());
         // The deleted image is not given out again, nor the colliding ones.
         QVERIFY(!w.window.startNextBatch());
+    }
+
+    // "导入…" writes the window's edits first, leaves images with annotations alone unless
+    // told to append, and shows the imported shapes of the image open.
+    void importFromTheWindow()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));  // unwritten
+        QTemporaryDir labels;
+        for (int i = 1; i <= 3; ++i)
+            writeFile(labels.filePath(QStringLiteral("line1/%1.txt").arg(i, 4, 10, QLatin1Char('0'))), "1 0.5 0.5 0.25 0.5\n");
+        writeFile(labels.filePath(QStringLiteral("line1/0003.txt")), "7 0.5 0.5 0.25 0.5\n");  // no class 7
+
+        QVERIFY(!w.window.importAnnotations());  // cancelled
+        QVERIFY(w.answers.importQuestion && !w.answers.importQuestion->plainFolder);
+        QVERIFY(!QFile::exists(project.json(2)));
+
+        ImportChoice choice;
+        choice.format = formats::ImportFormat::YoloDetection;
+        choice.labels = labels.path();
+        w.answers.importChoice = choice;
+        w.answers.skipUnconvertible = false;
+        QVERIFY(!w.window.importAnnotations());
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
+        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("line1/0003.png")),
+                 qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY(!QFile::exists(project.json(2)));
+        QVERIFY(QFile::exists(project.json(1)));  // the edits went in first
+
+        w.answers.skipUnconvertible = true;
+        QVERIFY(w.window.importAnnotations());
+        QVERIFY2(w.answers.messages.last().startsWith(QStringLiteral(u"导入完成")), qPrintable(w.answers.messages.last()));
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已导入 1 张图片")), qPrintable(w.answers.messages.last()));
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已有标注而没有改动 1 张")), qPrintable(w.answers.messages.last()));
+        QCOMPARE(w.document().shapes().size(), 1);
+        QVERIFY(QFile::exists(project.json(2)));
+        QVERIFY(!QFile::exists(project.json(3)));
+
+        // Appended to the image open: the window shows both shapes, and they are saved.
+        choice.mode = application::ImportMode::Append;
+        w.answers.importChoice = choice;
+        QVERIFY(w.window.importAnnotations());
+        QCOMPARE(w.document().shapes().size(), 2);
+        QCOMPARE(w.document().shapes()[1].label, QStringLiteral("dent"));
+        QVERIFY(!w.document().review().checked);
+        w.window.flushSaves();
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(w.document().shapes().size(), 2);  // appended to the imported one
     }
 
     // A damaged list is not opened or repaired, and its images are not given out again.

@@ -68,6 +68,15 @@ bool AnnotationDocument::setShapeLabel(qsizetype index, const QString& label)
     return true;
 }
 
+bool AnnotationDocument::setShapeGroupId(qsizetype index, std::optional<qint64> groupId)
+{
+    if (!isEditable(index) || m_shapes[index].groupId == groupId)
+        return false;
+    m_shapes[index].groupId = groupId;
+    contentEdited();
+    return true;
+}
+
 qsizetype AnnotationDocument::addShape(Shape shape)
 {
     if (shape.kind != ShapeKind::Editable || !isEditableShapeType(shape.type)

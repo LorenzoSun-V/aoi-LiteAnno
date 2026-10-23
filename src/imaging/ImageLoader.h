@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/ImageInfo.h"
+#include "core/RgbImage.h"
 
 #include <QImage>
 #include <QString>
@@ -26,6 +27,11 @@ LoadedImage loadImage(const QString& path);
 // format allows it (the second scan stage checks sizes without decoding). Empty when the
 // file is not a readable image.
 std::optional<ImageInfo> readImageInfo(const QString& path);
+
+// A mask image for the mask import, pixel for pixel as stored: an 8-bit PNG (grey, grey with
+// alpha, palette, RGB or RGBA), alpha left out, no orientation applied. Other formats and
+// 16-bit PNGs are refused: a lossy or scaled value would be a different class.
+RgbImage readMaskImage(const QString& path);
 
 // The decoders the folder scan counts on (dataset/DirectoryScanner.cpp) that Qt does not
 // have here; empty when all are there. A single-file build must have them linked in.
