@@ -1,9 +1,9 @@
+#include "core/BundledLicenses.h"
 #include "core/Version.h"
 #include "imaging/ImageLoader.h"
 #include "ui/MainWindow.h"
 
 #include <QApplication>
-#include <QDir>
 #include <QLibraryInfo>
 #include <QLocale>
 #include <QTimer>
@@ -17,8 +17,8 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("aoi-LiteAnno"));
     QApplication::setApplicationVersion(QString::fromLatin1(liteanno::kAppVersion));
     // The interface is Chinese; so are Qt's own dialogs and buttons (file dialogs, OK/Cancel).
-    // The single-file build carries them inside (":/i18n", src/ui/CMakeLists.txt); the folder
-    // build has them in Qt's translations folder.
+    // The single-file build carries them inside (":/i18n", cmake/LiteAnnoBundledFiles.cmake);
+    // the folder build has them in Qt's translations folder.
     QTranslator qtTranslator;
     const QLocale chinese(QLocale::Chinese, QLocale::China);
     const bool builtInTranslation =
@@ -36,11 +36,14 @@ int main(int argc, char* argv[])
 #else
         const bool staticQt = false;
 #endif
-        const bool licenses = !QDir(QStringLiteral(":/licenses")).isEmpty();
-        const QStringList missing = liteanno::imaging::missingImageFormats();
-        std::fprintf(stderr, "static Qt: %d, built-in translation: %d, licence texts: %d, missing image formats: %s\n",
-                     staticQt, builtInTranslation, licenses, qPrintable(missing.join(QLatin1Char(' '))));
-        return staticQt && builtInTranslation && licenses && missing.isEmpty() ? 0 : 1;
+        const QStringList missingLicenses = liteanno::missingRequiredLicenses();
+        const QStringList missingFormats = liteanno::imaging::missingImageFormats();
+        std::fprintf(stderr,
+                     "static Qt: %d, built-in translation: %d, licence texts: %d, missing licence texts: %s, "
+                     "missing image formats: %s\n",
+                     staticQt, builtInTranslation, int(liteanno::bundledLicenseNames().size()),
+                     qPrintable(missingLicenses.join(QLatin1Char(' '))), qPrintable(missingFormats.join(QLatin1Char(' '))));
+        return staticQt && builtInTranslation && missingLicenses.isEmpty() && missingFormats.isEmpty() ? 0 : 1;
     }
 
     liteanno::ui::MainWindow window;

@@ -3,6 +3,7 @@
 #include "application/ExportService.h"
 #include "application/FileStatus.h"
 #include "application/RecoveryService.h"
+#include "core/BundledLicenses.h"
 #include "dataset/DirectoryScanner.h"
 #include "imaging/ImageLoader.h"
 #include "ui/Texts.h"
@@ -18,7 +19,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QDirIterator>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -52,18 +52,6 @@ QByteArray readFile(const QString& path)
 {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
-}
-
-// The licence texts built into the program (":/licenses", see src/ui/CMakeLists.txt), by
-// their path below that folder.
-QStringList bundledLicenses()
-{
-    QStringList files;
-    QDirIterator it(QStringLiteral(":/licenses"), QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext())
-        files.append(it.next().mid(int(QStringLiteral(":/licenses/").size())));
-    files.sort();
-    return files;
 }
 
 QString openErrorText(const ProjectSession::OpenResult& result)
@@ -547,7 +535,7 @@ void MainWindow::showAbout()
     notice->setOpenExternalLinks(true);
     notice->setTextInteractionFlags(Qt::TextBrowserInteraction);
     layout->addWidget(notice);
-    const QStringList licenses = bundledLicenses();
+    const QStringList licenses = bundledLicenseNames();
     if (licenses.isEmpty()) {
         layout->addWidget(new QLabel(QStringLiteral(u"这个版本没有附带许可证全文，请见源码仓库。")));
     } else {
@@ -558,10 +546,7 @@ void MainWindow::showAbout()
         view->setObjectName(QStringLiteral("licenseText"));
         view->setReadOnly(true);
         view->setMinimumSize(640, 360);
-        const auto show = [view, chooser] {
-            QFile file(QStringLiteral(":/licenses/") + chooser->currentText());
-            view->setPlainText(file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString());
-        };
+        const auto show = [view, chooser] { view->setPlainText(bundledLicenseText(chooser->currentText())); };
         connect(chooser, &QComboBox::currentIndexChanged, &dialog, show);
         show();
         layout->addWidget(new QLabel(QStringLiteral(u"许可证全文：")));
