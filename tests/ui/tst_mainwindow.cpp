@@ -1222,6 +1222,60 @@ private slots:
         QVERIFY(w.document().review().checked);
     }
 
+    // F moves on without confirming only an image that is properly confirmed: one checked in
+    // its file but failing the confirm conditions stays, and a checked-and-skipped conflict
+    // is confirmed for real (the skip cleared) before moving on.
+    void confirmAndNextNeedsAProperConfirmation()
+    {
+        Project project;
+        writeFile(project.json(1),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [{"label": "unknown", )"
+                  R"("points": [[10, 10], [50, 10], [50, 50], [10, 50]], "group_id": null, "description": "", )"
+                  R"("shape_type": "rectangle", "flags": {}}], "imagePath": "0001.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200})");
+        writeFile(project.json(2),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], "imagePath": "0002.png", )"
+                  R"("imageData": null, "imageHeight": 100, "imageWidth": 200, )"
+                  R"("liteanno": {"formatVersion": "1.0", "status": "skipped", "skipReason": "blurred"}})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.currentIndex(), 0);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 0);  // the unknown class blocks it
+
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        QCOMPARE(w.document().review().skip, SkipState::None);
+    }
+
+    // Holding F does not confirm the images after it: an auto-repeated key does nothing, the
+    // key has to be pressed again.
+    void confirmAndNextDoesNotRepeat()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, false, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // E is not repeated either: one press, one question.
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(!skip->autoRepeat());
+    }
+
     void skipKeys()
     {
         Project project;
