@@ -129,9 +129,13 @@ private:
     // Z/X/C/V: turns the selected rotated box by `degrees`, as upstream's keys do.
     bool rotateSelectedBy(double degrees);
     void cancelDrawing();
+    // Sends cursorMoved for the mouse's last position, after the view moved or zoomed under it.
+    void reportCursor();
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
 
     QImage m_image;
+    QPointF m_mouseWidget;  // the mouse's last position over the canvas
+    bool m_mouseOver = false;
     const AnnotationDocument* m_document = nullptr;
     bool m_readOnly = false;
     QHash<QString, QColor> m_classColors;

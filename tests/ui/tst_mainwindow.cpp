@@ -547,7 +547,21 @@ private slots:
         const QPoint centre = canvas->rect().center();
         QTest::mouseMove(canvas, centre);
         QTRY_VERIFY2(cursor->text().startsWith(QStringLiteral("x ")), qPrintable(cursor->text()));
+
+        // Review of #14: zooming or panning under a still mouse updates the position shown.
+        QTest::mouseMove(canvas, centre + QPoint(40, 20));
+        QTRY_VERIFY(cursor->text().startsWith(QStringLiteral("x ")));
+        const QString before = cursor->text();
+        w.window.findChild<QAction*>(QStringLiteral("zoom_in"))->trigger();
+        QVERIFY2(cursor->text() != before, qPrintable(before));
+        const QString zoomed = cursor->text();
+        QWheelEvent scroll(QPointF(centre + QPoint(40, 20)), canvas->mapToGlobal(QPointF(centre + QPoint(40, 20))),
+                           QPoint(), QPoint(0, -240), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(canvas, &scroll);  // a plain wheel scrolls the view
+        QVERIFY2(cursor->text() != zoomed, qPrintable(zoomed));
+
         QTest::mouseMove(canvas, QPoint(1, 1));  // the margin around the image
+        canvas->fitToWindow();
         QTRY_VERIFY(cursor->text().isEmpty());
     }
 
