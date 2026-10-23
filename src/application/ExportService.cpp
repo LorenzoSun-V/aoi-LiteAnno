@@ -366,6 +366,23 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         }
         std::sort(categories.begin(), categories.end());
     }
+    formats::PoseConfig pose;
+    if (formats::exportNeedsPoseConfig(format)) {
+        if (request.poseConfigFile.trimmed().isEmpty()) {
+            report.error = QStringLiteral(u"%1 需要姿态配置文件（每个类别的关键点名称），请选择。").arg(formats::exportFormatName(format));
+            return report;
+        }
+        pose = formats::readPoseConfig(request.poseConfigFile);
+        if (!pose.error.isEmpty()) {
+            report.error = QStringLiteral(u"姿态配置文件 %1 不能用：%2").arg(QDir::toNativeSeparators(request.poseConfigFile), pose.error);
+            return report;
+        }
+        // The class numbers written: the place in the configuration (COCO from 1).
+        categories.clear();
+        const int first = format == ExportFormat::CocoPose ? 1 : 0;
+        for (qsizetype i = 0; i < pose.classes.size(); ++i)
+            categories.append({first + int(i), pose.classes[i].first});
+    }
     if (formats::exportNeedsClassIds(format) && classIds.isEmpty()) {
         report.error = m_project.isPlainFolder()
                            ? QStringLiteral(u"%1 需要类别编号，请选择类别文件（classes.txt）。").arg(formats::exportFormatName(format))
@@ -482,7 +499,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             }
         } else {
             const formats::ExportImage shapes = formats::exportImageOf(scoped.path, image.bytes, image.annotation->file);
-            const QList<formats::ExportIssue> issues = formats::unconvertibleShapes(shapes, format, classIds);
+            const QList<formats::ExportIssue> issues = formats::unconvertibleShapes(shapes, format, classIds, &pose);
             if (shapes.width <= 0 || shapes.height <= 0) {
                 item.result = ExportResult::Unconvertible;
                 item.reason = QStringLiteral(u"图片尺寸不可用：读不出图片的尺寸，标注文件里也没有");
@@ -533,7 +550,8 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     if (!created.makeFolder(output))
         return fail(created.error());
     std::unique_ptr<formats::CocoWriter> cocoWriter;
-    const bool isCoco = format == ExportFormat::CocoDetection || format == ExportFormat::CocoSegmentation;
+    const bool isCoco = format == ExportFormat::CocoDetection || format == ExportFormat::CocoSegmentation
+                        || format == ExportFormat::CocoPose;
     if (isCoco) {
         coco.setFileName(output + QLatin1Char('/') + formats::CocoWriter::fileName(format));
         if (!coco.open(QIODevice::WriteOnly | QIODevice::NewOnly))
@@ -545,7 +563,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         const QDate today = QDate::currentDate();
         cocoWriter = std::make_unique<formats::CocoWriter>(
             format, categories,
-            formats::CocoInfo{today.year(), QString::fromLatin1(kAppVersion), today.toString(Qt::ISODate)});
+            formats::CocoInfo{today.year(), QString::fromLatin1(kAppVersion), today.toString(Qt::ISODate)}, &pose);
         if (!cocoWriter->begin(&coco, &cocoAnnotations))
             return fail(QStringLiteral(u"无法写入 %1").arg(QDir::toNativeSeparators(coco.fileName())));
     }
@@ -576,6 +594,9 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
                 break;
             case ExportFormat::Dota:
                 ok = created.write(stem + QStringLiteral(".txt"), formats::dotaLabels(shapes));
+                break;
+            case ExportFormat::YoloPose:
+                ok = created.write(stem + QStringLiteral(".txt"), formats::yoloPoseLabels(shapes, pose));
                 break;
             case ExportFormat::Mask:
                 // Masks in masks/, copied images in images/: a mask has the image's own name,
@@ -608,6 +629,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
                 break;
             case ExportFormat::CocoDetection:
             case ExportFormat::CocoSegmentation:
+            case ExportFormat::CocoPose:
                 ok = cocoWriter->add(shapes, item.image, classIds);
                 if (!ok)
                     return fail(QStringLiteral(u"无法写入 %1").arg(QDir::toNativeSeparators(coco.fileName())));
@@ -646,6 +668,12 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     }
     if (format == ExportFormat::Mask) {
         if (!created.write(output + QStringLiteral("/mask_colors.json"), formats::maskColorsFile(maskValues, categories)))
+            return fail(created.error());
+    }
+
+    // The classes and keypoints the numbers stand for, so the export can be imported again.
+    if (formats::exportNeedsPoseConfig(format)) {
+        if (!created.write(output + QStringLiteral("/pose_config.yaml"), formats::poseConfigFile(pose)))
             return fail(created.error());
     }
 

@@ -180,8 +180,50 @@ bool takesShape(ExportFormat format, const QString& type)
     }
     case ExportFormat::Classification:
         return true;  // shapes are not exported
+    case ExportFormat::YoloPose:
+    case ExportFormat::CocoPose:
+        return type == QLatin1String("rectangle") || type == QLatin1String("point");
     }
     return false;
+}
+
+// Python's round(value, 6), as a float.
+double round6(double value)
+{
+    const std::string text = fixed6(value);
+    double rounded = 0;
+    std::from_chars(text.data(), text.data() + text.size(), rounded);
+    return rounded;
+}
+
+// The rectangle and keypoints of one pose instance: the shapes of one group_id.
+struct PoseInstance {
+    qint64 groupId = 0;
+    int rectangle = -1;  // index in image.shapes
+    QList<int> points;
+};
+
+// In the order each group_id first appears, as upstream's dict keeps them.
+QList<PoseInstance> poseInstances(const ExportImage& image)
+{
+    QList<PoseInstance> instances;
+    QHash<qint64, qsizetype> byGroup;
+    for (int i = 0; i < image.shapes.size(); ++i) {
+        const ExportShape& shape = image.shapes[i];
+        if (!shape.groupId || (shape.type != QLatin1String("rectangle") && shape.type != QLatin1String("point")))
+            continue;
+        qsizetype index = byGroup.value(*shape.groupId, -1);
+        if (index < 0) {
+            index = instances.size();
+            byGroup.insert(*shape.groupId, index);
+            instances.append({*shape.groupId, -1, {}});
+        }
+        if (shape.type == QLatin1String("rectangle"))
+            instances[index].rectangle = i;
+        else
+            instances[index].points.append(i);
+    }
+    return instances;
 }
 
 QString formatText(ExportFormat format)
@@ -209,6 +251,10 @@ QString formatText(ExportFormat format)
         return QStringLiteral(u"LabelMe");
     case ExportFormat::Classification:
         return QStringLiteral(u"图片分类");
+    case ExportFormat::YoloPose:
+        return QStringLiteral(u"YOLO 姿态");
+    case ExportFormat::CocoPose:
+        return QStringLiteral(u"COCO 关键点");
     }
     return QString();
 }
@@ -297,6 +343,10 @@ QString exportFormatName(ExportFormat format)
         return QStringLiteral("labelme");
     case ExportFormat::Classification:
         return QStringLiteral("classify");
+    case ExportFormat::YoloPose:
+        return QStringLiteral("yolo-pose");
+    case ExportFormat::CocoPose:
+        return QStringLiteral("coco-pose");
     }
     return QString();
 }
@@ -315,7 +365,8 @@ QList<ExportFormat> exportFormats()
     return {ExportFormat::YoloDetection, ExportFormat::YoloSegmentation, ExportFormat::YoloObb,
             ExportFormat::VocRectangle,  ExportFormat::VocPolygon,       ExportFormat::CocoDetection,
             ExportFormat::CocoSegmentation, ExportFormat::Dota,          ExportFormat::Mask,
-            ExportFormat::LabelMe,       ExportFormat::Classification};
+            ExportFormat::YoloPose,      ExportFormat::CocoPose,          ExportFormat::LabelMe,
+            ExportFormat::Classification};
 }
 
 bool exportNeedsClassIds(ExportFormat format)
@@ -326,10 +377,17 @@ bool exportNeedsClassIds(ExportFormat format)
     case ExportFormat::Dota:
     case ExportFormat::LabelMe:
     case ExportFormat::Classification:
+    case ExportFormat::YoloPose:
+    case ExportFormat::CocoPose:
         return false;
     default:
         return true;
     }
+}
+
+bool exportNeedsPoseConfig(ExportFormat format)
+{
+    return format == ExportFormat::YoloPose || format == ExportFormat::CocoPose;
 }
 
 ExportImage exportImageOf(const QString& path, const QByteArray& bytes, const AnnotationFile& file)
@@ -374,8 +432,10 @@ ExportImage exportImageOf(const QString& path, const QByteArray& bytes, const An
                     shape.points.append({numberOf(point[0]), numberOf(point[1])});
             }
         }
-        if (const auto it = object.find("difficult"); it != object.end())
+        if (const auto it = object.find("difficult"); it != object.end()) {
             shape.difficult = int(pyInt(numberOf(*it)));
+            shape.difficultIsTrue = it->is_boolean() && it->get<bool>();
+        }
         if (const auto it = object.find("group_id"); it != object.end() && !it->is_null()) {
             if (it->is_number())
                 shape.groupId = pyInt(numberOf(*it));
@@ -392,7 +452,7 @@ ExportImage exportImageOf(const QString& path, const QByteArray& bytes, const An
 }
 
 QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat format,
-                                       const QHash<QString, int>& classIds)
+                                       const QHash<QString, int>& classIds, const PoseConfig* pose)
 {
     QList<ExportIssue> issues;
     if (format == ExportFormat::Classification)
@@ -421,8 +481,42 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
             reason = QStringLiteral(u"类别名“%1”含空白字符，DOTA 格式无法表示").arg(shape.label);
         else if (exportNeedsClassIds(format) && !classIds.contains(shape.label))
             reason = QStringLiteral(u"类别“%1”不在类别列表中").arg(shape.label);
+        else if (exportNeedsPoseConfig(format) && !shape.groupId)
+            // Upstream stops the whole export (PoseGroupError).
+            reason = QStringLiteral(u"姿态的矩形和关键点要有组号（group_id）");
         if (!reason.isEmpty())
             issues.append({i, reason});
+    }
+    if (!exportNeedsPoseConfig(format) || !issues.isEmpty())
+        return issues;
+    for (const PoseInstance& instance : poseInstances(image)) {
+        int rectangles = 0;
+        for (const ExportShape& shape : image.shapes)
+            rectangles += shape.groupId == instance.groupId && shape.type == QLatin1String("rectangle") ? 1 : 0;
+        if (rectangles != 1) {
+            // Upstream keeps the last rectangle, or stops the export when there is none.
+            issues.append({rectangles == 0 ? instance.points.first() : instance.rectangle,
+                           rectangles == 0 ? QStringLiteral(u"组号 %1 只有关键点，没有矩形").arg(instance.groupId)
+                                           : QStringLiteral(u"组号 %1 有 %2 个矩形").arg(instance.groupId).arg(rectangles)});
+            continue;
+        }
+        const ExportShape& box = image.shapes[instance.rectangle];
+        const QStringList* names = pose ? pose->keypoints(box.label) : nullptr;
+        if (!names) {
+            issues.append({instance.rectangle, QStringLiteral(u"类别“%1”不在姿态配置文件里").arg(box.label)});
+            continue;
+        }
+        QSet<QString> seen;
+        for (const int index : instance.points) {
+            const QString& label = image.shapes[index].label;
+            if (!names->contains(label))
+                // Upstream would write nothing for it: the point would be lost.
+                issues.append({index, QStringLiteral(u"“%1”不是类别“%2”的关键点").arg(label, box.label)});
+            else if (seen.contains(label))
+                // Upstream keeps the last one.
+                issues.append({index, QStringLiteral(u"组号 %1 里关键点“%2”出现了不止一次").arg(instance.groupId).arg(label)});
+            seen.insert(label);
+        }
     }
     return issues;
 }
@@ -527,6 +621,51 @@ QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash
             }
             out += '\n';
         }
+    }
+    return QByteArray(out.data(), qsizetype(out.size()));
+}
+
+QByteArray yoloPoseLabels(const ExportImage& image, const PoseConfig& pose)
+{
+    std::string out;
+    const double width = image.width;
+    const double height = image.height;
+    const int maxKeypoints = pose.maxKeypoints();
+    const std::string missing = pose.hasVisible ? " 0 0 0" : " 0 0";
+    for (const PoseInstance& instance : poseInstances(image)) {
+        if (instance.rectangle < 0)
+            continue;
+        const ExportShape& box = image.shapes[instance.rectangle];
+        const int classIndex = pose.classIndex(box.label);
+        if (classIndex < 0)
+            continue;
+        const Points points = rectangleCorners(clamped(box.points, image.width, image.height));
+        const double xCenter = (points[0][0].value + points[2][0].value) / (2 * width);
+        const double yCenter = (points[0][1].value + points[2][1].value) / (2 * height);
+        const double w = std::abs(points[2][0].value - points[0][0].value) / width;
+        const double h = std::abs(points[2][1].value - points[0][1].value) / height;
+        out += std::to_string(classIndex) + ' ' + pythonFloatRepr(round6(xCenter)) + ' ' + pythonFloatRepr(round6(yCenter))
+               + ' ' + pythonFloatRepr(round6(w)) + ' ' + pythonFloatRepr(round6(h));
+        const QStringList& names = pose.classes[classIndex].second;
+        for (const QString& name : names) {
+            const ExportShape* found = nullptr;
+            for (const int index : instance.points) {
+                if (image.shapes[index].label == name)
+                    found = &image.shapes[index];
+            }
+            if (!found || found->points.isEmpty()) {
+                out += missing;
+                continue;
+            }
+            const Point p = clamped({found->points.first()}, image.width, image.height).first();
+            out += ' ' + pythonFloatRepr(round6(double(pyInt(p[0])) / width)) + ' '
+                   + pythonFloatRepr(round6(double(pyInt(p[1])) / height));
+            if (pose.hasVisible)
+                out += found->difficultIsTrue ? " 1" : " 2";
+        }
+        for (qsizetype k = names.size(); k < maxKeypoints; ++k)
+            out += missing;
+        out += '\n';
     }
     return QByteArray(out.data(), qsizetype(out.size()));
 }
@@ -691,6 +830,7 @@ QByteArray vocAnnotation(const ExportImage& image, ExportFormat format, const QS
 struct CocoWriter::Data {
     ExportFormat format;
     QList<std::pair<int, QString>> categories;
+    PoseConfig pose;
     CocoInfo info;
     QIODevice* out = nullptr;
     QIODevice* annotations = nullptr;
@@ -712,18 +852,23 @@ struct CocoWriter::Data {
     }
 };
 
-CocoWriter::CocoWriter(ExportFormat format, QList<std::pair<int, QString>> categories, CocoInfo info)
+CocoWriter::CocoWriter(ExportFormat format, QList<std::pair<int, QString>> categories, CocoInfo info,
+                       const PoseConfig* pose)
     : d(std::make_unique<Data>())
 {
     d->format = format;
     d->categories = std::move(categories);
     d->info = std::move(info);
+    if (pose)
+        d->pose = *pose;
 }
 
 CocoWriter::~CocoWriter() = default;
 
 QString CocoWriter::fileName(ExportFormat format)
 {
+    if (format == ExportFormat::CocoPose)
+        return QStringLiteral("coco_keypoints.json");
     return format == ExportFormat::CocoSegmentation ? QStringLiteral("coco_instance_segmentation.json")
                                                     : QStringLiteral("coco_detection.json");
 }
@@ -745,7 +890,24 @@ bool CocoWriter::begin(QIODevice* out, QIODevice* annotations)
     // Upstream numbers its classes from 1 and adds "_background_" as 0 for segmentation; the
     // project's ids are used here as they are, so 0 can be a class and there is no background.
     Json categories = Json::array();
+    if (d->format == ExportFormat::CocoPose) {
+        // Upstream's numbering: the place in the pose configuration, from 1.
+        for (qsizetype i = 0; i < d->pose.classes.size(); ++i) {
+            Json category = Json::object();
+            category["id"] = i + 1;
+            category["name"] = d->pose.classes[i].first.toStdString();
+            category["supercategory"] = "";
+            Json keypoints = Json::array();
+            for (const QString& name : d->pose.classes[i].second)
+                keypoints.push_back(name.toStdString());
+            category["keypoints"] = std::move(keypoints);
+            category["skeleton"] = Json::array();
+            categories.push_back(std::move(category));
+        }
+    }
     for (const auto& [id, name] : std::as_const(d->categories)) {
+        if (d->format == ExportFormat::CocoPose)
+            break;
         Json category = Json::object();
         category["id"] = id;  // classes[].id as they are (architecture 11), not upstream's index + 1
         category["name"] = name.toStdString();
@@ -770,7 +932,60 @@ bool CocoWriter::add(const ExportImage& image, const QString& fileName, const QH
     entry["id"] = d->imageId;
     d->element(d->out, d->imageId, entry);
 
-    if (d->format == ExportFormat::CocoDetection) {
+    if (d->format == ExportFormat::CocoPose) {
+        for (const PoseInstance& instance : poseInstances(image)) {
+            if (instance.rectangle < 0)
+                continue;
+            const ExportShape& box = image.shapes[instance.rectangle];
+            const int classIndex = d->pose.classIndex(box.label);
+            if (classIndex < 0)
+                continue;
+            const Points points = rectangleCorners(clamped(box.points, image.width, image.height));
+            const PyNumber xMin = pyMin(points[0][0], points[2][0]);
+            const PyNumber yMin = pyMin(points[0][1], points[2][1]);
+            const PyNumber xMax = pyMax(points[0][0], points[2][0]);
+            const PyNumber yMax = pyMax(points[0][1], points[2][1]);
+            const PyNumber width = pySub(xMax, xMin);
+            const PyNumber height = pySub(yMax, yMin);
+            Json keypoints = Json::array();
+            int labeled = 0;
+            for (const QString& name : d->pose.classes[classIndex].second) {
+                const ExportShape* found = nullptr;
+                for (const int index : instance.points) {
+                    if (image.shapes[index].label == name)
+                        found = &image.shapes[index];
+                }
+                if (!found || found->points.isEmpty()) {
+                    keypoints.push_back(0);
+                    keypoints.push_back(0);
+                    if (d->pose.hasVisible)
+                        keypoints.push_back(0);
+                    continue;
+                }
+                ++labeled;
+                const Point p = clamped({found->points.first()}, image.width, image.height).first();
+                keypoints.push_back(pyInt(p[0]));
+                keypoints.push_back(pyInt(p[1]));
+                if (d->pose.hasVisible)
+                    keypoints.push_back(found->difficultIsTrue ? 1 : 2);
+            }
+            Json annotation = Json::object();
+            annotation["id"] = d->annotationId;
+            annotation["image_id"] = d->imageId;
+            annotation["category_id"] = classIndex + 1;
+            annotation["bbox"] = Json::array({pyJson(xMin), pyJson(yMin), pyJson(width), pyJson(height)});
+            annotation["area"] = pyJson(pyMul(width, height));
+            annotation["iscrowd"] = 0;
+            annotation["keypoints"] = std::move(keypoints);
+            annotation["num_keypoints"] = labeled;
+            // Upstream writes the "difficult" of the image's last shape here; the rectangle's
+            // own is meant.
+            annotation["ignore"] = box.difficult;
+            annotation["segmentation"] = Json::array();
+            d->element(d->annotations, d->annotationId, annotation);
+            ++d->annotationId;
+        }
+    } else if (d->format == ExportFormat::CocoDetection) {
         for (const ExportShape& shape : image.shapes) {
             if (shape.type != QLatin1String("rectangle") || !classIds.contains(shape.label))
                 continue;

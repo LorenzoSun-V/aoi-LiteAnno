@@ -15,6 +15,8 @@ add_library(liteanno_formats STATIC
     Importers.h
     MaskContours.cpp
     MaskContours.h
+    PoseConfig.cpp
+    PoseConfig.h
     PolygonRaster.cpp
     PolygonRaster.h
     PngFile.cpp

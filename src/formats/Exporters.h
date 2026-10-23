@@ -6,6 +6,7 @@
 // input. LabelMe and image classification have no upstream converter; see their functions.
 
 #include "formats/AnnotationFile.h"
+#include "formats/PoseConfig.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -36,16 +37,21 @@ enum class ExportFormat {
     Mask,              // polygons filled into a grayscale PNG
     LabelMe,           // every editable shape as a LabelMe file
     Classification,    // image-level labels: a folder per label, or a CSV list
+    YoloPose,          // a rectangle and its keypoints (points of the same group_id) per line
+    CocoPose,          // the same as COCO keypoint annotations
 };
 
 // As the command line names them: "yolo-det", "yolo-seg", "voc", "voc-polygon", "coco-det",
-// "coco-seg", "yolo-obb", "dota", "mask", "labelme", "classify".
+// "coco-seg", "yolo-obb", "dota", "mask", "labelme", "classify", "yolo-pose", "coco-pose".
 QString exportFormatName(ExportFormat format);
 std::optional<ExportFormat> exportFormatFromName(const QString& name);
 QList<ExportFormat> exportFormats();
 // Class numbers come from "classes[].id" of the project file (architecture 11), or from the
 // line numbers of a classes.txt, as X-AnyLabeling takes them.
 bool exportNeedsClassIds(ExportFormat format);
+// Pose formats take their classes and keypoint names from a pose configuration file
+// (PoseConfig), as X-AnyLabeling does; the class number is the class's place in it.
+bool exportNeedsPoseConfig(ExportFormat format);
 
 // A classes.txt: one class name per line, the first numbered 0 (upstream read_lines). Read as
 // UTF-8, a byte order mark dropped; "\n", "\r\n" and "\r" end lines; empty lines at the end
@@ -75,6 +81,7 @@ struct ExportShape {
     QString type;            // "shape_type"; a missing one reads as "polygon"
     QList<std::array<PyNumber, 2>> points;
     int difficult = 0;       // int(shape.get("difficult", False))
+    bool difficultIsTrue = false;  // shape.get("difficult") is True: a JSON true
     std::optional<qint64> groupId;
 };
 
@@ -95,14 +102,20 @@ struct ExportIssue {
 };
 
 // Objects the format cannot hold. An image with any is not exported: no object is dropped
-// and no such image becomes a negative sample (architecture 11).
+// and no such image becomes a negative sample (architecture 11). Pose formats need `pose`:
+// each group_id must have one rectangle of a class it names and points named by that class's
+// keypoints, each at most once.
 QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat format,
-                                       const QHash<QString, int>& classIds);
+                                       const QHash<QString, int>& classIds, const PoseConfig* pose = nullptr);
 // Objects with a point outside the image; the export moves it to the border, as upstream does.
 int clampedShapes(const ExportImage& image, ExportFormat format);
 
 // The YOLO label file of one image; empty for a negative sample. Also YOLO OBB.
 QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash<QString, int>& classIds);
+// The YOLO pose label file of one image (custom_to_yolo, mode "pose"): per group_id in the
+// order of its first shape, the class number, the box and every keypoint of the class
+// ("0 0 0" when not labeled), padded to the most keypoints any class has.
+QByteArray yoloPoseLabels(const ExportImage& image, const PoseConfig& pose);
 // The DOTA label file of one image: "x0 y0 ... x3 y3 label difficult" per rotated box.
 QByteArray dotaLabels(const ExportImage& image);
 // The mask of one image, row by row, `image.width` x `image.height` bytes: each polygon in
@@ -129,8 +142,10 @@ struct CocoInfo {
 class CocoWriter
 {
 public:
-    // `categories`: class id and name, in id order.
-    CocoWriter(ExportFormat format, QList<std::pair<int, QString>> categories, CocoInfo info);
+    // `categories`: class id and name, in id order. CocoPose takes its categories from `pose`
+    // instead, numbered from 1 in its order as upstream numbers them.
+    CocoWriter(ExportFormat format, QList<std::pair<int, QString>> categories, CocoInfo info,
+               const PoseConfig* pose = nullptr);
     ~CocoWriter();
 
     // Both devices are open for writing; `annotations` also for reading.
@@ -138,7 +153,8 @@ public:
     // `fileName` is written as "file_name".
     bool add(const ExportImage& image, const QString& fileName, const QHash<QString, int>& classIds);
     bool finish();
-    // The file name upstream gives the result: coco_detection.json, coco_instance_segmentation.json.
+    // The file name upstream gives the result: coco_detection.json, coco_instance_segmentation.json,
+    // coco_keypoints.json.
     static QString fileName(ExportFormat format);
 
 private:
