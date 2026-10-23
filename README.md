@@ -2,6 +2,8 @@
 
 轻量的图片标注工具，标注文件与 X-AnyLabeling 的 JSON 格式兼容。面向工业检测和安防场景的标注人员：启动快、安装包小，软件内不加载模型。
 
+使用说明（标注人员、现场部署人员、算法工程师）见 [docs/user-manual.md](docs/user-manual.md)。
+
 ## 当前状态
 
 第二个里程碑（单图编辑与可靠保存）已完成。第三步进行中：目录索引和固定批次，目录索引已完成。
@@ -27,6 +29,7 @@
 | `src/dataset` | 图片目录扫描、本机目录索引 |
 | `src/imaging` | 读图、由 Logo 生成 Windows 图标（只在构建界面时编译） |
 | `src/ui` | 桌面程序 |
+| `docs` | 使用手册 |
 | `branding` | 程序 Logo：换成自己的 Logo 见 [branding/README.md](branding/README.md) |
 | `tests` | Qt Test 单元测试、测试数据、与 Python json 模块的字节对照 |
 | `third_party` | 随仓库附带的第三方代码：nlohmann/json 3.12.0（MIT）；构建时下载并校验摘要的 SQLite 3.54.1（公有领域） |
