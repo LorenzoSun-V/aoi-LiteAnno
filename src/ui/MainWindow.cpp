@@ -745,6 +745,11 @@ void MainWindow::showAbout()
 #endif
     text += QStringLiteral(u"</p><p>另含 nlohmann/json（MIT）、OpenCV 的多边形填充代码（Apache-2.0）、SQLite（公有领域）"
                            u"以及 Qt 自带的第三方库。</p>");
+    // The logo of this build (LITEANNO_LOGO), so a replaced one shows here too.
+    auto* logo = new QLabel;
+    logo->setObjectName(QStringLiteral("aboutLogo"));
+    logo->setPixmap(appIcon().pixmap(QSize(64, 64)));
+    layout->addWidget(logo, 0, Qt::AlignHCenter);
     auto* notice = new QLabel(text);
     notice->setWordWrap(true);
     notice->setOpenExternalLinks(true);

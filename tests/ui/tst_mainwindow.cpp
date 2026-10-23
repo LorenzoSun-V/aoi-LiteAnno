@@ -506,6 +506,14 @@ private slots:
         QVERIFY(w.window.openProject(project.data.path()));
         QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
         QVERIFY(!w.window.windowIcon().pixmap(QSize(32, 32)).isNull());
+        // The icon is the build's logo file (LITEANNO_LOGO), at every size a title bar or task
+        // bar asks for.
+        const QList<QSize> sizes = appIcon().availableSizes();
+        for (int size : {16, 24, 32, 48, 64, 128, 256})
+            QVERIFY2(sizes.contains(QSize(size, size)), qPrintable(QString::number(size)));
+        QVERIFY(!logoImage().isNull());
+        QCOMPARE(appIcon().pixmap(QSize(256, 256)).toImage().convertToFormat(QImage::Format_ARGB32).pixelColor(128, 128),
+                 logoImage().scaled(256, 256, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).pixelColor(128, 128));
         w.window.closeProject();
         QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
 

@@ -1,7 +1,8 @@
 #!/bin/sh
-# Renders the icon sources in svg/ and logo.svg to the PNG files the program embeds (the static Qt
-# build has no SVG module). Needs rsvg-convert (librsvg). Run from this folder after
-# changing an icon, and commit the PNG files.
+# Renders the icon sources in svg/ to the PNG files the program embeds (the static Qt build
+# has no SVG module), and the default logo ../../../branding/logo.svg to branding/logo.png.
+# Needs rsvg-convert (librsvg). Run from this folder after changing an icon, and commit the
+# PNG files. A logo of your own needs none of this: see branding/README.md.
 set -e
 render() {  # name colour suffix
     for scale in 1 2; do
@@ -17,8 +18,6 @@ for file in svg/*.svg; do
     render "$name" "#1F6FEB" "-on"
 done
 render check "#FFFFFF" "-white"
-# The program's logo, in its own colours, at the sizes window title bars and task bars use.
-for size in 16 24 32 48 64 128 256; do
-    rsvg-convert -w $size -h $size -o "png/logo-$size.png" logo.svg
-done
+# The default logo, large enough for every icon size (the program scales it).
+rsvg-convert -w 512 -h 512 -o ../../../branding/logo.png ../../../branding/logo.svg
 render delete "#B42318" "-red"

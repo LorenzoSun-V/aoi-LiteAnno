@@ -1,9 +1,12 @@
 #include "ui/Theme.h"
 
+#include "imaging/IconFile.h"
+
 #include <QApplication>
 #include <QFile>
 #include <QFont>
 #include <QPalette>
+#include <QPixmap>
 #include <QStyle>
 #include <QStyleFactory>
 
@@ -69,11 +72,20 @@ QIcon themeIconVariant(const QString& file)
     return icon;
 }
 
+QImage logoImage()
+{
+    return imaging::squareLogo(QImage(QStringLiteral(":/liteanno/logo.png")));
+}
+
 QIcon appIcon()
 {
+    // Scaled to each size here, so one logo file is all a build needs (cmake/LiteAnnoLogo.cmake).
     QIcon icon;
-    for (int size : {16, 24, 32, 48, 64, 128, 256})
-        icon.addFile(QStringLiteral(":/liteanno/icons/logo-%1.png").arg(size), QSize(size, size));
+    const QImage logo = logoImage();
+    for (int size : imaging::windowsIconSizes()) {
+        if (!logo.isNull())
+            icon.addPixmap(QPixmap::fromImage(logo.scaled(size, size, Qt::IgnoreAspectRatio, Qt::SmoothTransformation)));
+    }
     return icon;
 }
 
