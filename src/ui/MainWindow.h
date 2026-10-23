@@ -147,6 +147,9 @@ private:
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;
+    std::optional<QString> askLabel(const QString& suggested);
+    void loadKnownLabels();
+    void addKnownLabel(const QString& label);
     // Shows the batch `stem` (all images when empty), at `preferred` when it is listed.
     void switchBatch(const QString& stem, const QString& preferred);
     // The list for the batch shown, from all images the catalog has.
@@ -259,6 +262,8 @@ private:
     bool latestNameCollision(const QString& imagePath) const;
     bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
+    QStringList m_knownLabels;  // offered when the project has no class list
+    QList<QAction*> m_batchActions;
     QTimer m_idleTimer;
     int m_savingWaits = 0;
     bool m_handlingResults = false;

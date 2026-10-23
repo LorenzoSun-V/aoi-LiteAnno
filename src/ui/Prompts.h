@@ -28,17 +28,27 @@ enum class RecoveryChoice {
     Later,
 };
 
+// What the export dialog starts with.
+struct ExportQuestion {
+    int batchNumber = 0;          // the batch shown, 0 when all images are
+    bool plainFolder = false;     // a folder without a project file: no batches, nothing confirmed
+    bool projectClasses = false;  // the project file numbers its classes
+    QString classesFile;          // preset: classes.txt of the data folder, when there is one
+};
+
 // What "导出…" asks for.
 struct ExportChoice {
     formats::ExportFormat format = formats::ExportFormat::YoloDetection;
     bool wholeProject = true;  // else the batch shown
     QString outputDir;
     bool copyImages = false;
+    QString classesFile;  // empty: the project file's classes
 };
 
 struct Prompts {
-    // The class of a new shape, or nullopt when the user cancelled.
-    std::function<std::optional<QString>(const QStringList& classes, const QString& suggested)> chooseLabel;
+    // The class of a new shape, or nullopt when the user cancelled. `classes` are offered;
+    // with `freeText` any other name may be typed, else one of them must be chosen.
+    std::function<std::optional<QString>(const QStringList& classes, const QString& suggested, bool freeText)> chooseLabel;
     std::function<std::optional<QString>()> skipReason;
     std::function<ExternalChangeChoice(const QString& imagePath)> externalChange;
     // `current` is the annotation file as it is now; empty when it does not exist.
@@ -49,8 +59,8 @@ struct Prompts {
     std::function<bool(const QString& text)> confirmDiscard;
     // One of `batches` ("第 3 批 …"), `current` preselected; nullopt when cancelled.
     std::function<std::optional<int>(const QStringList& batches, int current)> chooseBatch;
-    // The export settings; `batchNumber` is the batch shown, 0 when all images are.
-    std::function<std::optional<ExportChoice>(int batchNumber)> exportOptions;
+    // The export settings.
+    std::function<std::optional<ExportChoice>(const ExportQuestion& question)> exportOptions;
     // Some images hold objects the format cannot take (`text` lists them). True: export the
     // others; the default answer exports nothing.
     std::function<bool(const QString& text)> skipUnconvertible;

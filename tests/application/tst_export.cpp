@@ -78,8 +78,11 @@ struct Project {
     QTemporaryDir data;
     QTemporaryDir out;
 
-    Project()
+    // `plainFolder`: no project file, as X-AnyLabeling opens a folder.
+    explicit Project(bool plainFolder = false)
     {
+        if (plainFolder)
+            return;
         writeFile(data.filePath(QStringLiteral("liteanno/project.json")),
                   R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rectangle", "polygon"], )"
                   R"("classes": [{"id": 0, "name": "scratch"}, {"id": 1, "name": "dent"}], "batchSize": 2})");
@@ -123,6 +126,76 @@ class TestExport : public QObject
     Q_OBJECT
 
 private slots:
+    // A folder without a project file: what is labeled is exported, confirmed or not, with the
+    // class ids of a classes.txt; nothing is written into the folder.
+    void plainFolderExportsWhatIsLabeled()
+    {
+        Project project(true);
+        project.image(QStringLiteral("line1/0001.png"), rectangle("scratch", 10, 10, 60, 50), false);
+        project.image(QStringLiteral("line1/0002.png"), QByteArray(), false);  // opened, nothing drawn
+        project.image(QStringLiteral("line1/0003.png"), rectangle("dent", 1, 1, 9, 9), true);
+        project.image(QStringLiteral("line1/0004.png"), QByteArray(), true);  // confirmed: no objects
+        const QStringList before = filesUnder(project.data.path());
+        const auto session = project.open();
+        QVERIFY(session->isPlainFolder());
+        QVERIFY(session->config().classes.isEmpty());
+        QVERIFY(session->location().projectId.startsWith(QStringLiteral("folder-")));
+        ExportService service(*session, imaging::readImageInfo);
+
+        ExportRequest request;
+        request.outputDir = project.output("none");
+        ExportReport report = service.run(request);
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral("classes.txt")), qPrintable(report.error));
+
+        const QString classes = project.out.filePath(QStringLiteral("classes.txt"));
+        writeFile(classes, "\xEF\xBB\xBF" "dent\r\nscratch\r\n\r\n");
+        request.classesFile = classes;
+        request.outputDir = project.output("yolo");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(report.count(ExportResult::Exported), 2);
+        QCOMPARE(report.count(ExportResult::Negative), 1);
+        QCOMPARE(report.count(ExportResult::NotDone), 1);
+        QVERIFY(readFile(project.output("yolo") + QStringLiteral("/line1/0001.txt")).startsWith("1 "));
+        QVERIFY(readFile(project.output("yolo") + QStringLiteral("/line1/0003.txt")).startsWith("0 "));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/line1/0004.txt")), QByteArray());
+        QVERIFY(!QFile::exists(project.output("yolo") + QStringLiteral("/line1/0002.txt")));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/classes.txt")), QByteArray("dent\nscratch\n"));
+
+        // Upstream's COCO numbering: detection from 1.
+        request.format = formats::ExportFormat::CocoDetection;
+        request.outputDir = project.output("coco");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QJsonObject coco = QJsonDocument::fromJson(readFile(project.output("coco") + QStringLiteral("/coco_detection.json"))).object();
+        QCOMPARE(coco[QStringLiteral("categories")].toArray()[0].toObject()[QStringLiteral("id")].toInt(), 1);
+        QCOMPARE(coco[QStringLiteral("categories")].toArray()[0].toObject()[QStringLiteral("name")].toString(), QStringLiteral("dent"));
+
+        // A label the file does not list cannot be numbered.
+        writeFile(classes, "dent\n");
+        request.format = formats::ExportFormat::YoloDetection;
+        request.outputDir = project.output("missing");
+        report = service.run(request);
+        QVERIFY(!report.written);
+        QCOMPARE(report.unconvertible().size(), 1);
+        QVERIFY2(report.unconvertible()[0].reason.contains(QStringLiteral("scratch")), qPrintable(report.unconvertible()[0].reason));
+
+        QCOMPARE(filesUnder(project.data.path()), before);
+    }
+
+    void classesFileRules()
+    {
+        QCOMPARE(formats::parseClassesFile("a\nb c\n").names, (QStringList{QStringLiteral("a"), QStringLiteral("b c")}));
+        QCOMPARE(formats::parseClassesFile("a\rb").names, (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
+        QCOMPARE(formats::parseClassesFile("\xEF\xBB\xBF\xE5\x88\x92\xE7\x97\x95\n\n\n").names, QStringList{QStringLiteral(u"划痕")});
+        QVERIFY(formats::parseClassesFile("a\n\nb\n").error.contains(QStringLiteral(u"第 2 行")));
+        QVERIFY(formats::parseClassesFile("a\nb\na\n").error.contains(QStringLiteral(u"第 3 行")));
+        QVERIFY(!formats::parseClassesFile("\n\n").error.isEmpty());
+        QVERIFY(!formats::parseClassesFile("\xFF\xFE").error.isEmpty());
+        QVERIFY(!formats::readClassesFile(QStringLiteral("/nonexistent/classes.txt")).error.isEmpty());
+    }
+
     void onlyConfirmedImagesAreExported()
     {
         Project project;

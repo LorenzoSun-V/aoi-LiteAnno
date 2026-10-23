@@ -51,13 +51,11 @@ void printError(const QString& text)
     std::fflush(stderr);
 }
 
-QString openErrorText(const ProjectSession::OpenResult& result, const QString& root)
+QString openErrorText(const ProjectSession::OpenResult& result)
 {
     switch (result.error) {
     case ProjectSession::OpenError::None:
         return QString();
-    case ProjectSession::OpenError::NoProjectFile:
-        return QStringLiteral(u"%1 中没有项目文件 liteanno/project.json；可以先用 init 创建。").arg(root);
     case ProjectSession::OpenError::InvalidProjectFile:
         return QStringLiteral(u"项目文件有错误：%1（%2）").arg(result.field, result.message);
     case ProjectSession::OpenError::LocationUnknown:
@@ -80,7 +78,7 @@ std::unique_ptr<ProjectSession> openProject(const Common& common)
 {
     ProjectSession::OpenResult result = ProjectSession::open(common.root, common.localData);
     if (!result.session)
-        printError(openErrorText(result, common.root));
+        printError(openErrorText(result));
     return std::move(result.session);
 }
 
@@ -265,6 +263,7 @@ int exportProject(const QCommandLineParser& parser, const Common& common)
     request.batches = common.batches;
     request.skipUnconvertible = parser.isSet(QStringLiteral("skip-unconvertible"));
     request.copyImages = parser.isSet(QStringLiteral("copy-images"));
+    request.classesFile = parser.value(QStringLiteral("classes-file"));
     const application::ExportService service(*project, imaging::readImageInfo);
     const application::ExportReport report = service.run(request);
     for (const application::ExportItem& item : report.unconvertible())
@@ -302,7 +301,7 @@ int main(int argc, char* argv[])
         u"  init <数据文件夹>      创建项目文件 liteanno/project.json\n"
         u"  status <数据文件夹>    统计各状态的图片数量\n"
         u"  confirm <数据文件夹>   把满足确认条件的待确认图片标为已确认\n"
-        u"  export <数据文件夹>    导出已确认的图片"));
+        u"  export <数据文件夹>    导出已确认的图片（没有项目文件的文件夹：导出有标注的图片）"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("init | status | confirm | export"));
@@ -319,6 +318,7 @@ int main(int argc, char* argv[])
         {QStringLiteral("out"), QStringLiteral(u"export：导出文件夹，必须是新的或空的"), QStringLiteral("folder")},
         {QStringLiteral("skip-unconvertible"), QStringLiteral(u"export：跳过有无法转换对象的图片，继续导出")},
         {QStringLiteral("copy-images"), QStringLiteral(u"export：同时复制图片")},
+        {QStringLiteral("classes-file"), QStringLiteral(u"export：类别文件 classes.txt，每行一个类别，第一行编号 0"), QStringLiteral("file")},
         {QStringLiteral("local-data"), QStringLiteral(u"本机数据文件夹（测试用）"), QStringLiteral("folder")},
     });
     parser.process(app);

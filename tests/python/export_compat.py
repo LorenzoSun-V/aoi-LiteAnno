@@ -88,9 +88,10 @@ ROTATIONS = {
 }
 
 
-def make_project(cli, root, images, shape_types):
+def make_project(cli, root, images, shape_types, init=True):
     os.makedirs(root)
-    run([cli, "init", root, "--classes", ",".join(CLASSES), "--shape-types", shape_types])
+    if init:
+        run([cli, "init", root, "--classes", ",".join(CLASSES), "--shape-types", shape_types])
     for name, (width, height, shapes, checked, skip) in images.items():
         image = np.zeros((height, width, 3), dtype=np.uint8)
         image[:, :] = (30, 90, 160)
@@ -129,11 +130,13 @@ def exported(manifest_path):
     return [item["image"] for item in manifest["items"] if item["result"] in ("exported", "negative")], manifest
 
 
-def check_manifest(manifest, images):
+def check_manifest(manifest, images, plain=False):
     results = {item["image"]: item["result"] for item in manifest["items"]}
     for name, (_, _, shapes, checked, skip) in images.items():
         if skip:
             expected = "skipped"
+        elif plain and shapes:
+            expected = "exported"  # a folder without a project file: nothing needs confirming
         elif not checked:
             expected = "not-done"
         else:
@@ -148,21 +151,25 @@ def compare_bytes(what, ours, theirs):
                  f"--- upstream ---\n{theirs.decode('utf-8', 'replace')}")
 
 
-def check_yolo(cli, root, work, images, fmt, mode):
-    out = os.path.join(work, fmt)
-    run([cli, "export", root, "--format", fmt, "--out", out])
+def classes_option(classes_file):
+    return ["--classes-file", classes_file] if classes_file else []
+
+
+def check_yolo(cli, root, work, images, fmt, mode, classes_file=None, name=None):
+    out = os.path.join(work, name or fmt)
+    run([cli, "export", root, "--format", fmt, "--out", out] + classes_option(classes_file))
     names, manifest = exported(os.path.join(out, "liteanno-export.json"))
-    check_manifest(manifest, images)
+    check_manifest(manifest, images, plain=bool(classes_file))
     classes_file = os.path.join(out, "classes.txt")
     compare_bytes("classes.txt", read(classes_file), ("\n".join(CLASSES) + "\n").encode())
     converter = LabelConverter(classes_file=classes_file)
-    upstream = os.path.join(work, fmt + "-upstream")
+    upstream = out + "-upstream"
     os.makedirs(upstream)
-    for name in names:
-        stem = os.path.splitext(name)[0]
+    for image in names:
+        stem = os.path.splitext(image)[0]
         converter.custom_to_yolo(os.path.join(root, stem + ".json"), os.path.join(upstream, stem + ".txt"), mode)
         compare_bytes(f"{fmt} {stem}.txt", read(os.path.join(out, stem + ".txt")), read(os.path.join(upstream, stem + ".txt")))
-    print(f"{fmt}: {len(names)} files identical")
+    print(f"{name or fmt}: {len(names)} files identical")
 
 
 def without_folder(xml):
@@ -191,15 +198,16 @@ def check_voc(cli, root, work, images, fmt, mode):
     print(f"{fmt}: {len(names)} files identical")
 
 
-def check_coco(cli, root, work, images, fmt, mode, file_name):
-    out = os.path.join(work, fmt)
-    run([cli, "export", root, "--format", fmt, "--out", out])
+def check_coco(cli, root, work, images, fmt, mode, file_name, plain_classes=None):
+    out = os.path.join(work, fmt + ("-plain" if plain_classes else ""))
+    run([cli, "export", root, "--format", fmt, "--out", out] + classes_option(plain_classes))
     names, manifest = exported(os.path.join(out, "liteanno-export.json"))
-    check_manifest(manifest, images)
-    classes_file = os.path.join(work, fmt + "-classes.txt")
-    with open(classes_file, "w", encoding="utf-8") as f:
-        f.write("\n".join(CLASSES))
-    upstream = os.path.join(work, fmt + "-upstream")
+    check_manifest(manifest, images, plain=bool(plain_classes))
+    classes_file = plain_classes or os.path.join(work, fmt + "-classes.txt")
+    if not plain_classes:
+        with open(classes_file, "w", encoding="utf-8") as f:
+            f.write("\n".join(CLASSES))
+    upstream = out + "-upstream"
     os.makedirs(upstream)
     LabelConverter(classes_file=classes_file).custom_to_coco([os.path.join(root, n) for n in names], root, upstream, mode)
     ours_bytes = read(os.path.join(out, file_name))
@@ -209,18 +217,20 @@ def check_coco(cli, root, work, images, fmt, mode, file_name):
         sys.exit(f"{fmt}: not written as json.dump(indent=4)")
     for key in ("info", "licenses"):
         theirs[key] = ours[key]
-    # The one deliberate difference: category ids are the project's classes[].id (0, 1, 2 here),
-    # where upstream numbers from 1 and adds "_background_" as 0 for segmentation.
-    theirs["categories"] = [dict(c, id=c["id"] - 1) for c in theirs["categories"] if c["name"] != "_background_"]
-    for annotation in theirs["annotations"]:
-        annotation["category_id"] -= 1
-    if [c["id"] for c in ours["categories"]] != list(range(len(CLASSES))):
-        sys.exit(f"{fmt}: category ids {[c['id'] for c in ours['categories']]}")
+    if not plain_classes:
+        # With a project file, category ids are its classes[].id (0, 1, 2 here), where upstream
+        # numbers from 1 and adds "_background_" as 0 for segmentation. With a classes.txt
+        # they are upstream's.
+        theirs["categories"] = [dict(c, id=c["id"] - 1) for c in theirs["categories"] if c["name"] != "_background_"]
+        for annotation in theirs["annotations"]:
+            annotation["category_id"] -= 1
+        if [c["id"] for c in ours["categories"]] != list(range(len(CLASSES))):
+            sys.exit(f"{fmt}: category ids {[c['id'] for c in ours['categories']]}")
     a = json.dumps(ours, indent=4, ensure_ascii=False)
     b = json.dumps(theirs, indent=4, ensure_ascii=False)
     if a != b:
         sys.exit(f"{fmt} differs\n--- ours ---\n{a}\n--- upstream ---\n{b}")
-    print(f"{fmt}: {len(ours['images'])} images, {len(ours['annotations'])} annotations identical")
+    print(f"{os.path.basename(out)}: {len(ours['images'])} images, {len(ours['annotations'])} annotations identical")
 
 
 def check_obb_and_dota(cli, root, work, images):
@@ -331,6 +341,21 @@ def main():
     check_mask(cli, polygons, work, POLYGONS)
     check_labelme(cli, rectangles, work, RECTANGLES, "labelme-rectangles")
     check_labelme(cli, rotations, work, ROTATIONS, "labelme-rotations")
+
+    # A plain image folder, as X-AnyLabeling opens one: no project file, the class ids from a
+    # classes.txt, and the files the same as upstream's, COCO ids included.
+    classes_txt = os.path.join(work, "classes.txt")
+    with open(classes_txt, "w", encoding="utf-8") as f:
+        f.write("\n".join(CLASSES) + "\n")
+    plain_rectangles = os.path.join(work, "plain-rectangles")
+    plain_polygons = os.path.join(work, "plain-polygons")
+    make_project(cli, plain_rectangles, RECTANGLES, None, init=False)
+    make_project(cli, plain_polygons, POLYGONS, None, init=False)
+    check_yolo(cli, plain_rectangles, work, RECTANGLES, "yolo-det", "hbb", classes_txt, "yolo-det-plain")
+    check_coco(cli, plain_rectangles, work, RECTANGLES, "coco-det", "rectangle", "coco_detection.json", classes_txt)
+    check_coco(cli, plain_polygons, work, POLYGONS, "coco-seg", "polygon", "coco_instance_segmentation.json", classes_txt)
+    if os.path.exists(os.path.join(plain_rectangles, "liteanno")):
+        sys.exit("exporting a plain folder wrote into it")
 
     # Polygons cannot go into a detection export: nothing is written unless asked to skip.
     out = os.path.join(work, "refused")

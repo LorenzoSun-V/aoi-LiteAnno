@@ -481,8 +481,18 @@ private slots:
         QTemporaryDir local;
         QTemporaryDir data;
         const LocalDataPaths paths(local.path());
+        // Without a project file the folder opens as a plain image folder, and nothing is
+        // written into it.
         ProjectSession::OpenResult result = ProjectSession::open(data.path(), paths);
-        QCOMPARE(openErrorName(result.error), "no-project-file");
+        QVERIFY2(result.session, qPrintable(result.message));
+        QVERIFY(result.session->isPlainFolder());
+        QCOMPARE(result.session->location().projectId, QStringLiteral("folder-") + result.session->location().bindingId);
+        QCOMPARE(result.session->config().shapeTypes.size(), 7);
+        QVERIFY(result.session->config().classes.isEmpty());
+        QVERIFY(QDir(data.path()).isEmpty());
+        result.session.reset();
+        // A folder that does not exist is not one.
+        QCOMPARE(openErrorName(ProjectSession::open(data.filePath(QStringLiteral("gone")), paths).error), "location-unknown");
 
         writeFile(data.filePath(QStringLiteral("liteanno/project.json")),
                   R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "batchSize": 0})");

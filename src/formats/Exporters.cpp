@@ -6,8 +6,11 @@
 #include "formats/JsonText.h"
 #include "formats/PolygonRaster.h"
 
+#include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QSet>
+#include <QStringDecoder>
 
 #include <algorithm>
 #include <charconv>
@@ -417,11 +420,59 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
             // Fields are split on white space (upstream dota_to_custom): the name would change.
             reason = QStringLiteral(u"类别名“%1”含空白字符，DOTA 格式无法表示").arg(shape.label);
         else if (exportNeedsClassIds(format) && !classIds.contains(shape.label))
-            reason = QStringLiteral(u"类别“%1”不在项目的类别列表中").arg(shape.label);
+            reason = QStringLiteral(u"类别“%1”不在类别列表中").arg(shape.label);
         if (!reason.isEmpty())
             issues.append({i, reason});
     }
     return issues;
+}
+
+ClassesFile parseClassesFile(const QByteArray& bytes)
+{
+    ClassesFile result;
+    QByteArray data = bytes;
+    if (data.startsWith("\xEF\xBB\xBF"))
+        data.remove(0, 3);
+    QStringDecoder decoder(QStringDecoder::Utf8);
+    QString text = decoder(data);
+    if (decoder.hasError()) {
+        result.error = QStringLiteral(u"不是 UTF-8 编码的文本文件");
+        return result;
+    }
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    QStringList lines = text.split(QLatin1Char('\n'));
+    while (!lines.isEmpty() && lines.last().isEmpty())
+        lines.removeLast();
+    if (lines.isEmpty()) {
+        result.error = QStringLiteral(u"文件里没有类别");
+        return result;
+    }
+    QSet<QString> seen;
+    for (qsizetype i = 0; i < lines.size(); ++i) {
+        if (lines[i].isEmpty()) {
+            result.error = QStringLiteral(u"第 %1 行是空行").arg(i + 1);
+            return result;
+        }
+        if (seen.contains(lines[i])) {
+            result.error = QStringLiteral(u"第 %1 行的类别“%2”重复了").arg(i + 1).arg(lines[i]);
+            return result;
+        }
+        seen.insert(lines[i]);
+    }
+    result.names = lines;
+    return result;
+}
+
+ClassesFile readClassesFile(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        ClassesFile result;
+        result.error = QStringLiteral(u"无法读取：%1").arg(file.errorString());
+        return result;
+    }
+    return parseClassesFile(file.readAll());
 }
 
 int clampedShapes(const ExportImage& image, ExportFormat format)

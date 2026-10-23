@@ -34,25 +34,58 @@ QPlainTextEdit* jsonView(const QString& text)
     return view;
 }
 
-std::optional<ExportChoice> askExportOptions(QWidget* parent, int batchNumber)
+std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuestion& question)
 {
     QDialog dialog(parent);
     dialog.setWindowTitle(QStringLiteral(u"导出"));
     auto* layout = new QVBoxLayout(&dialog);
     auto* form = new QFormLayout;
     auto* format = new QComboBox;
-    for (formats::ExportFormat f : formats::exportFormats())
+    for (formats::ExportFormat f : formats::exportFormats()) {
+        if (f == formats::ExportFormat::Classification && question.plainFolder)
+            continue;  // image-level labels are set up in a project file
         format->addItem(exportFormatText(f), int(f));
+    }
     form->addRow(QStringLiteral(u"格式："), format);
+    const int batchNumber = question.batchNumber;
     auto* batch = new QRadioButton(batchNumber > 0 ? QStringLiteral(u"当前批次（第 %1 批）").arg(batchNumber)
                                                    : QStringLiteral(u"当前批次"));
-    auto* project = new QRadioButton(QStringLiteral(u"整个项目"));
+    auto* project = new QRadioButton(question.plainFolder ? QStringLiteral(u"整个文件夹") : QStringLiteral(u"整个项目"));
     batch->setEnabled(batchNumber > 0);
     (batchNumber > 0 ? batch : project)->setChecked(true);
-    auto* scope = new QVBoxLayout;
-    scope->addWidget(batch);
-    scope->addWidget(project);
-    form->addRow(QStringLiteral(u"范围："), scope);
+    if (!question.plainFolder) {
+        auto* scope = new QVBoxLayout;
+        scope->addWidget(batch);
+        scope->addWidget(project);
+        form->addRow(QStringLiteral(u"范围："), scope);
+    }
+
+    // Formats with class numbers take them from a classes.txt, as X-AnyLabeling does.
+    auto* classes = new QLineEdit(question.classesFile);
+    classes->setObjectName(QStringLiteral("classesFile"));
+    if (question.projectClasses)
+        classes->setPlaceholderText(QStringLiteral(u"不选：用项目文件里的类别编号"));
+    auto* browseClasses = new QPushButton(QStringLiteral(u"选择…"));
+    QObject::connect(browseClasses, &QPushButton::clicked, &dialog, [&dialog, classes] {
+        const QString chosen = QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择类别文件"), classes->text(),
+                                                            QStringLiteral(u"类别文件 (*.txt);;所有文件 (*)"));
+        if (!chosen.isEmpty())
+            classes->setText(chosen);
+    });
+    auto* classesRow = new QHBoxLayout;
+    classesRow->addWidget(classes, 1);
+    classesRow->addWidget(browseClasses);
+    form->addRow(QStringLiteral(u"类别文件："), classesRow);
+    const auto needsClasses = [format] {
+        return formats::exportNeedsClassIds(formats::ExportFormat(format->currentData().toInt()));
+    };
+    const auto updateClasses = [=] {
+        classes->setEnabled(needsClasses());
+        browseClasses->setEnabled(needsClasses());
+    };
+    QObject::connect(format, &QComboBox::currentIndexChanged, &dialog, updateClasses);
+    updateClasses();
+
     auto* folder = new QLineEdit;
     auto* browse = new QPushButton(QStringLiteral(u"选择…"));
     QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, folder] {
@@ -67,12 +100,20 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, int batchNumber)
     auto* copy = new QCheckBox(QStringLiteral(u"同时复制图片"));
     form->addRow(QString(), copy);
     layout->addLayout(form);
-    auto* note = new QLabel(QStringLiteral(u"只导出已确认的图片；导出文件夹必须是空文件夹或新文件夹，并且不能在数据文件夹里。"));
+    auto* note = new QLabel(question.plainFolder
+                                ? QStringLiteral(u"导出有标注的图片（跳过的图片除外）；YOLO、COCO、掩膜的类别编号按类别文件的行号，第一行是 0。"
+                                                 u"导出文件夹必须是空文件夹或新文件夹，并且不能在数据文件夹里。")
+                                : QStringLiteral(u"只导出已确认的图片；导出文件夹必须是空文件夹或新文件夹，并且不能在数据文件夹里。"));
     note->setWordWrap(true);
     layout->addWidget(note);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral(u"导出"));
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, folder] {
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, &question, folder, classes, needsClasses] {
+        if (needsClasses() && !question.projectClasses && classes->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral(u"导出"),
+                                 QStringLiteral(u"这个格式需要类别编号，请选择类别文件（classes.txt，每行一个类别）。"));
+            return;
+        }
         if (folder->text().trimmed().isEmpty()) {
             QMessageBox::warning(&dialog, QStringLiteral(u"导出"), QStringLiteral(u"请选择导出文件夹。"));
             return;
@@ -88,6 +129,8 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, int batchNumber)
     choice.wholeProject = project->isChecked();
     choice.outputDir = folder->text().trimmed();
     choice.copyImages = copy->isChecked();
+    if (needsClasses())
+        choice.classesFile = classes->text().trimmed();
     return choice;
 }
 
@@ -161,12 +204,20 @@ RecoveryChoice askRecovery(QWidget* parent, const application::RecoveryCandidate
 Prompts Prompts::dialogs(QWidget* parent)
 {
     Prompts prompts;
-    prompts.chooseLabel = [parent](const QStringList& classes, const QString& suggested) -> std::optional<QString> {
+    prompts.chooseLabel = [parent](const QStringList& classes, const QString& suggested,
+                                   bool freeText) -> std::optional<QString> {
         bool ok = false;
         QString label;
         if (classes.isEmpty()) {
             label = QInputDialog::getText(parent, QStringLiteral(u"类别"), QStringLiteral(u"类别名称："), QLineEdit::Normal,
                                           suggested, &ok);
+        } else if (freeText) {
+            // The names used so far are offered; a new one is typed in.
+            QStringList offered = classes;
+            if (!suggested.isEmpty() && !offered.contains(suggested))
+                offered.prepend(suggested);
+            label = QInputDialog::getItem(parent, QStringLiteral(u"类别"), QStringLiteral(u"类别名称（可选择或输入）："), offered,
+                                          std::max<qsizetype>(0, offered.indexOf(suggested)), true, &ok);
         } else {
             label = QInputDialog::getItem(parent, QStringLiteral(u"类别"), QStringLiteral(u"选择类别："), classes,
                                           std::max<qsizetype>(0, classes.indexOf(suggested)), false, &ok);
@@ -215,7 +266,7 @@ Prompts Prompts::dialogs(QWidget* parent)
         box.exec();
         return box.clickedButton() != stay;
     };
-    prompts.exportOptions = [parent](int batchNumber) { return askExportOptions(parent, batchNumber); };
+    prompts.exportOptions = [parent](const ExportQuestion& question) { return askExportOptions(parent, question); };
     prompts.skipUnconvertible = [parent](const QString& text) {
         QMessageBox box(QMessageBox::Warning, QStringLiteral(u"有无法转换的对象"), text, QMessageBox::NoButton, parent);
         QPushButton* stop = box.addButton(QStringLiteral(u"不导出"), QMessageBox::RejectRole);

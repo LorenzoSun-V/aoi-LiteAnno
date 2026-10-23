@@ -11,6 +11,7 @@
 #include <QHash>
 #include <QList>
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <memory>
@@ -42,8 +43,21 @@ enum class ExportFormat {
 QString exportFormatName(ExportFormat format);
 std::optional<ExportFormat> exportFormatFromName(const QString& name);
 QList<ExportFormat> exportFormats();
-// Class numbers come from "classes[].id" of the project file (architecture 11).
+// Class numbers come from "classes[].id" of the project file (architecture 11), or from the
+// line numbers of a classes.txt, as X-AnyLabeling takes them.
 bool exportNeedsClassIds(ExportFormat format);
+
+// A classes.txt: one class name per line, the first numbered 0 (upstream read_lines). Read as
+// UTF-8, a byte order mark dropped; "\n", "\r\n" and "\r" end lines; empty lines at the end
+// are ignored. Names are taken as written, spaces included, since labels are compared as they
+// are. An empty line between names, a repeated name or no name at all is an error: the
+// numbers would not be what the file seems to say.
+struct ClassesFile {
+    QStringList names;
+    QString error;  // empty when names were read
+};
+ClassesFile readClassesFile(const QString& path);
+ClassesFile parseClassesFile(const QByteArray& bytes);
 
 // A number as Python's json module reads it. An int stays an int through min, max and
 // subtraction, and X-AnyLabeling then writes "0" where a float would be "0.0".

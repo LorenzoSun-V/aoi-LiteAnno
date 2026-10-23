@@ -309,24 +309,51 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     const bool singleChoice = config.imageLabels.mode == ImageLabelMode::Single;
     QHash<QString, int> classIds;
     QList<std::pair<int, QString>> categories;
-    for (const ClassDef& c : config.classes) {
-        classIds.insert(c.name, c.id);
-        categories.append({c.id, c.name});
+    if (!request.classesFile.isEmpty()) {
+        const formats::ClassesFile read = formats::readClassesFile(request.classesFile);
+        if (!read.error.isEmpty()) {
+            report.error = QStringLiteral(u"类别文件 %1 不能用：%2").arg(QDir::toNativeSeparators(request.classesFile), read.error);
+            return report;
+        }
+        // Upstream custom_to_coco: detection ids from 1; segmentation drops a first
+        // "__ignore__" and puts "_background_" first, numbered from 0.
+        QStringList names = read.names;
+        int first = 0;
+        if (format == ExportFormat::CocoDetection) {
+            first = 1;
+        } else if (format == ExportFormat::CocoSegmentation) {
+            if (names.first() == QLatin1String("__ignore__"))
+                names.removeFirst();
+            if (names.isEmpty() || names.first() != QLatin1String("_background_"))
+                names.prepend(QStringLiteral("_background_"));
+        }
+        for (qsizetype i = 0; i < names.size(); ++i) {
+            classIds.insert(names[i], first + int(i));
+            categories.append({first + int(i), names[i]});
+        }
+    } else {
+        for (const ClassDef& c : config.classes) {
+            classIds.insert(c.name, c.id);
+            categories.append({c.id, c.name});
+        }
+        std::sort(categories.begin(), categories.end());
     }
-    std::sort(categories.begin(), categories.end());
     if (formats::exportNeedsClassIds(format) && classIds.isEmpty()) {
-        report.error = QStringLiteral(u"项目文件没有类别列表（classes），%1 需要类别编号。").arg(formats::exportFormatName(format));
+        report.error = m_project.isPlainFolder()
+                           ? QStringLiteral(u"%1 需要类别编号，请选择类别文件（classes.txt）。").arg(formats::exportFormatName(format))
+                           : QStringLiteral(u"项目文件没有类别列表（classes），%1 需要类别编号；也可以选择类别文件（classes.txt）。")
+                                 .arg(formats::exportFormatName(format));
         return report;
     }
     // Masks: background 0, each class its id + 1 (written to mask_colors.json).
     QHash<QString, int> maskValues;
     if (format == ExportFormat::Mask) {
-        for (const ClassDef& c : config.classes) {
-            if (c.id < 0 || c.id > 254) {
-                report.error = QStringLiteral(u"掩膜的像素值是类别编号加 1，类别“%1”的编号 %2 超出了 0–254。").arg(c.name).arg(c.id);
+        for (const auto& [id, name] : std::as_const(categories)) {
+            if (id < 0 || id > 254) {
+                report.error = QStringLiteral(u"掩膜的像素值是类别编号加 1，类别“%1”的编号 %2 超出了 0–254。").arg(name).arg(id);
                 return report;
             }
-            maskValues.insert(c.name, c.id + 1);
+            maskValues.insert(name, id + 1);
         }
     }
 
@@ -352,6 +379,11 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         }
     }
 
+    // A plain folder is labeled as in X-AnyLabeling, where nothing is confirmed: what its
+    // annotation files hold is exported. Images without one stay out (not negatives).
+    const auto exportable = [plain = m_project.isPlainFolder()](AnnotationStatus status) {
+        return status == AnnotationStatus::Confirmed || (plain && status == AnnotationStatus::PendingConfirmation);
+    };
     int done = 0;
     int total = 0;
     const auto step = [&]() { return !progress || progress(done, total); };
@@ -383,7 +415,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         } else if (image.status == AnnotationStatus::Skipped) {
             item.result = ExportResult::Skipped;
             item.reason = image.annotation->file.document().review().skipReason;
-        } else if (image.status != AnnotationStatus::Confirmed) {
+        } else if (!exportable(image.status)) {
             item.reason = notDoneReason(image.status);
         } else if (classification) {
             const AnnotationDocument& document = image.annotation->file.document();
@@ -439,7 +471,8 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
         return report;
     }
     if (report.count(ExportResult::Exported) + report.count(ExportResult::Negative) == 0) {
-        report.error = QStringLiteral(u"没有已确认的图片可以导出。");
+        report.error = m_project.isPlainFolder() ? QStringLiteral(u"没有标注好的图片可以导出。")
+                                                 : QStringLiteral(u"没有已确认的图片可以导出。");
         return report;
     }
 
@@ -485,7 +518,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             if (!image.annotation || image.annotation->stamp.digest != first.digest)
                 return fail(QStringLiteral(u"导出过程中 %1 的标注文件被修改了，请重新导出。").arg(item.image));
             const formats::ExportImage shapes = formats::exportImageOf(item.image, image.bytes, image.annotation->file);
-            if (image.status != AnnotationStatus::Confirmed || shapes.width != first.width || shapes.height != first.height)
+            if (!exportable(image.status) || shapes.width != first.width || shapes.height != first.height)
                 return fail(QStringLiteral(u"导出过程中 %1 的图片变了（%2），请重新导出。")
                                 .arg(item.image, annotationStatusText(image.status)));
             const QString stem = output + QLatin1Char('/') + stemPath(item.image);
