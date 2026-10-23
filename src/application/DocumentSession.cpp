@@ -48,6 +48,16 @@ qsizetype DocumentSession::addShape(const Shape& shape)
     return index;
 }
 
+qsizetype DocumentSession::addKeypoint(const Shape& point)
+{
+    qsizetype index = -1;
+    edit([&](AnnotationDocument& document) {
+        index = document.addKeypoint(point);
+        return index >= 0;
+    });
+    return index;
+}
+
 bool DocumentSession::setShapePoints(qsizetype index, const PointList& points)
 {
     return edit([&](AnnotationDocument& document) { return document.setShapePoints(index, points); });
@@ -56,6 +66,11 @@ bool DocumentSession::setShapePoints(qsizetype index, const PointList& points)
 bool DocumentSession::setShapeRotation(qsizetype index, const RotatedBox& box)
 {
     return edit([&](AnnotationDocument& document) { return document.setShapeRotation(index, box); });
+}
+
+bool DocumentSession::setShapeGroupId(qsizetype index, std::optional<qint64> groupId)
+{
+    return edit([&](AnnotationDocument& document) { return document.setShapeGroupId(index, groupId); });
 }
 
 bool DocumentSession::setShapeLabel(qsizetype index, const QString& label)

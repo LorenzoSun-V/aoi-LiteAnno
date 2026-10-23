@@ -5,6 +5,7 @@
 #include <QGridLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QRegularExpressionValidator>
 #include <QSignalBlocker>
 #include <QWheelEvent>
 
@@ -79,6 +80,15 @@ ShapeForm::ShapeForm(QWidget* parent)
     grid->addWidget(caption(QStringLiteral(u"形状类型")), 2, 0);
     grid->addWidget(m_type, 2, 1, 1, 2);
 
+    m_group = new QLineEdit;
+    m_group->setObjectName(QStringLiteral("shapeGroup"));
+    m_group->setPlaceholderText(QStringLiteral(u"无"));
+    m_group->setToolTip(QStringLiteral(u"同一个目标的矩形和关键点填同一个组号（姿态导出按组号配对）"));
+    m_group->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[0-9]{0,15}")), m_group));
+    grid->addWidget(caption(QStringLiteral(u"组号")), 3, 0);
+    grid->addWidget(m_group, 3, 1, 1, 2);
+    connect(m_group, &QLineEdit::editingFinished, this, [this] { commitGroup(); });
+
     m_x = new NumberField;
     m_y = new NumberField;
     m_width = new NumberField;
@@ -87,18 +97,18 @@ ShapeForm::ShapeForm(QWidget* parent)
     m_y->setObjectName(QStringLiteral("shapeY"));
     m_width->setObjectName(QStringLiteral("shapeWidth"));
     m_height->setObjectName(QStringLiteral("shapeHeight"));
-    grid->addWidget(caption(QStringLiteral(u"位置 (x, y)")), 3, 0);
-    grid->addWidget(m_x, 3, 1);
-    grid->addWidget(m_y, 3, 2);
-    grid->addWidget(caption(QStringLiteral(u"尺寸 (w, h)")), 4, 0);
-    grid->addWidget(m_width, 4, 1);
-    grid->addWidget(m_height, 4, 2);
+    grid->addWidget(caption(QStringLiteral(u"位置 (x, y)")), 4, 0);
+    grid->addWidget(m_x, 4, 1);
+    grid->addWidget(m_y, 4, 2);
+    grid->addWidget(caption(QStringLiteral(u"尺寸 (w, h)")), 5, 0);
+    grid->addWidget(m_width, 5, 1);
+    grid->addWidget(m_height, 5, 2);
     for (QDoubleSpinBox* field : {m_x, m_y, m_width, m_height})
         connect(field, &QDoubleSpinBox::valueChanged, this, [this, field] { numberEdited(field); });
 
     m_note = caption(QString());
     m_note->setWordWrap(true);
-    grid->addWidget(m_note, 5, 0, 1, 3);
+    grid->addWidget(m_note, 6, 0, 1, 3);
     setVisible(false);
 }
 
@@ -130,6 +140,9 @@ void ShapeForm::setShape(const Shown& shown)
     }
     m_label->setEnabled(shown.editable);
     m_type->setText(shown.type);
+    if (!(same && m_group->hasFocus()))
+        m_group->setText(shown.groupId ? QString::number(*shown.groupId) : QString());
+    m_group->setEnabled(shown.editable);
 
     const double width = shown.imageSize.width();
     const double height = shown.imageSize.height();
@@ -156,6 +169,18 @@ void ShapeForm::commitPending()
     }
     if (m_shown.freeText && m_label->hasFocus())
         commitLabel(m_label->currentText(), true);
+    if (m_group->hasFocus())
+        commitGroup();
+}
+
+void ShapeForm::commitGroup()
+{
+    if (m_shown.index < 0 || !m_shown.editable)
+        return;
+    const QString text = m_group->text();
+    const std::optional<qint64> group = text.isEmpty() ? std::nullopt : std::optional<qint64>(text.toLongLong());
+    if (group != m_shown.groupId)
+        emit groupChosen(group);
 }
 
 void ShapeForm::numberEdited(QDoubleSpinBox* field)

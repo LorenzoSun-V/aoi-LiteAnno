@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace liteanno {
@@ -75,6 +76,54 @@ bool AnnotationDocument::setShapeGroupId(qsizetype index, std::optional<qint64> 
     m_shapes[index].groupId = groupId;
     contentEdited();
     return true;
+}
+
+qsizetype AnnotationDocument::addKeypoint(Shape point)
+{
+    qsizetype rectangle = -1;
+    double smallest = 0;
+    if (point.type == ShapeType::Point && point.points.size() == 1 && !point.groupId) {
+        const QPointF at = point.points.front();
+        for (qsizetype i = 0; i < m_shapes.size(); ++i) {
+            const Shape& shape = m_shapes[i];
+            if (shape.kind != ShapeKind::Editable || shape.type != ShapeType::Rectangle || shape.points.isEmpty()
+                || (!shape.groupId && shape.locked)) {
+                continue;
+            }
+            double left = shape.points[0].x(), right = left, top = shape.points[0].y(), bottom = top;
+            for (const QPointF& p : shape.points) {
+                left = std::min(left, p.x());
+                right = std::max(right, p.x());
+                top = std::min(top, p.y());
+                bottom = std::max(bottom, p.y());
+            }
+            const double area = (right - left) * (bottom - top);
+            if (at.x() >= left && at.x() <= right && at.y() >= top && at.y() <= bottom
+                && (rectangle < 0 || area < smallest)) {
+                rectangle = i;
+                smallest = area;
+            }
+        }
+    }
+    if (rectangle < 0)
+        return addShape(std::move(point));
+
+    std::optional<qint64> group = m_shapes[rectangle].groupId;
+    if (!group) {
+        qint64 next = 0;
+        for (const Shape& shape : m_shapes) {
+            if (shape.groupId && *shape.groupId < std::numeric_limits<qint64>::max())
+                next = std::max(next, *shape.groupId + 1);
+        }
+        group = next;
+    }
+    point.groupId = group;
+    const std::optional<qint64> before = m_shapes[rectangle].groupId;
+    m_shapes[rectangle].groupId = group;
+    const qsizetype index = addShape(std::move(point));
+    if (index < 0)
+        m_shapes[rectangle].groupId = before;
+    return index;
 }
 
 qsizetype AnnotationDocument::addShape(Shape shape)

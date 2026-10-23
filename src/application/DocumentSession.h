@@ -43,9 +43,11 @@ public:
     // Edits. Each one that changes something becomes one undo step; read-only documents
     // refuse all of them.
     qsizetype addShape(const Shape& shape);
+    qsizetype addKeypoint(const Shape& point);  // AnnotationDocument::addKeypoint
     bool setShapePoints(qsizetype index, const PointList& points);
     bool setShapeRotation(qsizetype index, const RotatedBox& box);
     bool setShapeLabel(qsizetype index, const QString& label);
+    bool setShapeGroupId(qsizetype index, std::optional<qint64> groupId);
     bool removeShape(qsizetype index);
     bool setImageLabel(const QString& name, bool value);
     // Single choice: selects `name` and clears the other configured options in one step.
