@@ -499,7 +499,7 @@ void MainWindow::buildUi()
     m_selectTool = tool(u"选择", "edit_polygon", "select", "Ctrl+J");
     m_rectangleTool = tool(u"矩形", "create_rectangle", "rectangle", "R");
     m_polygonTool = tool(u"多边形", "create_polygon", "polygon", "P");
-    m_rotationTool = tool(u"旋转框", "create_rotation", "rotation", "O", u"旋转框 (O)：拖出后选中，按 Z/V 转 1°，X/C 转 0.1°");
+    m_rotationTool = tool(u"旋转框", "create_rotation", "rotation", "O", u"旋转框 (O)：点两个角或拖出；选中后按 Z/V 转 1°，X/C 转 0.1°");
     const struct {
         const char16_t* text;
         const char* name;

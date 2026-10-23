@@ -91,7 +91,7 @@ void Canvas::setTool(Tool tool)
 {
     cancelDrawing();
     m_tool = tool;
-    setCursor(tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+    updateCursor();
     update();
 }
 
@@ -353,8 +353,43 @@ int Canvas::vertexAt(qsizetype shape, const QPointF& widgetPoint) const
 void Canvas::cancelDrawing()
 {
     m_polygonPoints.clear();
+    m_clickStart.reset();
     m_drag = Drag::None;
+    updateCursor();
     update();
+}
+
+void Canvas::updateCursor()
+{
+    // As in X-AnyLabeling: an open hand while Space is held, a closed one while panning.
+    if (m_drag == Drag::Pan)
+        setCursor(Qt::ClosedHandCursor);
+    else if (m_spaceHeld)
+        setCursor(Qt::OpenHandCursor);
+    else
+        setCursor(m_tool == Tool::Select ? Qt::ArrowCursor : Qt::CrossCursor);
+}
+
+bool Canvas::finishBox(const QPointF& start, const QPointF& end)
+{
+    if (m_tool == Tool::Line || m_tool == Tool::Circle) {
+        // Lines and circles need only some length.
+        if (distance(start, end) * m_scale < 2)
+            return false;
+        Shape shape;
+        shape.type = m_tool == Tool::Line ? ShapeType::Line : ShapeType::Circle;
+        shape.points = {start, end};
+        emit shapeDrawn(shape);
+        return true;
+    }
+    if (std::abs(end.x() - start.x()) * m_scale < 2 || std::abs(end.y() - start.y()) * m_scale < 2)
+        return false;
+    // A new rotated box starts upright with angle 0, as upstream draws it.
+    Shape shape;
+    shape.type = m_tool == Tool::Rotation ? ShapeType::Rotation : ShapeType::Rectangle;
+    shape.points = canonicalRectangle({start, end});
+    emit shapeDrawn(shape);
+    return true;
 }
 
 void Canvas::finishPolygon()
@@ -384,6 +419,7 @@ void Canvas::mousePressEvent(QMouseEvent* event)
         m_drag = Drag::Pan;
         m_panStart = widgetPoint;
         m_panButton = event->button();
+        updateCursor();
         return;
     }
     if (event->button() != Qt::LeftButton || m_image.isNull())
@@ -394,8 +430,17 @@ void Canvas::mousePressEvent(QMouseEvent* event)
     case Tool::Rotation:
     case Tool::Line:
     case Tool::Circle:
-        if (!m_readOnly)
-            m_drag = Drag::DrawRectangle;
+        if (m_readOnly)
+            break;
+        // Clicked corners, as upstream: the second click ends what the first one began.
+        if (m_clickStart) {
+            if (finishBox(*m_clickStart, clampToImage(m_pressImage))) {
+                m_clickStart.reset();
+                update();
+            }
+            break;
+        }
+        m_drag = Drag::DrawRectangle;
         break;
     case Tool::Point:
         if (!m_readOnly) {
@@ -514,13 +559,14 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
     // A right click that did not pan: the shape under it is selected and its menu asked for,
     // as in X-AnyLabeling. Not while a shape is being drawn.
     if (drag == Drag::Pan && m_panButton == Qt::RightButton && event->button() == Qt::RightButton
-        && distance(event->position(), m_panStart) <= kClickDistance && m_polygonPoints.isEmpty()
+        && distance(event->position(), m_panStart) <= kClickDistance && m_polygonPoints.isEmpty() && !m_clickStart
         && !m_image.isNull()) {
         const qsizetype hit = shapeAt(widgetToImage(event->position()));
         if (hit != m_selected) {
             m_selected = hit;
             emit selectionChanged(hit);
         }
+        updateCursor();  // the pan that was not one is over
         update();
         emit contextMenuRequested(event->globalPosition().toPoint());
         return;
@@ -529,25 +575,17 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
     case Drag::DrawRectangle: {
         const QPointF end = clampToImage(widgetToImage(event->position()));
         const QPointF start = clampToImage(m_pressImage);
-        if (m_tool == Tool::Line || m_tool == Tool::Circle) {
-            // Lines and circles need only some length.
-            if (distance(start, end) * m_scale >= 2) {
-                Shape shape;
-                shape.type = m_tool == Tool::Line ? ShapeType::Line : ShapeType::Circle;
-                shape.points = {start, end};
-                emit shapeDrawn(shape);
-            }
-            break;
-        }
-        if (std::abs(end.x() - start.x()) * m_scale >= 2 && std::abs(end.y() - start.y()) * m_scale >= 2) {
-            // A new rotated box starts upright with angle 0, as upstream draws it.
-            Shape shape;
-            shape.type = m_tool == Tool::Rotation ? ShapeType::Rotation : ShapeType::Rectangle;
-            shape.points = canonicalRectangle({start, end});
-            emit shapeDrawn(shape);
-        }
+        // Released where it was pressed: a click, so the next click sets the other corner.
+        // Otherwise the drag drew it.
+        if (distance(event->position(), m_pressWidget) <= kClickDistance)
+            m_clickStart = start;
+        else
+            finishBox(start, end);
         break;
     }
+    case Drag::Pan:
+        updateCursor();
+        break;
     case Drag::MoveShape:
     case Drag::MoveVertex: {
         const PointList points = m_dragPoints;
@@ -575,6 +613,11 @@ void Canvas::mouseDoubleClickEvent(QMouseEvent* event)
 {
     if (event->button() != Qt::LeftButton)
         return;
+    // Qt sends a quick second click as a double click: for clicked corners it is a click.
+    if (m_tool == Tool::Rectangle || m_tool == Tool::Rotation || m_tool == Tool::Line || m_tool == Tool::Circle) {
+        mousePressEvent(event);
+        return;
+    }
     if (clicksPoints()) {
         // The double click's first press already added its point.
         finishPolygon();
@@ -613,8 +656,10 @@ void Canvas::keyPressEvent(QKeyEvent* event)
         return;
     switch (event->key()) {
     case Qt::Key_Space:
-        if (!event->isAutoRepeat())
+        if (!event->isAutoRepeat()) {
             m_spaceHeld = true;
+            updateCursor();
+        }
         return;
     case Qt::Key_Left:
     case Qt::Key_Right:
@@ -639,7 +684,7 @@ void Canvas::keyPressEvent(QKeyEvent* event)
         }
         break;
     case Qt::Key_Escape:
-        if (!m_polygonPoints.isEmpty() || m_drag != Drag::None)
+        if (!m_polygonPoints.isEmpty() || m_clickStart || m_drag != Drag::None)
             cancelDrawing();
         else if (m_selected >= 0) {
             m_selected = -1;
@@ -674,6 +719,7 @@ void Canvas::keyReleaseEvent(QKeyEvent* event)
 {
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = false;
+        updateCursor();
         return;
     }
     QWidget::keyReleaseEvent(event);
@@ -682,6 +728,7 @@ void Canvas::keyReleaseEvent(QKeyEvent* event)
 void Canvas::focusOutEvent(QFocusEvent* event)
 {
     m_spaceHeld = false;
+    updateCursor();
     QWidget::focusOutEvent(event);
 }
 
@@ -801,8 +848,8 @@ void Canvas::paintEvent(QPaintEvent* /*event*/)
     pen.setCosmetic(true);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
-    if (m_drag == Drag::DrawRectangle) {
-        const QPointF start = imageToWidget(clampToImage(m_pressImage));
+    if (m_drag == Drag::DrawRectangle || m_clickStart) {
+        const QPointF start = imageToWidget(m_clickStart ? *m_clickStart : clampToImage(m_pressImage));
         const QPointF end = imageToWidget(m_currentImage);
         if (m_tool == Tool::Line)
             painter.drawLine(start, end);
