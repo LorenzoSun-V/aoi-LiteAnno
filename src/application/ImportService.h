@@ -38,6 +38,9 @@ struct ImportRequest {
     // Masks: the mapping of values or colours to classes; empty: mask_colors.json in the
     // label folder or the folder above it.
     QString mappingFile;
+    // Pose: the classes and their keypoint names (X-AnyLabeling's pose YAML). Needed for YOLO
+    // pose; for COCO keypoints, empty takes the names from the file's categories.
+    QString poseConfigFile;
     QStringList batches;  // list stems ("b000003"); empty: the whole project
     ImportMode mode = ImportMode::OnlyNew;
     // Images whose edits the window holds in memory only (their save failed): left alone

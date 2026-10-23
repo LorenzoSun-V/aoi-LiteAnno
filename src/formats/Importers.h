@@ -7,6 +7,7 @@
 
 #include "core/RgbImage.h"
 #include "core/Shape.h"
+#include "formats/PoseConfig.h"
 
 #include <QByteArray>
 #include <QHash>
@@ -30,10 +31,12 @@ enum class ImportFormat {
     CocoDetection,     // COCO boxes as rectangles (one JSON file for all images)
     CocoSegmentation,  // COCO polygons as polygons
     Mask,              // mask PNGs as polygons, with the class of each value or colour
+    YoloPose,          // YOLO pose lines as a rectangle and its keypoints, joined by group_id
+    CocoPose,          // COCO keypoint annotations the same way
 };
 
 // The names of the matching export formats: "yolo-det", "yolo-seg", "yolo-obb", "voc",
-// "voc-polygon", "dota", "coco-det", "coco-seg", "mask".
+// "voc-polygon", "dota", "coco-det", "coco-seg", "mask", "yolo-pose", "coco-pose".
 QString importFormatName(ImportFormat format);
 std::optional<ImportFormat> importFormatFromName(const QString& name);
 QList<ImportFormat> importFormats();
@@ -43,6 +46,9 @@ QString importLabelSuffix(ImportFormat format);
 bool importReadsOneFile(ImportFormat format);
 // YOLO files hold class numbers; their names come from classes.txt or the project.
 bool importNeedsClassNames(ImportFormat format);
+// The pose formats take the keypoint names from a pose configuration (PoseConfig): YOLO
+// pose needs one; COCO may have them in its categories instead.
+bool importTakesPoseConfig(ImportFormat format);
 
 // The shapes of one label file, or why the file cannot be imported.
 struct ImportedLabels {
@@ -56,6 +62,11 @@ using ClassNames = QHash<int, QString>;
 // `width` and `height` are the image's, as the coordinates are relative to them.
 ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, const ClassNames& classes, int width,
                                int height);
+// YOLO pose (yolo_pose_to_custom): "class cx cy w h" and the keypoints of the class,
+// "x y [visibility]" each. The box becomes a rectangle with whole-pixel corners, as upstream
+// truncates them; each keypoint a point of the same group_id (the line number from 0).
+// Keypoints at 0, 0 or with visibility 0 are not labeled; visibility 1 marks them difficult.
+ImportedLabels parseYoloPoseLabels(const QByteArray& bytes, const PoseConfig& pose, int width, int height);
 // "x0 y0 x1 y1 x2 y2 x3 y3 label [difficult]" per line; the "imagesource:" and "gsd:" header
 // lines of DOTA files are passed over.
 ImportedLabels parseDotaLabels(const QByteArray& bytes);
@@ -76,7 +87,9 @@ struct CocoLabels {
     QList<CocoImageLabels> images;
     QString error;
 };
-CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format);
+// CocoPose: the keypoint names of each category from `pose` when given, else from the
+// category's "keypoints" array.
+CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format, const PoseConfig* pose = nullptr);
 
 // The mask mapping file (upstream's mask import asks for it; our mask export writes
 // mask_colors.json): {"type": "grayscale" | "rgb", "colors": {class: value or [r, g, b]}}.

@@ -4,7 +4,7 @@ Runs with a Python that has the pinned X-AnyLabeling release installed. Writes l
 with the cases that decide the numbers (many digits, exponents, values outside 0..1, boxes
 on the border, non-square images), imports them with liteanno-cli and converts the same files
 with upstream's LabelConverter (yolo_to_custom, yolo_obb_to_custom, voc_to_custom,
-dota_to_custom, coco_to_custom, mask_to_custom). Every shape must have the same label, type,
+dota_to_custom, coco_to_custom, mask_to_custom, yolo_pose_to_custom). Every shape must have the same label, type,
 points and, for rotated boxes, angle as upstream's, compared as exact floats; "difficult"
 and "group_id" must match as well. Masks are generated shapes of many kinds, so the
 contours follow OpenCV's own. The files we
@@ -98,9 +98,9 @@ def run(command, expect_ok=True):
     return result
 
 
-def make_project(cli, root, shape_types):
+def make_project(cli, root, shape_types, classes=CLASSES):
     os.makedirs(root)
-    run([cli, "init", root, "--classes", ",".join(CLASSES), "--shape-types", shape_types])
+    run([cli, "init", root, "--classes", ",".join(classes), "--shape-types", shape_types])
     for name, (width, height) in IMAGES.items():
         image = np.zeros((height, width, 3), dtype=np.uint8)
         image[:, :] = (30, 90, 160)
@@ -250,6 +250,90 @@ def check_coco(cli, work, fmt, shape_types, mode):
     print(f"{fmt}: {len(COCO_IMAGES)} images match upstream")
 
 
+POSE_CLASSES = {"person": ["nose", "left_eye", "right_eye"], "car": ["front", "back"]}
+POSE_LABELS = list(POSE_CLASSES) + [k for names in POSE_CLASSES.values() for k in names]
+
+YOLO_POSE = {
+    True: {
+        # visibility 1 marks a keypoint difficult; 0 or a point at 0, 0 is not labeled; a car
+        # line padded to three keypoints, as upstream writes them.
+        "a01": "0 0.5 0.5 0.25 0.5 0.4 0.3 2 0.45 0.31 1 0 0 0\n"
+               "1 0.123456789 0.987654321 0.0333333333 0.0101 0.1 0.9 2 0.11 0.95 0 0 0 0\n",
+        "a02": "0 0.1 0.2 0.3 0.4 0 0 2 0.333 0.444 2 0.5 0.6 2\n",
+        "sub/b01": "1 0.3333333333333333 0.6666666666666666 0.1 0.1 0.31 0.65 1 0.35 0.69 2 0 0 0\n",
+    },
+    False: {
+        "a01": "0 0.5 0.5 0.25 0.5 0.4 0.3 0.45 0.31 0 0\n",
+        "a03": "1 0.1 0.2 0.05 0.06 0.1 0.2 0.11 0.21 0 0\n",
+    },
+}
+
+
+def pose_config(path, has_visible):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"has_visible: {'true' if has_visible else 'false'}\nclasses:\n")
+        for name, keypoints in POSE_CLASSES.items():
+            f.write(f"  {name}: [{', '.join(keypoints)}]\n")
+
+
+def check_yolo_pose(cli, work, has_visible):
+    name = "yolo-pose" if has_visible else "yolo-pose-novisible"
+    root = os.path.join(work, name, "data")
+    make_project(cli, root, "rectangle,point", POSE_LABELS)
+    label_dir = os.path.join(work, name, "labels")
+    labels = YOLO_POSE[has_visible]
+    write_labels(label_dir, labels, ".txt", classes=False)
+    config = os.path.join(work, name, "pose.yaml")
+    pose_config(config, has_visible)
+    run([cli, "import", root, "--format", "yolo-pose", "--labels", label_dir, "--pose-config", config])
+    converter = LabelConverter(pose_cfg_file=config)
+    upstream = os.path.join(work, name, "upstream")
+    for stem in labels:
+        image = next(n for n in IMAGES if os.path.splitext(n)[0] == stem)
+        theirs_path = os.path.join(upstream, stem + ".json")
+        os.makedirs(os.path.dirname(theirs_path), exist_ok=True)
+        converter.yolo_pose_to_custom(os.path.join(label_dir, stem + ".txt"), theirs_path, os.path.join(root, image))
+        compare(f"{name} {stem}", load(os.path.join(root, stem + ".json")), load(theirs_path))
+    print(f"{name}: {len(labels)} files match upstream")
+
+
+def check_coco_pose(cli, work, with_config):
+    name = "coco-pose" + ("-config" if with_config else "")
+    root = os.path.join(work, name, "data")
+    make_project(cli, root, "rectangle,point", POSE_LABELS)
+    sizes = {n: IMAGES[n] for n in ("a01.png", "a02.png")}
+    images = [{"id": i + 1, "file_name": n, "width": w, "height": h} for i, (n, (w, h)) in enumerate(sizes.items())]
+    categories = [{"id": i + 1, "name": n, "supercategory": "", "keypoints": k, "skeleton": []}
+                  for i, (n, k) in enumerate(POSE_CLASSES.items())]
+    annotations = [
+        {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10.5, 20.25, 30, 40.125], "iscrowd": 0,
+         "keypoints": [12, 22, 2, 0, 0, 0, 30.5, 40, 1], "num_keypoints": 2},
+        {"id": 2, "image_id": 1, "category_id": 2, "bbox": [100, 10, 50, 60], "iscrowd": 0, "ignore": 1,
+         "keypoints": [110, 20, 2, 140, 60, 2], "num_keypoints": 2},
+        {"id": 3, "image_id": 2, "category_id": 1, "bbox": [1e-3, 2.5e2, 1.23456789, 3], "iscrowd": 0,
+         "keypoints": [1, 251, 0, 0.5, 251.5, 2, 1.2, 252], "num_keypoints": 2},
+    ]
+    # The last one has keypoints without visibility: two numbers each (upstream reads both).
+    annotations[2]["keypoints"] = [1, 251, 0.5, 251.5, 1.2, 252]
+    label_file = os.path.join(work, name, "keypoints.json")
+    with open(label_file, "w", encoding="utf-8") as f:
+        json.dump({"images": images, "annotations": annotations, "categories": categories}, f)
+    command = [cli, "import", root, "--format", "coco-pose", "--labels", label_file]
+    config = None
+    if with_config:
+        config = os.path.join(work, name, "pose.yaml")
+        pose_config(config, True)
+        command += ["--pose-config", config]
+    run(command)
+    upstream = os.path.join(work, name, "upstream")
+    os.makedirs(upstream)
+    LabelConverter(pose_cfg_file=config).coco_to_custom(label_file, upstream, "pose")
+    for image in sizes:
+        stem = os.path.splitext(image)[0]
+        compare(f"{name} {stem}", load(os.path.join(root, stem + ".json")), load(os.path.join(upstream, stem + ".json")))
+    print(f"{name}: {len(sizes)} images match upstream")
+
+
 def mask_images(kind, seed):
     """Masks with many kinds of regions: filled polygons, circles, holes, touching regions,
     single pixels, regions on the border."""
@@ -361,6 +445,10 @@ def main():
     check_coco(cli, work, "coco-seg", "polygon", "polygon")
     check_mask(cli, work, "grayscale")
     check_mask(cli, work, "rgb")
+    check_yolo_pose(cli, work, True)
+    check_yolo_pose(cli, work, False)
+    check_coco_pose(cli, work, False)
+    check_coco_pose(cli, work, True)
     check_round_trip(cli, work)
     check_plain_folder(cli, work)
 

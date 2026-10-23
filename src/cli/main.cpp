@@ -350,6 +350,7 @@ int importLabels(const QCommandLineParser& parser, const Common& common)
         request.labelDir = parser.value(QStringLiteral("labels"));
     request.classesFile = parser.value(QStringLiteral("classes-file"));
     request.mappingFile = parser.value(QStringLiteral("mapping"));
+    request.poseConfigFile = parser.value(QStringLiteral("pose-config"));
     request.batches = common.batches;
     request.mode = *mode;
     request.skipUnconvertible = parser.isSet(QStringLiteral("skip-unconvertible"));
@@ -430,7 +431,7 @@ int main(int argc, char* argv[])
         {QStringLiteral("batch-size"), QStringLiteral(u"init：每批图片数，默认 1000"), QStringLiteral("count")},
         {QStringLiteral("dry-run"), QStringLiteral(u"confirm：只统计，不写入")},
         {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | yolo-pose | coco-pose | labelme | classify；"
-                        u"import：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask"),
+                        u"import：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | yolo-pose | coco-pose"),
          QStringLiteral("format")},
         {QStringLiteral("out"), QStringLiteral(u"export：导出文件夹，必须是新的或空的"), QStringLiteral("folder")},
         {QStringLiteral("skip-unconvertible"), QStringLiteral(u"export、import：跳过无法转换的图片，继续处理其余图片")},
