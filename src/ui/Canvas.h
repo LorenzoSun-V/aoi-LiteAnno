@@ -86,6 +86,8 @@ signals:
     // The user asked to change the label of the selected shape (double click).
     void labelEditRequested(qsizetype index);
     void deleteRequested(qsizetype index);
+    // A right click (not a pan): the shape under it, if any, is selected first.
+    void contextMenuRequested(const QPoint& globalPosition);
     // The image is shown at another scale (1 = one image pixel per screen pixel).
     void zoomChanged(double scale);
     // The mouse is over the image at `imagePoint`, or (`inside` false) has left it.
@@ -152,6 +154,8 @@ private:
 
     Drag m_drag = Drag::None;
     QPointF m_pressWidget;
+    QPointF m_panStart;  // where the pan's button went down
+    Qt::MouseButton m_panButton = Qt::NoButton;
     QPointF m_pressImage;
     QPointF m_currentImage;
     int m_dragVertex = -1;

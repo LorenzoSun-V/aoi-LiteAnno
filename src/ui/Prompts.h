@@ -3,6 +3,7 @@
 // The questions the window asks the user. Tests replace them so nothing modal blocks.
 
 #include "application/RecoveryService.h"
+#include "application/ImportService.h"
 #include "formats/Exporters.h"
 
 #include <QByteArray>
@@ -45,6 +46,22 @@ struct ExportChoice {
     QString classesFile;  // empty: the project file's classes
 };
 
+// What the import dialog starts with.
+struct ImportQuestion {
+    int batchNumber = 0;       // the batch shown, 0 when all images are
+    bool plainFolder = false;  // a folder without a project file: no batches
+};
+
+// What "导入…" asks for.
+struct ImportChoice {
+    formats::ImportFormat format = formats::ImportFormat::YoloDetection;
+    bool wholeProject = true;  // else the batch shown
+    QString labels;            // the label folder; for COCO the JSON file
+    QString classesFile;       // YOLO; empty: classes.txt in the label folder, else the project's
+    QString mappingFile;       // masks; empty: mask_colors.json beside the masks
+    application::ImportMode mode = application::ImportMode::OnlyNew;
+};
+
 struct Prompts {
     // The class of a new shape, or nullopt when the user cancelled. `classes` are offered;
     // with `freeText` any other name may be typed, else one of them must be chosen.
@@ -61,6 +78,8 @@ struct Prompts {
     std::function<std::optional<int>(const QStringList& batches, int current)> chooseBatch;
     // The export settings.
     std::function<std::optional<ExportChoice>(const ExportQuestion& question)> exportOptions;
+    // The import settings.
+    std::function<std::optional<ImportChoice>(const ImportQuestion& question)> importOptions;
     // Some images hold objects the format cannot take (`text` lists them). True: export the
     // others; the default answer exports nothing.
     std::function<bool(const QString& text)> skipUnconvertible;

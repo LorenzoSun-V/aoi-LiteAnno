@@ -417,6 +417,8 @@ void Canvas::mousePressEvent(QMouseEvent* event)
     if (event->button() == Qt::RightButton || event->button() == Qt::MiddleButton
         || (event->button() == Qt::LeftButton && m_spaceHeld)) {
         m_drag = Drag::Pan;
+        m_panStart = widgetPoint;
+        m_panButton = event->button();
         updateCursor();
         return;
     }
@@ -554,6 +556,21 @@ void Canvas::mouseReleaseEvent(QMouseEvent* event)
 {
     const Drag drag = m_drag;
     m_drag = Drag::None;
+    // A right click that did not pan: the shape under it is selected and its menu asked for,
+    // as in X-AnyLabeling. Not while a shape is being drawn.
+    if (drag == Drag::Pan && m_panButton == Qt::RightButton && event->button() == Qt::RightButton
+        && distance(event->position(), m_panStart) <= kClickDistance && m_polygonPoints.isEmpty() && !m_clickStart
+        && !m_image.isNull()) {
+        const qsizetype hit = shapeAt(widgetToImage(event->position()));
+        if (hit != m_selected) {
+            m_selected = hit;
+            emit selectionChanged(hit);
+        }
+        updateCursor();  // the pan that was not one is over
+        update();
+        emit contextMenuRequested(event->globalPosition().toPoint());
+        return;
+    }
     switch (drag) {
     case Drag::DrawRectangle: {
         const QPointF end = clampToImage(widgetToImage(event->position()));

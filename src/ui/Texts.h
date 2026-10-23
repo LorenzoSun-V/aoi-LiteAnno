@@ -7,6 +7,7 @@
 #include "core/Validation.h"
 #include "formats/AnnotationFile.h"
 #include "formats/Exporters.h"
+#include "formats/Importers.h"
 
 #include <QString>
 
@@ -17,5 +18,6 @@ QString shapeTypeText(ShapeType type);
 QString blockerText(const ConfirmBlocker& blocker);
 QString readOnlyText(formats::ReadOnlyReason reason);
 QString exportFormatText(formats::ExportFormat format);
+QString importFormatText(formats::ImportFormat format);
 
 } // namespace liteanno::ui

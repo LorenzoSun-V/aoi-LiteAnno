@@ -270,6 +270,52 @@ private slots:
         LITEANNO_COMPARE_JSON(saved(annotation)["shapes"][0]["direction"], json("0.0"));
     }
 
+    // group_id: an integer is the shape's group; another value reads as none and stays as it
+    // is until the group is edited. A new shape writes its group.
+    void groupId()
+    {
+        const QByteArray original = R"({"shapes": [
+            {"label": "a", "points": [[1, 1], [5, 1], [5, 5]], "group_id": 3, "shape_type": "polygon"},
+            {"label": "b", "points": [[1, 1], [5, 1], [5, 5]], "group_id": "x", "shape_type": "polygon"},
+            {"label": "c", "points": [[1, 1], [5, 1], [5, 5]], "group_id": 1.5, "shape_type": "polygon"}],
+            "imagePath": "0007.png", "imageData": null, "imageHeight": 10, "imageWidth": 10})";
+        AnnotationFile annotation = AnnotationFile::fromBytes(original, imageInfo("0007.png", 10, 10));
+        AnnotationDocument& document = annotation.document();
+        QCOMPARE(document.shapes().at(0).groupId, std::optional<qint64>(3));
+        QVERIFY(!document.shapes().at(1).groupId);
+        QVERIFY(!document.shapes().at(2).groupId);
+
+        QVERIFY(document.setShapeLabel(1, QStringLiteral("b2")));
+        QVERIFY(!document.setShapeGroupId(0, 3));
+        QVERIFY(document.setShapeGroupId(2, 7));
+        Json shapes = saved(annotation)["shapes"];
+        LITEANNO_COMPARE_JSON(shapes[0]["group_id"], json("3"));
+        LITEANNO_COMPARE_JSON(shapes[1]["group_id"], json(R"("x")"));
+        LITEANNO_COMPARE_JSON(shapes[2]["group_id"], json("7"));
+
+        QVERIFY(document.setShapeGroupId(0, std::nullopt));
+        QVERIFY(saved(annotation)["shapes"][0]["group_id"].is_null());
+
+        Shape point;
+        point.type = ShapeType::Point;
+        point.label = QStringLiteral("nose");
+        point.points = {QPointF(2, 2)};
+        point.groupId = 4;
+        const qsizetype added = document.addShape(point);
+        LITEANNO_COMPARE_JSON(saved(annotation)["shapes"][static_cast<std::size_t>(added)]["group_id"], json("4"));
+
+        // A pasted copy keeps a non-integer value; an integer one follows the shape's group.
+        Shape copy = document.shapes().at(1);
+        copy.copiedObject = annotation.shapeObject(1);
+        const qsizetype pasted = document.addShape(copy);
+        LITEANNO_COMPARE_JSON(saved(annotation)["shapes"][static_cast<std::size_t>(pasted)]["group_id"], json(R"("x")"));
+        Shape regrouped = document.shapes().at(2);
+        regrouped.copiedObject = annotation.shapeObject(2);
+        regrouped.groupId.reset();
+        const qsizetype ungrouped = document.addShape(regrouped);
+        QVERIFY(saved(annotation)["shapes"][static_cast<std::size_t>(ungrouped)]["group_id"].is_null());
+    }
+
     // Upstream's paste keeps every field of the copied object; only what the copy changes
     // (label, points, ...) is written anew, and unknown fields come first, as in to_dict().
     void pastedShapeKeepsTheCopiedFields()
