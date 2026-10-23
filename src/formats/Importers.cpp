@@ -94,13 +94,11 @@ Shape newShape(ShapeType type, const QString& label, PointList points)
     return shape;
 }
 
-// "difficult" and "group_id" are not edited here; a new shape takes them from the object it
-// was copied from.
+// "difficult" is not edited here; a new shape takes it from the object it was copied from.
 void setUnedited(Shape& shape, bool difficult, std::optional<qint64> groupId = std::nullopt)
 {
+    shape.groupId = groupId;
     Json object = Json::object();
-    if (groupId)
-        object["group_id"] = *groupId;
     if (difficult)
         object["difficult"] = true;
     if (!object.empty())
@@ -182,7 +180,7 @@ double rotationTheta(const PointList& points)
     return angleDegrees / 360 * (2 * kPi);
 }
 
-ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, const QStringList& classes, int width,
+ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, const ClassNames& classes, int width,
                                int height)
 {
     ImportedLabels result;
@@ -197,7 +195,8 @@ ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, con
             result.error = lineError(lineNumber, QStringLiteral(u"类别编号“%1”不是非负整数").arg(parts[0]));
             return result;
         }
-        if (*classIndex >= classes.size() || classes[*classIndex].isEmpty()) {
+        const QString label = classes.value(*classIndex);
+        if (label.isEmpty()) {
             result.error = lineError(lineNumber, QStringLiteral(u"没有编号为 %1 的类别").arg(*classIndex));
             return result;
         }
@@ -210,7 +209,6 @@ ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, con
             }
             values.append(*value);
         }
-        const QString& label = classes[*classIndex];
         if (format == ImportFormat::YoloDetection) {
             if (values.size() != 4) {
                 result.error = lineError(lineNumber, QStringLiteral(u"检测框应有 4 个数，这里有 %1 个").arg(values.size()));

@@ -7,6 +7,7 @@
 #include <QHash>
 
 #include <algorithm>
+#include <limits>
 #include <charconv>
 #include <cmath>
 #include <optional>
@@ -123,7 +124,12 @@ Json newShapeObject(const Shape& shape)
     object["label"] = toJson(shape.label);
     object["score"] = keep("score", nullptr);
     object["points"] = pointsToJson(shape.points);
-    object["group_id"] = keep("group_id", nullptr);
+    // A copied non-integer group_id stays unless a group was given; an integer one is the
+    // shape's own, also when the group was taken away.
+    const Json copiedGroup = keep("group_id", nullptr);
+    object["group_id"] = shape.groupId ? Json(*shape.groupId)
+                         : copiedGroup.is_number_integer() ? Json(nullptr)
+                                                           : copiedGroup;
     object["description"] = toJson(shape.description);
     object["difficult"] = keep("difficult", false);
     object["shape_type"] = toJson(shapeTypeName(shape.type));
@@ -155,6 +161,8 @@ void applyShapeEdits(Json& object, const Shape& before, const Shape& after)
         object["points"] = pointsToJson(after.points);
     if (after.description != before.description)
         object["description"] = toJson(after.description);
+    if (after.groupId != before.groupId)
+        object["group_id"] = after.groupId ? Json(*after.groupId) : Json(nullptr);
     // Upstream always writes the angle of a rotated box; an edit completes a missing one.
     if (after.type == ShapeType::Rotation
         && (after.direction != before.direction || (pointsEdited && !object.contains("direction"))))
@@ -407,6 +415,9 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
                 addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/direction"));
         }
     }
+    if (const auto groupIt = item.find("group_id"); groupIt != item.end() && groupIt->is_number_integer()
+                                                     && !(groupIt->is_number_unsigned() && groupIt->get<quint64>() > quint64(std::numeric_limits<qint64>::max())))
+        shape.groupId = groupIt->get<qint64>();
     const auto lockedIt = item.find("locked");
     if (lockedIt != item.end()) {
         if (lockedIt->is_boolean())

@@ -6,6 +6,8 @@
 #include <QHash>
 #include <QString>
 
+#include <optional>
+
 namespace liteanno {
 
 enum class ShapeKind {
@@ -28,6 +30,10 @@ struct Shape {
     // are what counts (format spec 4.2); the angle is kept in step for upstream.
     double direction = 0;
     QString description;
+    // "group_id" when the file holds an integer: joins the rectangle and keypoints of one
+    // pose, or the polygons of one instance. Another value reads as none and stays in the
+    // file as it is until the group is edited.
+    std::optional<qint64> groupId;
     // String values of the "attributes" object, for the confirm conditions (format spec 5.3).
     // Not written back: the object on disk stays as it is.
     QHash<QString, QString> attributes;

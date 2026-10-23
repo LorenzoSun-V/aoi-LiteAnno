@@ -19,6 +19,8 @@
 #include <QTemporaryDir>
 #include <QTest>
 
+#include <cmath>
+
 using namespace liteanno;
 using namespace liteanno::application;
 
@@ -72,12 +74,12 @@ struct Project {
         return std::move(result.session);
     }
 
-    ImportReport run(ImportRequest request)
+    ImportReport run(ImportRequest request, const ImportService::Progress& progress = {})
     {
         const std::unique_ptr<ProjectSession> session = open();
         if (request.labelDir.isEmpty() && request.labelFile.isEmpty())
             request.labelDir = labels.path();
-        return ImportService(*session, imaging::readImageInfo, imaging::readMaskImage).run(request);
+        return ImportService(*session, imaging::readImageInfo, imaging::readMaskImage).run(request, progress);
     }
 
     AnnotationDocument document(const QString& imagePath)
@@ -266,6 +268,163 @@ private slots:
         report = project.run(request);
         QVERIFY(!report.written);
         QVERIFY(!report.error.isEmpty());
+    }
+
+    // A label file paired by its path with one image is not taken by name for another.
+    void exactPairingTakesTheFile()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("sub/a.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        const ImportReport report = project.run({});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(itemOf(report, QStringLiteral("a.png"))->result, ImportResult::Imported);
+        QCOMPARE(itemOf(report, QStringLiteral("sub/a.png"))->result, ImportResult::NoLabelFile);
+        QVERIFY(!itemOf(report, QStringLiteral("sub/a.png"))->reason.isEmpty());
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("sub/a.json"))));
+    }
+
+    // An image that changed after its labels were converted is not written with the old
+    // coordinates.
+    void imageChangedBeforeWriting()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "0 0.5 0.5 0.2 0.2\n");
+        bool replaced = false;
+        const ImportReport report = project.run({}, [&](int done, int total) {
+            if (!replaced && total > 0 && done == total / 2) {  // the writing starts
+                project.image(QStringLiteral("a.png"), 400, 200);
+                replaced = true;
+            }
+            return true;
+        });
+        QVERIFY(replaced);
+        QVERIFY(!report.written);
+        QCOMPARE(itemOf(report, QStringLiteral("a.png"))->result, ImportResult::NotWritten);
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("a.json"))));
+    }
+
+    // Appended instances get group numbers the image does not use yet; the parts of one
+    // instance keep sharing theirs.
+    void appendedGroupsDoNotMerge()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        writeFile(project.data.filePath(QStringLiteral("a.json")),
+                  R"({"version": "4.2.0", "flags": {}, "shapes": [{"label": "scratch", "points": [[1.0, 1.0], [9.0, 1.0], [9.0, 9.0]], )"
+                  R"("group_id": 1, "shape_type": "polygon", "flags": {}}], "imagePath": "a.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200})");
+        const QString file = project.labels.filePath(QStringLiteral("instances.json"));
+        writeFile(file, coco(R"({"id": 1, "file_name": "a.png", "width": 200, "height": 100})",
+                             R"({"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 60, 60], "iscrowd": 0, "area": 10,
+                                 "segmentation": [[10, 10, 20, 10, 20, 20], [40, 40, 50, 40, 50, 50]]})"));
+        ImportRequest request;
+        request.format = formats::ImportFormat::CocoSegmentation;
+        request.labelFile = file;
+        request.mode = ImportMode::Append;
+        const ImportReport report = project.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QList<Shape> shapes = project.shapes(QStringLiteral("a.png"));
+        QCOMPARE(shapes.size(), 3);
+        QCOMPARE(shapes[0].groupId, std::optional<qint64>(1));
+        QVERIFY(shapes[1].groupId);
+        QVERIFY(*shapes[1].groupId != 1);
+        QCOMPARE(shapes[2].groupId, shapes[1].groupId);
+    }
+
+    // When the recovery records cannot be listed, it is not known which images have edits
+    // only there: nothing is written.
+    void unreadableRecoveryStopsTheImport()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.annotation(QStringLiteral("a.png"), "scratch");
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        {
+            const std::unique_ptr<ProjectSession> session = project.open();
+            const LocalDataPaths paths(project.local.path());
+            const QString dir = paths.recoveryDir(session->location().projectId, session->location().bindingId);
+            writeFile(dir, "not a folder");  // listing it fails, as without permission
+            QVERIFY(!RecoveryService(paths, session->location()).scan().error.isEmpty());
+        }
+        const QByteArray before = [&] {
+            QFile f(project.data.filePath(QStringLiteral("a.json")));
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        }();
+        ImportRequest request;
+        request.mode = ImportMode::Replace;
+        const ImportReport report = project.run(request);
+        QVERIFY(!report.written);
+        QVERIFY(!report.error.isEmpty());
+        QFile f(project.data.filePath(QStringLiteral("a.json")));
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), before);
+    }
+
+    // Only written images count as imported: a cancel leaves the rest "not written", and an
+    // empty label file for an image without annotations changes nothing.
+    void countsOnlyWrittenImages()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("b.png"));
+        project.image(QStringLiteral("c.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("b.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("c.txt")), "");
+        int calls = 0;
+        ImportReport report = project.run({}, [&](int done, int total) {
+            ++calls;
+            return !(total > 0 && done == total / 2 + 1);  // cancel after the first write
+        });
+        QVERIFY(report.cancelled);
+        QVERIFY(report.written);
+        QCOMPARE(report.count(ImportResult::Imported), 1);
+        QCOMPARE(itemOf(report, QStringLiteral("a.png"))->result, ImportResult::Imported);
+        QCOMPARE(itemOf(report, QStringLiteral("b.png"))->result, ImportResult::NotWritten);
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("b.json"))));
+
+        report = project.run({});
+        QCOMPARE(itemOf(report, QStringLiteral("c.png"))->result, ImportResult::Unchanged);
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("c.json"))));
+        QCOMPARE(report.count(ImportResult::Imported), 1);  // b.png
+
+        // A cancel before writing: nothing counts as imported.
+        report = project.run({}, [](int, int total) { return total == 0; });
+        QVERIFY(report.cancelled);
+        QCOMPARE(report.count(ImportResult::Imported), 0);
+    }
+
+    // Class numbers are looked up, not used as list positions.
+    void sparseClassNumbers()
+    {
+        Project project;
+        writeFile(project.data.filePath(QStringLiteral("liteanno/project.json")),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rectangle"], )"
+                  R"("classes": [{"id": 2147483647, "name": "scratch"}]})");
+        project.image(QStringLiteral("a.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "2147483647 0.5 0.5 0.1 0.2\n");
+        const ImportReport report = project.run({});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(project.shapes(QStringLiteral("a.png"))[0].label, QStringLiteral("scratch"));
+    }
+
+    // Coordinates that overflow when scaled to the image are refused before anything is
+    // written.
+    void overflowIsRefusedBeforeWriting()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("b.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("b.txt")), "0 1e308 0.5 0.2 0.2\n");
+        const ImportReport report = project.run({});
+        QVERIFY(!report.written);
+        QCOMPARE(itemOf(report, QStringLiteral("b.png"))->result, ImportResult::Unconvertible);
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("a.json"))));
+        QCOMPARE(report.count(ImportResult::Imported), 0);
     }
 
     void maskMapping()

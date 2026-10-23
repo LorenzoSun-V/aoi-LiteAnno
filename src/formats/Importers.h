@@ -9,6 +9,7 @@
 #include "core/Shape.h"
 
 #include <QByteArray>
+#include <QHash>
 #include <QList>
 #include <QString>
 #include <QStringList>
@@ -49,9 +50,11 @@ struct ImportedLabels {
     QString error;  // empty when the file was read
 };
 
-// `classes`: the name of each class number; an empty name is a number without a class.
+// The name of each class number. Looked up, as the project's numbers need not be dense.
+using ClassNames = QHash<int, QString>;
+// `classes`: the names of the class numbers; a number without a name has no class.
 // `width` and `height` are the image's, as the coordinates are relative to them.
-ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, const QStringList& classes, int width,
+ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, const ClassNames& classes, int width,
                                int height);
 // "x0 y0 x1 y1 x2 y2 x3 y3 label [difficult]" per line; the "imagesource:" and "gsd:" header
 // lines of DOTA files are passed over.

@@ -371,13 +371,15 @@ int importLabels(const QCommandLineParser& parser, const Common& common)
     int empty = 0;
     for (const application::ImportItem& item : report.items)
         empty += item.result == application::ImportResult::Imported && item.shapes == 0 ? 1 : 0;
-    print(QStringLiteral(u"已导入 %1 张（其中标注文件里没有对象的 %6 张）；已有标注而未改动 %2 张，没有标注文件 %3 张，没有写入 %4 张，无法转换 %5 张。")
+    print(QStringLiteral(u"已导入 %1 张（其中标注文件里没有对象的 %6 张）；已有标注而未改动 %2 张，没有标注文件 %3 张，没有写入 %4 张，无法转换 %5 张，"
+                         u"标注文件里没有对象而不用写入 %7 张。")
               .arg(report.count(application::ImportResult::Imported))
               .arg(report.count(application::ImportResult::HasAnnotation))
               .arg(report.count(application::ImportResult::NoLabelFile))
               .arg(report.count(application::ImportResult::NotWritten))
               .arg(report.count(application::ImportResult::Unconvertible))
-              .arg(empty));
+              .arg(empty)
+              .arg(report.count(application::ImportResult::Unchanged)));
     if (!report.unmatched.isEmpty())
         print(QStringLiteral(u"COCO 文件里有 %1 张图片在文件夹里找不到，见上面的列表。").arg(report.unmatched.size()));
     return report.count(application::ImportResult::NotWritten) > 0 ? Failed : Ok;

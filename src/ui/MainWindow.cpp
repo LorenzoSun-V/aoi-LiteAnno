@@ -951,13 +951,15 @@ bool MainWindow::importAnnotations()
             notWritten.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
     }
     QString text = QStringLiteral(u"已导入 %1 张图片（其中标注文件里没有对象的 %2 张），都要逐张检查后确认。\n"
-                                  u"已有标注而没有改动 %3 张，没有标注文件 %4 张，没有写入 %5 张，无法转换 %6 张。")
+                                  u"已有标注而没有改动 %3 张，没有标注文件 %4 张，没有写入 %5 张，无法转换 %6 张，"
+                                  u"标注文件里没有对象而不用写入 %7 张。")
                        .arg(report.count(application::ImportResult::Imported))
                        .arg(empty)
                        .arg(report.count(application::ImportResult::HasAnnotation))
                        .arg(report.count(application::ImportResult::NoLabelFile))
                        .arg(report.count(application::ImportResult::NotWritten))
-                       .arg(report.count(application::ImportResult::Unconvertible));
+                       .arg(report.count(application::ImportResult::Unconvertible))
+                       .arg(report.count(application::ImportResult::Unchanged));
     if (report.cancelled)
         text.prepend(QStringLiteral(u"导入已取消，取消前写入的图片保留。\n"));
     if (!notWritten.isEmpty())

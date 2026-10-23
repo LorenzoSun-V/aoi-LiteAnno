@@ -47,7 +47,8 @@ struct ImportRequest {
 };
 
 enum class ImportResult {
-    Imported,
+    Imported,       // its annotation file was written
+    Unchanged,      // the labels change nothing (an empty label file for an image without one)
     NoLabelFile,    // nothing to import for this image
     HasAnnotation,  // has an annotation file and the mode leaves it alone
     NotWritten,     // missing, read-only, name collision, unsaved window edits, write failed

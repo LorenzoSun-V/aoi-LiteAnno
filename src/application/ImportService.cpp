@@ -12,6 +12,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 namespace liteanno::application {
@@ -45,7 +46,7 @@ std::optional<QByteArray> readFile(const QString& path, QString& error)
 // The names of the YOLO class numbers: the classes.txt chosen, else classes.txt in the label
 // folder, as upstream asks for one, else the ids of the project file. The file follows the
 // rules of the export's classes.txt (formats::parseClassesFile).
-std::optional<QStringList> yoloClassNames(const QString& chosen, const QString& labelDir, const ProjectConfig& config,
+std::optional<formats::ClassNames> yoloClassNames(const QString& chosen, const QString& labelDir, const ProjectConfig& config,
                                           QString& error)
 {
     QString classesFile = chosen;
@@ -60,19 +61,19 @@ std::optional<QStringList> yoloClassNames(const QString& chosen, const QString& 
             error = QStringLiteral(u"类别文件 %1：%2").arg(QDir::toNativeSeparators(classesFile), read.error);
             return std::nullopt;
         }
-        return read.names;
+        formats::ClassNames names;
+        for (qsizetype i = 0; i < read.names.size(); ++i)
+            names.insert(int(i), read.names[i]);
+        return names;
     }
     if (config.classes.isEmpty()) {
         error = QStringLiteral(u"请选择类别文件 classes.txt：标注文件夹里没有，项目文件也没有类别列表，无法把类别编号换成名称。");
         return std::nullopt;
     }
-    QStringList names;
+    formats::ClassNames names;
     for (const ClassDef& c : config.classes) {
-        if (c.id < 0)
-            continue;
-        if (c.id >= names.size())
-            names.resize(c.id + 1);
-        names[c.id] = c.name;
+        if (c.id >= 0)
+            names.insert(c.id, c.name);
     }
     return names;
 }
@@ -154,6 +155,37 @@ QString cannotWrite(const ImageOnDisk& image, const QSet<QString>& recorded)
     return {};
 }
 
+// Puts the imported shapes into the document as the mode says. Their group numbers are moved
+// past the ones the document uses, so an appended instance never joins one already there;
+// the parts of one instance keep sharing theirs. False when a shape cannot be added (its
+// points do not fit the model, e.g. coordinates that overflowed when scaled).
+bool addImported(AnnotationDocument& document, const QList<Shape>& shapes, ImportMode mode)
+{
+    if (mode == ImportMode::Replace) {
+        while (!document.shapes().isEmpty())
+            document.removeShape(document.shapes().size() - 1);
+    }
+    std::optional<qint64> used;
+    for (const Shape& shape : document.shapes()) {
+        if (shape.groupId)
+            used = std::max(used.value_or(*shape.groupId), *shape.groupId);
+    }
+    QHash<qint64, qint64> renumbered;
+    for (Shape shape : shapes) {
+        if (used && shape.groupId) {
+            if (!renumbered.contains(*shape.groupId)) {
+                if (*used == std::numeric_limits<qint64>::max())
+                    return false;
+                renumbered.insert(*shape.groupId, ++*used);
+            }
+            shape.groupId = renumbered.value(*shape.groupId);
+        }
+        if (document.addShape(std::move(shape)) < 0)
+            return false;
+    }
+    return true;
+}
+
 } // namespace
 
 QString importModeName(ImportMode mode)
@@ -183,6 +215,8 @@ const char* importResultName(ImportResult result)
     switch (result) {
     case ImportResult::Imported:
         return "imported";
+    case ImportResult::Unchanged:
+        return "unchanged";
     case ImportResult::NoLabelFile:
         return "no-label-file";
     case ImportResult::HasAnnotation:
@@ -236,9 +270,9 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
         return report;
     }
     const QDir labelDir(request.labelDir);
-    QStringList classNames;
+    formats::ClassNames classNames;
     if (formats::importNeedsClassNames(format)) {
-        std::optional<QStringList> names = yoloClassNames(request.classesFile, request.labelDir, config, report.error);
+        std::optional<formats::ClassNames> names = yoloClassNames(request.classesFile, request.labelDir, config, report.error);
         if (!names)
             return report;
         classNames = std::move(*names);
@@ -278,20 +312,35 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
     }
     // Images with unsaved edits of the window in a recovery record are left alone: writing
     // them here would make the record look outdated.
+    // When the records cannot be listed it is not known which images they hold: nothing is
+    // written.
     QSet<QString> recorded;
-    const RecoveryService recovery(m_project.paths(), m_project.location());
-    for (const RecoveryCandidate& candidate : recovery.scan().candidates)
+    const RecoveryScan records = RecoveryService(m_project.paths(), m_project.location()).scan();
+    if (!records.error.isEmpty()) {
+        report.error = QStringLiteral(u"无法读取未写入修改的恢复记录（%1），不能确定哪些图片有未写入的修改，没有导入。")
+                           .arg(records.error);
+        return report;
+    }
+    for (const RecoveryCandidate& candidate : records.candidates)
         recorded.insert(candidate.record.imagePath);
     recorded.unite(request.heldImages);
 
     // Pair the label files: by the relative path first, then by the file name at the top of
-    // the label folder. A file name several images would take pairs none of them.
+    // the label folder. A file paired by its path is not taken by name for another image, and
+    // a file name several images would take pairs none of them.
     const QString suffix = formats::importLabelSuffix(format);
     QList<QString> labelFiles;
     labelFiles.reserve(scope.images.size());
     QHash<QString, int> byName;
     QList<QString> pairingProblems(scope.images.size());
+    QList<QString> noLabelReasons(scope.images.size());
+    QSet<QString> byPath;
     if (!oneFile) {
+        for (const ScopeImage& image : scope.images) {
+            const QString nested = labelDir.filePath(stemPath(image.path) + suffix);
+            if (QFileInfo(nested).isFile())
+                byPath.insert(pathKey(QFileInfo(nested).absoluteFilePath()));
+        }
         for (qsizetype i = 0; i < scope.images.size(); ++i) {
             const ScopeImage& image = scope.images[i];
             const QString nested = labelDir.filePath(stemPath(image.path) + suffix);
@@ -305,6 +354,9 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             };
             if (isLabel(nested)) {
                 labelFiles.append(nested);
+            } else if (top != nested && isLabel(top) && byPath.contains(pathKey(QFileInfo(top).absoluteFilePath()))) {
+                labelFiles.append(QString());
+                noLabelReasons[i] = QStringLiteral(u"同名的 %1 按路径配给了另一张图片").arg(QDir::toNativeSeparators(top));
             } else if (top != nested && isLabel(top)) {
                 labelFiles.append(top);
                 ++byName[top];
@@ -364,12 +416,25 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             labelFiles.append(cocoEntry[i] >= 0 || !pairingProblems[i].isEmpty() ? request.labelFile : QString());
     }
 
+    // Items are "imported" when checked, and stay so only once their file is written: the
+    // others turn "not written" when the import stops.
+    const auto stopFrom = [&report](qsizetype first, const QString& reason) {
+        for (qsizetype k = first; k < report.items.size(); ++k) {
+            if (report.items[k].result == ImportResult::Imported) {
+                report.items[k].result = ImportResult::NotWritten;
+                report.items[k].reason = reason;
+            }
+        }
+    };
+    const QString cancelled = QStringLiteral(u"导入已取消");
     const int total = int(scope.images.size()) * 2;
     QList<QList<Shape>> imported(scope.images.size());
+    QList<ImageInfo> checkedInfo(scope.images.size());
     report.items.reserve(scope.images.size());
     for (qsizetype i = 0; i < scope.images.size(); ++i) {
         if (progress && !progress(int(i), total)) {
             report.cancelled = true;
+            stopFrom(0, cancelled);
             return report;
         }
         const ScopeImage& scoped = scope.images[i];
@@ -382,7 +447,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             report.items.append(item);
         };
         if (item.labelFile.isEmpty()) {
-            done(ImportResult::NoLabelFile);
+            done(ImportResult::NoLabelFile, noLabelReasons.value(i));
             continue;
         }
         if (!pairingProblems[i].isEmpty()) {
@@ -466,12 +531,25 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             done(ImportResult::Unconvertible, labels.error);
             continue;
         }
+        // Tried on a copy, so that a shape the document refuses stops the import here, before
+        // anything is written.
+        AnnotationDocument trial = image.annotation->file.document();
+        if (!addImported(trial, labels.shapes, request.mode)) {
+            done(ImportResult::Unconvertible, QStringLiteral(u"有对象无法加入标注（坐标换算到图片后超出范围）"));
+            continue;
+        }
+        if (!trial.isModified() && !image.annotation->file.needsWrite()) {
+            done(ImportResult::Unchanged, QStringLiteral(u"标注文件里没有对象，没有要写入的变化"));
+            continue;
+        }
         item.shapes = int(labels.shapes.size());
         imported[i] = std::move(labels.shapes);
+        checkedInfo[i] = info;
         done(ImportResult::Imported);
     }
     if (const int refused = report.count(ImportResult::Unconvertible); refused > 0 && !request.skipUnconvertible) {
         report.error = QStringLiteral(u"有 %1 张图片的标注无法导入，没有写入任何标注文件。").arg(refused);
+        stopFrom(0, QStringLiteral(u"其他图片的标注无法导入，没有写入"));
         return report;
     }
 
@@ -480,6 +558,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
     for (qsizetype i = 0; i < scope.images.size(); ++i) {
         if (progress && !progress(int(scope.images.size() + i), total)) {
             report.cancelled = true;
+            stopFrom(i, cancelled);
             return report;
         }
         ImportItem& item = report.items[i];
@@ -498,22 +577,26 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             item.reason = reason;
             continue;
         }
+        // The coordinates were scaled to the image as it was checked.
+        const ImageInfo& info = image.annotation->file.image();
+        if (info.width != checkedInfo[i].width || info.height != checkedInfo[i].height) {
+            item.result = ImportResult::NotWritten;
+            item.reason = QStringLiteral(u"检查之后图片变了（%1×%2 → %3×%4），请重新导入")
+                              .arg(checkedInfo[i].width)
+                              .arg(checkedInfo[i].height)
+                              .arg(info.width)
+                              .arg(info.height);
+            continue;
+        }
         // Straight on the document: no undo history is needed here.
         formats::LoadedAnnotation& annotation = *image.annotation;
-        AnnotationDocument& document = annotation.file.document();
-        if (request.mode == ImportMode::Replace) {
-            while (!document.shapes().isEmpty())
-                document.removeShape(document.shapes().size() - 1);
-        }
-        bool added = true;
-        for (const Shape& shape : std::as_const(imported[i]))
-            added = added && document.addShape(shape) >= 0;
-        if (!added) {
+        if (!addImported(annotation.file.document(), imported[i], request.mode)) {
             item.result = ImportResult::NotWritten;
             item.reason = QStringLiteral(u"有对象无法加入标注");
             continue;
         }
         if (!annotation.file.needsWrite()) {
+            item.result = ImportResult::Unchanged;
             item.reason = QStringLiteral(u"没有要写入的变化");
             continue;
         }
