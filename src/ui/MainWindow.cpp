@@ -34,6 +34,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QProgressDialog>
@@ -167,6 +168,7 @@ void MainWindow::buildUi()
     });
     connect(m_canvas, &Canvas::labelEditRequested, this, &MainWindow::editLabel);
     connect(m_canvas, &Canvas::deleteRequested, this, [this] { deleteSelectedShape(); });
+    connect(m_canvas, &Canvas::contextMenuRequested, this, &MainWindow::showCanvasMenu);
 
     // Images.
     m_imageList = new QListWidget;
@@ -2270,6 +2272,56 @@ bool MainWindow::confirmCurrent()
         return false;
     edited();
     return true;
+}
+
+QMenu* MainWindow::canvasMenu()
+{
+    // Like X-AnyLabeling's canvas menu, with only what this program has. Each item runs the
+    // menu bar's action, so keys and checks stay in one place; the key is only shown here
+    // (after a tab) so no second shortcut exists.
+    auto* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("canvasMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const qsizetype selected = m_canvas->selectedShape();
+    const bool editable = m_session && !m_session->isReadOnly();
+    const bool shape = m_session && selected >= 0 && selected < m_session->document().shapes().size();
+    const auto add = [&](const char* name, bool enabled) {
+        QAction* source = findChild<QAction*>(QLatin1String(name));
+        if (!source)
+            return;
+        QString text = source->text();
+        if (!source->shortcut().isEmpty())
+            text += QLatin1Char('\t') + source->shortcut().toString(QKeySequence::NativeText);
+        QAction* item = menu->addAction(source->icon(), text, source, &QAction::trigger);
+        item->setObjectName(QLatin1String(name));
+        item->setCheckable(source->isCheckable());
+        item->setChecked(source->isChecked());
+        item->setEnabled(source->isEnabled() && enabled);
+    };
+    add("confirm_and_next", editable);
+    add("toggle_annotation_checked", editable);
+    add("skip_image", editable);
+    menu->addSeparator();
+    add("edit_label", editable && shape);
+    add("copy_polygon", shape);
+    add("paste_polygon", editable && m_copiedShape.has_value());
+    add("hide_selected_polygons", shape);
+    add("delete_polygon", editable && shape);
+    menu->addSeparator();
+    for (const char* tool : {"edit_polygon", "create_rectangle", "create_polygon", "create_rotation", "create_point",
+                             "create_line", "create_linestrip", "create_circle"})
+        add(tool, true);
+    menu->addSeparator();
+    add("undo", true);
+    add("redo", true);
+    return menu;
+}
+
+void MainWindow::showCanvasMenu(const QPoint& globalPosition)
+{
+    m_shapeForm->commitPending();
+    // popup, not exec: no event loop of its own, so nothing has to wait for it (see Busy).
+    canvasMenu()->popup(globalPosition);
 }
 
 bool MainWindow::confirmAndNext()

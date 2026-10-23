@@ -25,6 +25,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QMenu>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -1280,6 +1281,74 @@ private slots:
         // E is not repeated either: one press, one question.
         const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
         QVERIFY(!skip->autoRepeat());
+    }
+
+    // A right click selects the shape under it and opens a menu of what can be done with it,
+    // as in X-AnyLabeling; dragging with the right button still pans.
+    void rightClickMenu()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.drawRectangle(QPointF(100, 20), QPointF(150, 70));
+        canvas->setTool(Canvas::Tool::Rectangle);  // works with a drawing tool chosen too
+        canvas->setSelectedShape(-1);
+        const QPointF at = canvas->imageToWidget(QPointF(50, 35));
+        mouse(canvas, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        auto* menu = w.window.findChild<QMenu*>(QStringLiteral("canvasMenu"));
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->isVisible());
+        QStringList names;
+        for (const QAction* item : menu->actions()) {
+            if (!item->isSeparator())
+                names.append(item->objectName());
+        }
+        QVERIFY(names.contains(QStringLiteral("confirm_and_next")));
+        QVERIFY(names.contains(QStringLiteral("skip_image")));
+        QVERIFY(names.contains(QStringLiteral("edit_label")));
+        const auto item = [&](const char* name) {
+            for (QAction* action : menu->actions()) {
+                if (action->objectName() == QLatin1String(name))
+                    return action;
+            }
+            return static_cast<QAction*>(nullptr);
+        };
+        // Keys are shown, but only the menu bar's actions hold them.
+        QVERIFY(item("delete_polygon")->text().contains(QLatin1Char('\t')));
+        QVERIFY(item("delete_polygon")->shortcut().isEmpty());
+        QVERIFY(!item("paste_polygon")->isEnabled());  // nothing copied yet
+        item("delete_polygon")->trigger();
+        QCOMPARE(w.document().shapes().size(), 1);
+        menu->close();
+        QTRY_VERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+
+        // On empty space: nothing selected, the shape items are off.
+        const QPointF empty = canvas->imageToWidget(QPointF(5, 95));
+        mouse(canvas, QEvent::MouseButtonPress, empty, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, empty, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->selectedShape(), qsizetype(-1));
+        menu = w.window.findChild<QMenu*>(QStringLiteral("canvasMenu"));
+        QVERIFY(menu);
+        QVERIFY(!item("edit_label")->isEnabled());
+        QVERIFY(!item("delete_polygon")->isEnabled());
+        // The tool items switch tools.
+        item("edit_polygon")->trigger();
+        QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        menu->close();
+        QTRY_VERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+
+        // Dragging with the right button pans and opens no menu.
+        const QPointF origin = canvas->imageToWidget(QPointF(0, 0));
+        mouse(canvas, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseMove, at + QPointF(40, 30), Qt::NoButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at + QPointF(40, 30), Qt::RightButton, Qt::NoButton);
+        QVERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+        QCOMPARE(canvas->imageToWidget(QPointF(0, 0)), origin + QPointF(40, 30));
     }
 
     void skipKeys()
