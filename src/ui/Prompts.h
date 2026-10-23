@@ -44,6 +44,7 @@ struct ExportChoice {
     QString outputDir;
     bool copyImages = false;
     QString classesFile;  // empty: the project file's classes
+    QString poseConfigFile;  // pose formats: the keypoint names (X-AnyLabeling's YAML)
 };
 
 // What the import dialog starts with.
@@ -59,6 +60,7 @@ struct ImportChoice {
     QString labels;            // the label folder; for COCO the JSON file
     QString classesFile;       // YOLO; empty: classes.txt in the label folder, else the project's
     QString mappingFile;       // masks; empty: mask_colors.json beside the masks
+    QString poseConfigFile;    // pose formats; for COCO it may be empty (names from the file)
     application::ImportMode mode = application::ImportMode::OnlyNew;
 };
 

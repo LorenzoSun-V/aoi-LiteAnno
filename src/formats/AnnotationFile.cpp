@@ -385,6 +385,10 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
     if (type)
         shape.type = *type;
     shape.points = points;
+    // Also for objects kept as they are: a new group number must not be one of theirs.
+    if (const auto groupIt = item.find("group_id"); groupIt != item.end() && groupIt->is_number_integer()
+                                                     && !(groupIt->is_number_unsigned() && groupIt->get<quint64>() > quint64(std::numeric_limits<qint64>::max())))
+        shape.groupId = groupIt->get<qint64>();
     if (!problem.isEmpty()) {
         shape.kind = ShapeKind::Unrecognized;
         addDiagnostic(DiagnosticCode::ShapeUnrecognized, location, problem);
@@ -415,9 +419,6 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
                 addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/direction"));
         }
     }
-    if (const auto groupIt = item.find("group_id"); groupIt != item.end() && groupIt->is_number_integer()
-                                                     && !(groupIt->is_number_unsigned() && groupIt->get<quint64>() > quint64(std::numeric_limits<qint64>::max())))
-        shape.groupId = groupIt->get<qint64>();
     const auto lockedIt = item.find("locked");
     if (lockedIt != item.end()) {
         if (lockedIt->is_boolean())

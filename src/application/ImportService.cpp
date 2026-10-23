@@ -289,6 +289,19 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             return report;
         }
     }
+    formats::PoseConfig pose;
+    const bool hasPose = !request.poseConfigFile.trimmed().isEmpty();
+    if (format == ImportFormat::YoloPose && !hasPose) {
+        report.error = QStringLiteral(u"YOLO 姿态需要姿态配置文件（每个类别的关键点名称），请选择。");
+        return report;
+    }
+    if (formats::importTakesPoseConfig(format) && hasPose) {
+        pose = formats::readPoseConfig(request.poseConfigFile);
+        if (!pose.error.isEmpty()) {
+            report.error = QStringLiteral(u"姿态配置文件 %1 不能用：%2").arg(QDir::toNativeSeparators(request.poseConfigFile), pose.error);
+            return report;
+        }
+    }
     formats::CocoLabels coco;
     if (oneFile) {
         QString error;
@@ -297,7 +310,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             report.error = QStringLiteral(u"无法读取 %1：%2").arg(QDir::toNativeSeparators(request.labelFile), error);
             return report;
         }
-        coco = formats::parseCocoLabels(*bytes, format);
+        coco = formats::parseCocoLabels(*bytes, format, hasPose ? &pose : nullptr);
         if (!coco.error.isEmpty()) {
             report.error = QStringLiteral(u"%1：%2").arg(QDir::toNativeSeparators(request.labelFile), coco.error);
             return report;
@@ -519,6 +532,10 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             case ImportFormat::Dota:
                 labels = formats::parseDotaLabels(*bytes);
                 break;
+            case ImportFormat::YoloPose:
+                labels = formats::parseYoloPoseLabels(*bytes, pose, info.width, info.height);
+                break;
+            case ImportFormat::CocoPose:
             case ImportFormat::CocoDetection:
             case ImportFormat::CocoSegmentation:
             case ImportFormat::Mask:

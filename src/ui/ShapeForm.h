@@ -3,6 +3,8 @@
 #include <QRectF>
 #include <QWidget>
 
+#include <optional>
+
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -21,6 +23,7 @@ public:
         qsizetype index = -1;  // the shape's row; -1 hides the form
         QString imagePath;  // with `index`, which shape it is
         QString label;
+        std::optional<qint64> groupId;
         QString type;
         QRectF box;  // in image pixels
         bool editable = false;  // editable at all (label)
@@ -44,15 +47,19 @@ signals:
     void labelChosen(const QString& label);
     // A rectangle's new position and size (x, y, width, height) in image pixels.
     void rectangleChanged(const QRectF& box);
+    // "组号" (group_id): joins a pose's rectangle and keypoints. Empty is no group.
+    void groupChosen(std::optional<qint64> groupId);
 
 private:
     void numberEdited(QDoubleSpinBox* field);
     void commitLabel(const QString& text, bool typed);
+    void commitGroup();
 
     Shown m_shown;
     QComboBox* m_label = nullptr;
     QLineEdit* m_labelEdit = nullptr;  // the one connected
     QLabel* m_type = nullptr;
+    QLineEdit* m_group = nullptr;
     QDoubleSpinBox* m_x = nullptr;
     QDoubleSpinBox* m_y = nullptr;
     QDoubleSpinBox* m_width = nullptr;

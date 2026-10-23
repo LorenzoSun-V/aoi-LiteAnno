@@ -61,6 +61,9 @@ struct ExportRequest {
     // the project file's classes. COCO then numbers as upstream does: detection from 1,
     // segmentation with "_background_" as 0.
     QString classesFile;
+    // Pose formats: the pose configuration (classes and their keypoints), as X-AnyLabeling
+    // takes it; a copy is written next to the export as pose_config.yaml.
+    QString poseConfigFile;
 };
 
 enum class ExportResult {

@@ -99,6 +99,10 @@ QString exportFormatText(formats::ExportFormat format)
         return QStringLiteral(u"LabelMe（全部形状，附图片）");
     case formats::ExportFormat::Classification:
         return QStringLiteral(u"图片分类（按图片级标签）");
+    case formats::ExportFormat::YoloPose:
+        return QStringLiteral(u"YOLO 姿态（矩形和关键点）");
+    case formats::ExportFormat::CocoPose:
+        return QStringLiteral(u"COCO 关键点（矩形和关键点）");
     }
     return QString();
 }
@@ -124,6 +128,10 @@ QString importFormatText(formats::ImportFormat format)
         return QStringLiteral(u"COCO 实例分割（多边形）");
     case formats::ImportFormat::Mask:
         return QStringLiteral(u"掩膜 PNG（灰度或彩色）");
+    case formats::ImportFormat::YoloPose:
+        return QStringLiteral(u"YOLO 姿态（矩形和关键点）");
+    case formats::ImportFormat::CocoPose:
+        return QStringLiteral(u"COCO 关键点（矩形和关键点）");
     }
     return QString();
 }

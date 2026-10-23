@@ -7,7 +7,7 @@ joined by group_id, negative samples, skipped and unconfirmed images. Exports th
 liteanno-cli and converts the same files with upstream's LabelConverter
 (custom_to_yolo, custom_to_voc, custom_to_coco, custom_to_dota, custom_to_mask), then compares:
 
-- YOLO (also OBB), DOTA and VOC files byte for byte (VOC apart from <folder>, which names each output folder);
+- YOLO (also OBB and pose), DOTA and VOC files byte for byte (VOC apart from <folder>, which names each output folder);
 - COCO files after setting "info" and "licenses" equal, through json.dumps so that 1 and
   1.0 differ, and our file must be exactly json.dumps(indent=4) of itself;
 - masks pixel for pixel (PNG compression may differ).
@@ -88,10 +88,99 @@ ROTATIONS = {
 }
 
 
-def make_project(cli, root, images, shape_types, init=True):
+def point(label, x, y, **kw):
+    return shape(label, "point", [[x, y]], **kw)
+
+
+POSE_CLASSES = {"person": ["nose", "left_eye", "right_eye"], "car": ["front", "back"]}
+POSE_LABELS = list(POSE_CLASSES) + [k for names in POSE_CLASSES.values() for k in names]
+
+POSES = {
+    "k01.png": (200, 100, [rect("person", 10.5, 20.25, 80.0, 60.75, group_id=0),
+                           point("nose", 30.7, 40.2, group_id=0),
+                           point("left_eye", 35.1, 38.9, group_id=0, difficult=True),
+                           rect("car", 100.0, 10.0, 199.0, 99.0, group_id=3),
+                           point("back", 250.0, 120.0, group_id=3),  # outside: moved to the border
+                           point("front", 150.5, 50.0, group_id=3)],
+                True, None),
+    # Keypoints before their box, a two-point box, group ids that are not 0, 1...
+    "k02.png": (320, 240, [point("right_eye", 101.999, 51.5, group_id=7),
+                           shape("person", "rectangle", [[200.0, 150.0], [90.0, 40.0]], group_id=7),
+                           rect("person", 0.0, 0.0, 10.0, 10.0, group_id=2),
+                           point("nose", 0.0, 0.0, group_id=2)],
+                True, None),
+    "k03.png": (320, 240, [], True, None),  # negative sample
+    # "difficult": 1 is not True: the keypoint stays visible (2), as upstream has it.
+    "k04.png": (320, 240, [rect("car", 1.0, 2.0, 3.0, 4.0, group_id=1), point("front", 2.0, 3.0, group_id=1, difficult=1)],
+                True, None),
+}
+
+
+def pose_config(path, has_visible):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"has_visible: {'true' if has_visible else 'false'}\nclasses:\n")
+        for name, keypoints in POSE_CLASSES.items():
+            f.write(f"  {name}:\n" + "".join(f"    - {k}\n" for k in keypoints))
+
+
+def check_pose(cli, root, work, images, has_visible):
+    config = os.path.join(work, f"pose-{has_visible}.yaml")
+    pose_config(config, has_visible)
+    converter = LabelConverter(pose_cfg_file=config)
+    suffix = "" if has_visible else "-novisible"
+    out = os.path.join(work, "yolo-pose" + suffix)
+    run([cli, "export", root, "--format", "yolo-pose", "--out", out, "--pose-config", config])
+    names, manifest = exported(os.path.join(out, "liteanno-export.json"))
+    check_manifest(manifest, images)
+    upstream = out + "-upstream"
+    os.makedirs(upstream)
+    for name in names:
+        stem = os.path.splitext(name)[0]
+        converter.custom_to_yolo(os.path.join(root, stem + ".json"), os.path.join(upstream, stem + ".txt"), "pose")
+        compare_bytes(f"yolo-pose {stem}.txt", read(os.path.join(out, stem + ".txt")), read(os.path.join(upstream, stem + ".txt")))
+    if read(os.path.join(out, "pose_config.yaml")).decode("utf-8") != open(config, encoding="utf-8").read():
+        sys.exit("yolo-pose: pose_config.yaml differs from the configuration given")
+    print(f"yolo-pose{suffix}: {len(names)} files identical")
+
+    out = os.path.join(work, "coco-pose" + suffix)
+    run([cli, "export", root, "--format", "coco-pose", "--out", out, "--pose-config", config])
+    names, _ = exported(os.path.join(out, "liteanno-export.json"))
+    upstream = out + "-upstream"
+    os.makedirs(upstream)
+    LabelConverter(pose_cfg_file=config).custom_to_coco([os.path.join(root, n) for n in names], root, upstream, "pose")
+    ours_bytes = read(os.path.join(out, "coco_keypoints.json"))
+    ours = json.loads(ours_bytes)
+    theirs = json.loads(read(os.path.join(upstream, "coco_keypoints.json")))
+    if ours_bytes != json.dumps(ours, indent=4, ensure_ascii=False).encode("utf-8"):
+        sys.exit("coco-pose: not written as json.dump(indent=4)")
+    for key in ("info", "licenses"):
+        theirs[key] = ours[key]
+    # "ignore": upstream writes the "difficult" of the image's last shape into every
+    # annotation of the image; ours is the box's own.
+    expected = []
+    for name in names:
+        order, difficult = [], {}
+        for s in images[name][2]:
+            if s["group_id"] not in order:
+                order.append(s["group_id"])
+            if s["shape_type"] == "rectangle":
+                difficult[s["group_id"]] = int(s["difficult"])
+        expected += [difficult[g] for g in order]
+    if [a["ignore"] for a in ours["annotations"]] != expected:
+        sys.exit(f"coco-pose: ignore {[a['ignore'] for a in ours['annotations']]}, expected {expected}")
+    for mine, upstream_annotation in zip(ours["annotations"], theirs["annotations"]):
+        upstream_annotation["ignore"] = mine["ignore"]
+    a = json.dumps(ours, indent=4, ensure_ascii=False)
+    b = json.dumps(theirs, indent=4, ensure_ascii=False)
+    if a != b:
+        sys.exit(f"coco-pose differs\n--- ours ---\n{a}\n--- upstream ---\n{b}")
+    print(f"coco-pose{suffix}: {len(ours['images'])} images, {len(ours['annotations'])} annotations identical")
+
+
+def make_project(cli, root, images, shape_types, init=True, classes=CLASSES):
     os.makedirs(root)
     if init:
-        run([cli, "init", root, "--classes", ",".join(CLASSES), "--shape-types", shape_types])
+        run([cli, "init", root, "--classes", ",".join(classes), "--shape-types", shape_types])
     for name, (width, height, shapes, checked, skip) in images.items():
         image = np.zeros((height, width, 3), dtype=np.uint8)
         image[:, :] = (30, 90, 160)
@@ -341,6 +430,11 @@ def main():
     check_mask(cli, polygons, work, POLYGONS)
     check_labelme(cli, rectangles, work, RECTANGLES, "labelme-rectangles")
     check_labelme(cli, rotations, work, ROTATIONS, "labelme-rotations")
+
+    poses = os.path.join(work, "poses")
+    make_project(cli, poses, POSES, "rectangle,point", classes=POSE_LABELS)
+    check_pose(cli, poses, work, POSES, True)
+    check_pose(cli, poses, work, POSES, False)
 
     # A plain image folder, as X-AnyLabeling opens one: no project file, the class ids from a
     # classes.txt, and the files the same as upstream's, COCO ids included.

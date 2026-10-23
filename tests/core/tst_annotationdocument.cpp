@@ -231,6 +231,35 @@ private slots:
         QVERIFY(document.addShape(editableShape(0, ShapeType::Rotation, square())) >= 0);
     }
 
+    // A point drawn inside rectangles joins the smallest one's group; a rectangle without one
+    // gets the next free number, in the same edit. Outside any rectangle it gets none.
+    void keypointsJoinTheirRectangle()
+    {
+        Shape big = editableShape(1, ShapeType::Rectangle, {QPointF(0, 0), QPointF(100, 0), QPointF(100, 100), QPointF(0, 100)});
+        big.groupId = 5;
+        Shape small = editableShape(2, ShapeType::Rectangle, {QPointF(10, 10), QPointF(30, 10), QPointF(30, 30), QPointF(10, 30)});
+        Shape locked = editableShape(3, ShapeType::Rectangle, {QPointF(50, 50), QPointF(60, 50), QPointF(60, 60), QPointF(50, 60)});
+        locked.locked = true;
+        AnnotationDocument document({big, small, locked}, {}, {});
+        const auto point = [](double x, double y) { return editableShape(0, ShapeType::Point, {QPointF(x, y)}); };
+
+        qsizetype index = document.addKeypoint(point(20, 20));
+        QCOMPARE(document.shapes().at(index).groupId, std::optional<qint64>(6));
+        QCOMPARE(document.shapes().at(1).groupId, std::optional<qint64>(6));
+        QVERIFY(document.isModified());
+        index = document.addKeypoint(point(25, 25));
+        QCOMPARE(document.shapes().at(index).groupId, std::optional<qint64>(6));
+        index = document.addKeypoint(point(55, 55));  // the locked one is not changed
+        QCOMPARE(document.shapes().at(index).groupId, std::optional<qint64>(5));
+        QVERIFY(!document.shapes().at(2).groupId);
+        index = document.addKeypoint(point(200, 200));
+        QVERIFY(!document.shapes().at(index).groupId);
+        Shape given = point(20, 20);
+        given.groupId = 9;
+        index = document.addKeypoint(given);
+        QCOMPARE(document.shapes().at(index).groupId, std::optional<qint64>(9));
+    }
+
     void markSavedResetsTracking()
     {
         AnnotationDocument document = confirmedDocument();

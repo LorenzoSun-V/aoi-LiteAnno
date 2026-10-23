@@ -86,6 +86,31 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuesti
     QObject::connect(format, &QComboBox::currentIndexChanged, &dialog, updateClasses);
     updateClasses();
 
+    // Pose formats name each class's keypoints in a configuration file, as X-AnyLabeling does.
+    auto* pose = new QLineEdit;
+    pose->setObjectName(QStringLiteral("poseConfigFile"));
+    pose->setPlaceholderText(QStringLiteral(u"姿态格式需要：每个类别的关键点名称（X-AnyLabeling 的 yaml）"));
+    auto* browsePose = new QPushButton(QStringLiteral(u"选择…"));
+    QObject::connect(browsePose, &QPushButton::clicked, &dialog, [&dialog, pose] {
+        const QString chosen = QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择姿态配置文件"), pose->text(),
+                                                            QStringLiteral(u"姿态配置文件 (*.yaml *.yml);;所有文件 (*)"));
+        if (!chosen.isEmpty())
+            pose->setText(chosen);
+    });
+    auto* poseRow = new QHBoxLayout;
+    poseRow->addWidget(pose, 1);
+    poseRow->addWidget(browsePose);
+    form->addRow(QStringLiteral(u"姿态配置："), poseRow);
+    const auto needsPose = [format] {
+        return formats::exportNeedsPoseConfig(formats::ExportFormat(format->currentData().toInt()));
+    };
+    const auto updatePose = [=] {
+        pose->setEnabled(needsPose());
+        browsePose->setEnabled(needsPose());
+    };
+    QObject::connect(format, &QComboBox::currentIndexChanged, &dialog, updatePose);
+    updatePose();
+
     auto* folder = new QLineEdit;
     auto* browse = new QPushButton(QStringLiteral(u"选择…"));
     QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, folder] {
@@ -108,10 +133,15 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuesti
     layout->addWidget(note);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral(u"导出"));
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, &question, folder, classes, needsClasses] {
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, &question, folder, classes, needsClasses, pose, needsPose] {
         if (needsClasses() && !question.projectClasses && classes->text().trimmed().isEmpty()) {
             QMessageBox::warning(&dialog, QStringLiteral(u"导出"),
                                  QStringLiteral(u"这个格式需要类别编号，请选择类别文件（classes.txt，每行一个类别）。"));
+            return;
+        }
+        if (needsPose() && pose->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral(u"导出"),
+                                 QStringLiteral(u"姿态格式需要姿态配置文件（每个类别的关键点名称），请选择。"));
             return;
         }
         if (folder->text().trimmed().isEmpty()) {
@@ -131,6 +161,8 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuesti
     choice.copyImages = copy->isChecked();
     if (needsClasses())
         choice.classesFile = classes->text().trimmed();
+    if (needsPose())
+        choice.poseConfigFile = pose->text().trimmed();
     return choice;
 }
 
@@ -195,6 +227,10 @@ std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuesti
                                             QStringLiteral(u"颜色对照文件 (*.json);;所有文件 (*)"));
     });
     mapping->setPlaceholderText(QStringLiteral(u"不选：用掩膜文件夹或上一级里的 mask_colors.json"));
+    const auto [pose, browsePose] = fileRow(QStringLiteral("importPoseConfig"), QStringLiteral(u"姿态配置："), [&dialog](const QString& start) {
+        return QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择姿态配置文件"), start,
+                                            QStringLiteral(u"姿态配置文件 (*.yaml *.yml);;所有文件 (*)"));
+    });
 
     auto* onlyNew = new QRadioButton(QStringLiteral(u"只导入还没有标注的图片"));
     auto* append = new QRadioButton(QStringLiteral(u"已有标注的图片：追加在原有形状后面"));
@@ -214,6 +250,11 @@ std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuesti
         browseClasses->setEnabled(formats::importNeedsClassNames(f));
         mapping->setEnabled(f == formats::ImportFormat::Mask);
         browseMapping->setEnabled(f == formats::ImportFormat::Mask);
+        pose->setEnabled(formats::importTakesPoseConfig(f));
+        browsePose->setEnabled(formats::importTakesPoseConfig(f));
+        pose->setPlaceholderText(f == formats::ImportFormat::CocoPose
+                                     ? QStringLiteral(u"不选：关键点名称用 COCO 文件里的")
+                                     : QStringLiteral(u"YOLO 姿态需要：每个类别的关键点名称（X-AnyLabeling 的 yaml）"));
     };
     QObject::connect(format, &QComboBox::currentIndexChanged, &dialog, update);
     update();
@@ -224,11 +265,16 @@ std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuesti
     layout->addWidget(note);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral(u"导入"));
-    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, labels, chosenFormat] {
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, labels, chosenFormat, pose] {
         if (labels->text().trimmed().isEmpty()) {
             QMessageBox::warning(&dialog, QStringLiteral(u"导入"),
                                  formats::importReadsOneFile(chosenFormat()) ? QStringLiteral(u"请选择 COCO 标注文件。")
                                                                              : QStringLiteral(u"请选择标注文件夹。"));
+            return;
+        }
+        if (chosenFormat() == formats::ImportFormat::YoloPose && pose->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral(u"导入"),
+                                 QStringLiteral(u"YOLO 姿态需要姿态配置文件（每个类别的关键点名称），请选择。"));
             return;
         }
         dialog.accept();
@@ -245,6 +291,8 @@ std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuesti
         choice.classesFile = classes->text().trimmed();
     if (choice.format == formats::ImportFormat::Mask)
         choice.mappingFile = mapping->text().trimmed();
+    if (formats::importTakesPoseConfig(choice.format))
+        choice.poseConfigFile = pose->text().trimmed();
     choice.mode = append->isChecked()    ? application::ImportMode::Append
                   : replace->isChecked() ? application::ImportMode::Replace
                                          : application::ImportMode::OnlyNew;

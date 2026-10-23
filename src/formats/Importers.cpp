@@ -7,6 +7,7 @@
 #include <QXmlStreamReader>
 
 #include <QHash>
+#include <QSet>
 
 #include <algorithm>
 #include <charconv>
@@ -36,6 +37,8 @@ constexpr FormatName kFormatNames[] = {
     {ImportFormat::CocoDetection, "coco-det"},
     {ImportFormat::CocoSegmentation, "coco-seg"},
     {ImportFormat::Mask, "mask"},
+    {ImportFormat::YoloPose, "yolo-pose"},
+    {ImportFormat::CocoPose, "coco-pose"},
 };
 
 // Python's float(): correctly rounded, an optional sign, surrounding spaces allowed. Infinity
@@ -154,6 +157,7 @@ QString importLabelSuffix(ImportFormat format)
         return QStringLiteral(".png");
     case ImportFormat::CocoDetection:
     case ImportFormat::CocoSegmentation:
+    case ImportFormat::CocoPose:
         return {};
     default:
         return QStringLiteral(".txt");
@@ -162,7 +166,13 @@ QString importLabelSuffix(ImportFormat format)
 
 bool importReadsOneFile(ImportFormat format)
 {
-    return format == ImportFormat::CocoDetection || format == ImportFormat::CocoSegmentation;
+    return format == ImportFormat::CocoDetection || format == ImportFormat::CocoSegmentation
+           || format == ImportFormat::CocoPose;
+}
+
+bool importTakesPoseConfig(ImportFormat format)
+{
+    return format == ImportFormat::YoloPose || format == ImportFormat::CocoPose;
 }
 
 bool importNeedsClassNames(ImportFormat format)
@@ -242,6 +252,74 @@ ImportedLabels parseYoloLabels(const QByteArray& bytes, ImportFormat format, con
             Shape shape = newShape(ShapeType::Rotation, label, std::move(points));
             shape.direction = rotationTheta(shape.points);
             result.shapes.append(std::move(shape));
+        }
+    }
+    return result;
+}
+
+ImportedLabels parseYoloPoseLabels(const QByteArray& bytes, const PoseConfig& pose, int width, int height)
+{
+    ImportedLabels result;
+    const QStringList lines = textLines(bytes);
+    const int interval = pose.hasVisible ? 3 : 2;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QStringList parts = fields(lines[i]);
+        if (parts.isEmpty())
+            continue;
+        const int lineNumber = i + 1;
+        const std::optional<int> classIndex = parseIndex(parts[0]);
+        if (!classIndex) {
+            result.error = lineError(lineNumber, QStringLiteral(u"类别编号“%1”不是非负整数").arg(parts[0]));
+            return result;
+        }
+        if (*classIndex >= pose.classes.size()) {
+            result.error = lineError(lineNumber, QStringLiteral(u"姿态配置文件里没有编号为 %1 的类别").arg(*classIndex));
+            return result;
+        }
+        if (parts.size() < 5 || (parts.size() - 5) % interval != 0) {
+            result.error = lineError(lineNumber, pose.hasVisible
+                                                     ? QStringLiteral(u"应是类别、4 个框的数，再加每个关键点的 x y 可见性")
+                                                     : QStringLiteral(u"应是类别、4 个框的数，再加每个关键点的 x y"));
+            return result;
+        }
+        QList<double> values;
+        for (qsizetype k = 1; k < parts.size(); ++k) {
+            // The visibility is read with int(): a whole number.
+            const bool flag = pose.hasVisible && k >= 5 && (k - 5) % 3 == 2;
+            const std::optional<double> value = flag ? std::optional<double>(parseIndex(parts[k]).value_or(-1)) : parseFloat(parts[k]);
+            if (!value || (flag && (*value < 0 || *value > 2))) {
+                result.error = lineError(lineNumber, flag ? QStringLiteral(u"可见性“%1”应是 0、1 或 2").arg(parts[k])
+                                                          : QStringLiteral(u"“%1”不是数字").arg(parts[k]));
+                return result;
+            }
+            values.append(*value);
+        }
+        const auto& [label, names] = pose.classes[*classIndex];
+        const qint64 groupId = i;
+        // int(): toward zero.
+        const double xmin = std::trunc((values[0] - values[2] / 2) * width);
+        const double ymin = std::trunc((values[1] - values[3] / 2) * height);
+        const double xmax = std::trunc((values[0] + values[2] / 2) * width);
+        const double ymax = std::trunc((values[1] + values[3] / 2) * height);
+        Shape box = newShape(ShapeType::Rectangle, label, {{xmin, ymin}, {xmax, ymin}, {xmax, ymax}, {xmin, ymax}});
+        setUnedited(box, false, groupId);
+        result.shapes.append(std::move(box));
+        for (qsizetype k = 4, n = 0; k < values.size(); k += interval, ++n) {
+            const double x = values[k] * width;
+            const double y = values[k + 1] * height;
+            const int flag = pose.hasVisible ? int(values[k + 2]) : 0;
+            // With flags only flag 0 is a missing keypoint; upstream also drops a visible one at
+            // (0, 0), which our own export writes as "0 0 2" (a deliberate difference).
+            if (pose.hasVisible ? flag == 0 : (x == 0 && y == 0))
+                continue;
+            if (n >= names.size()) {
+                // Upstream pads lines to the most keypoints a class has, with zeros only.
+                result.error = lineError(lineNumber, QStringLiteral(u"类别“%1”只有 %2 个关键点，这里有更多").arg(label).arg(names.size()));
+                return result;
+            }
+            Shape point = newShape(ShapeType::Point, names[n], {{x, y}});
+            setUnedited(point, flag == 1, groupId);
+            result.shapes.append(std::move(point));
         }
     }
     return result;
@@ -502,7 +580,7 @@ std::optional<double> numberValue(const Json& value)
 
 } // namespace
 
-CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
+CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format, const PoseConfig* pose)
 {
     CocoLabels result;
     const JsonParseResult parsed = parseJson(bytes);
@@ -526,12 +604,34 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
     }
 
     QHash<QString, QString> categoryNames;
+    QHash<QString, QStringList> keypointNames;  // CocoPose, by category name
     for (const Json& category : *categories) {
         if (!category.is_object() || !category.contains("id") || !category.contains("name") || !category["name"].is_string()) {
             result.error = QStringLiteral(u"categories 里有缺少 id 或 name 的类别");
             return result;
         }
-        categoryNames.insert(keyOf(category["id"]), utf8(category["name"].get<std::string>()));
+        const QString name = utf8(category["name"].get<std::string>());
+        categoryNames.insert(keyOf(category["id"]), name);
+        if (format != ImportFormat::CocoPose)
+            continue;
+        if (pose) {
+            if (const QStringList* names = pose->keypoints(name))
+                keypointNames.insert(name, *names);
+            continue;
+        }
+        const auto keypoints = category.find("keypoints");
+        bool ok = keypoints != category.end() && keypoints->is_array() && !keypoints->empty();
+        QStringList names;
+        for (size_t k = 0; ok && k < keypoints->size(); ++k) {
+            ok = (*keypoints)[k].is_string();
+            if (ok)
+                names.append(utf8((*keypoints)[k].get<std::string>()));
+        }
+        if (!ok || QSet<QString>(names.cbegin(), names.cend()).size() != names.size()) {
+            result.error = QStringLiteral(u"类别“%1”的 keypoints 应是不重复的关键点名称；也可以选择姿态配置文件").arg(name);
+            return result;
+        }
+        keypointNames.insert(name, names);
     }
 
     QHash<QString, qsizetype> imageIndex;
@@ -563,6 +663,7 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
     // Per image, the number of annotations made of several polygons so far (upstream's
     // group ids, from 1).
     QHash<qsizetype, qint64> groups;
+    QHash<qsizetype, qint64> poseGroups;  // per image, from 0 (upstream's image_ids counter)
     int annotationNumber = 0;
     for (const Json& annotation : *annotations) {
         ++annotationNumber;
@@ -600,7 +701,7 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
             }
             difficult = *flag;
         }
-        if (format == ImportFormat::CocoDetection) {
+        if (format == ImportFormat::CocoDetection || format == ImportFormat::CocoPose) {
             const auto bbox = annotation.find("bbox");
             std::optional<double> values[4];
             bool ok = bbox != annotation.end() && bbox->is_array() && bbox->size() == 4;
@@ -615,8 +716,50 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
             const double xmin = *values[0], ymin = *values[1];
             const double xmax = xmin + *values[2], ymax = ymin + *values[3];
             Shape shape = newShape(ShapeType::Rectangle, label, {{xmin, ymin}, {xmax, ymin}, {xmax, ymax}, {xmin, ymax}});
-            setUnedited(shape, difficult);
+            if (format == ImportFormat::CocoDetection) {
+                setUnedited(shape, difficult);
+                labels.shapes.append(std::move(shape));
+                continue;
+            }
+            // Pose: the annotation's number in its image, from 0, joins the box and its points.
+            const auto names = keypointNames.constFind(label);
+            if (names == keypointNames.cend()) {
+                fail(QStringLiteral(u"姿态配置文件里没有类别“%1”").arg(label));
+                continue;
+            }
+            const auto keypoints = annotation.find("keypoints");
+            const size_t count = keypoints != annotation.end() && keypoints->is_array() ? keypoints->size() : 0;
+            const size_t n = size_t(names->size());
+            if (count != 3 * n && count != 2 * n) {
+                fail(QStringLiteral(u"keypoints 应是 %1 个关键点的 x y 可见性（或 x y）").arg(n));
+                continue;
+            }
+            const size_t interval = count == 3 * n ? 3 : 2;
+            QList<Shape> points;
+            QList<bool> pointFlags;  // this annotation's own, also when it fails half way
+            for (size_t k = 0; k < count; k += interval) {
+                const std::optional<double> x = numberValue((*keypoints)[k]);
+                const std::optional<double> y = numberValue((*keypoints)[k + 1]);
+                const std::optional<double> flag = interval == 3 ? numberValue((*keypoints)[k + 2]) : 0.0;
+                if (!x || !y || !flag || (*flag != 0 && *flag != 1 && *flag != 2)) {
+                    fail(QStringLiteral(u"keypoints 里有不是数字的值，或可见性不是 0、1、2"));
+                    break;
+                }
+                if (*x == 0 && *y == 0 && *flag == 0)
+                    continue;
+                Shape point = newShape(ShapeType::Point, (*names)[qsizetype(k / interval)], {{*x, *y}});
+                points.append(std::move(point));
+                pointFlags.append(*flag == 1);
+            }
+            if (!labels.error.isEmpty())
+                continue;
+            const qint64 groupId = poseGroups[index]++;
+            setUnedited(shape, difficult, groupId);
             labels.shapes.append(std::move(shape));
+            for (qsizetype k = 0; k < points.size(); ++k) {
+                setUnedited(points[k], pointFlags[k], groupId);
+                labels.shapes.append(std::move(points[k]));
+            }
             continue;
         }
 

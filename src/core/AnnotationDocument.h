@@ -44,6 +44,10 @@ public:
     // Returns the index of the new shape, or -1 when it is not an editable shape this
     // build can create.
     qsizetype addShape(Shape shape);
+    // addShape for a point drawn by hand: inside a rectangle it joins that rectangle's group,
+    // as a pose keypoint. The smallest rectangle around it is taken; one without a group
+    // (and not locked) gets the next free number. One edit, so one undo.
+    qsizetype addKeypoint(Shape point);
     bool removeShape(qsizetype index);
     bool setImageLabel(const QString& name, bool value);
 

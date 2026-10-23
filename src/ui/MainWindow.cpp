@@ -322,6 +322,13 @@ void MainWindow::buildUi()
         else
             refresh();
     });
+    connect(m_shapeForm, &ShapeForm::groupChosen, this, [this](std::optional<qint64> group) {
+        const qsizetype index = m_shapeForm->shown().index;
+        if (m_session && !m_session->isReadOnly() && m_session->setShapeGroupId(index, group))
+            edited();
+        else
+            refresh();
+    });
     layout->addWidget(m_shapeForm);
 
     m_imageLabelPanel = new QGroupBox(QStringLiteral(u"图片级标签"));
@@ -904,6 +911,7 @@ bool MainWindow::exportAnnotations()
     request.outputDir = choice->outputDir;
     request.copyImages = choice->copyImages;
     request.classesFile = choice->classesFile;
+    request.poseConfigFile = choice->poseConfigFile;
     if (!choice->wholeProject && batchNumber > 0)
         request.batches = {m_batchStem};
     const application::ExportService service(*m_project, imaging::readImageInfo);
@@ -991,6 +999,7 @@ bool MainWindow::importAnnotations()
         request.labelDir = choice->labels;
     request.classesFile = choice->classesFile;
     request.mappingFile = choice->mappingFile;
+    request.poseConfigFile = choice->poseConfigFile;
     request.mode = choice->mode;
     for (auto it = m_heldEdits.cbegin(); it != m_heldEdits.cend(); ++it)
         request.heldImages.insert(it.key());
@@ -2212,7 +2221,8 @@ void MainWindow::addDrawnShape(const Shape& drawn)
     Shape shape = drawn;
     shape.label = *label;
     m_lastLabel = *label;
-    const qsizetype index = m_session->addShape(shape);
+    // A point drawn inside a rectangle is a keypoint of it: they share a group number.
+    const qsizetype index = shape.type == ShapeType::Point ? m_session->addKeypoint(shape) : m_session->addShape(shape);
     if (index >= 0) {
         m_canvas->setSelectedShape(index);
         edited();
@@ -2548,6 +2558,7 @@ void MainWindow::refreshShapeForm()
         shown.index = index;
         shown.imagePath = m_session->imagePath();
         shown.label = shape.label;
+        shown.groupId = shape.groupId;
         const bool recognized = shape.kind == ShapeKind::Editable;
         shown.type = shape.kind == ShapeKind::Unrecognized ? QStringLiteral(u"无法识别的对象") : shapeTypeText(shape.type);
         if (shape.type == ShapeType::Circle && shape.points.size() == 2) {

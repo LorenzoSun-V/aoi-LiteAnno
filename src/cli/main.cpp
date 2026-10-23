@@ -223,6 +223,7 @@ int exportProject(const QCommandLineParser& parser, const Common& common)
     request.skipUnconvertible = parser.isSet(QStringLiteral("skip-unconvertible"));
     request.copyImages = parser.isSet(QStringLiteral("copy-images"));
     request.classesFile = parser.value(QStringLiteral("classes-file"));
+    request.poseConfigFile = parser.value(QStringLiteral("pose-config"));
     const application::ExportService service(*project, imaging::readImageInfo);
     const application::ExportReport report = service.run(request);
     for (const application::ExportItem& item : report.unconvertible())
@@ -275,6 +276,7 @@ int importLabels(const QCommandLineParser& parser, const Common& common)
         request.labelDir = parser.value(QStringLiteral("labels"));
     request.classesFile = parser.value(QStringLiteral("classes-file"));
     request.mappingFile = parser.value(QStringLiteral("mapping"));
+    request.poseConfigFile = parser.value(QStringLiteral("pose-config"));
     request.batches = common.batches;
     request.mode = *mode;
     request.skipUnconvertible = parser.isSet(QStringLiteral("skip-unconvertible"));
@@ -352,8 +354,8 @@ int main(int argc, char* argv[])
         {QStringLiteral("classes"), QStringLiteral(u"init：类别，用逗号分隔，编号从 0 开始"), QStringLiteral("names")},
         {QStringLiteral("shape-types"), QStringLiteral(u"init：形状类型，如 rectangle,polygon"), QStringLiteral("types")},
         {QStringLiteral("batch-size"), QStringLiteral(u"init：每批图片数，默认 1000"), QStringLiteral("count")},
-        {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | labelme | classify；"
-                        u"import：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask"),
+        {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | yolo-pose | coco-pose | labelme | classify；"
+                        u"import：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | yolo-pose | coco-pose"),
          QStringLiteral("format")},
         {QStringLiteral("out"), QStringLiteral(u"export：导出文件夹，必须是新的或空的"), QStringLiteral("folder")},
         {QStringLiteral("skip-unconvertible"), QStringLiteral(u"export、import：跳过无法转换的图片，继续处理其余图片")},
@@ -362,6 +364,7 @@ int main(int argc, char* argv[])
         {QStringLiteral("mode"), QStringLiteral(u"import：已有标注的图片 new 不动（默认）、append 追加、replace 替换"), QStringLiteral("mode")},
         {QStringLiteral("copy-images"), QStringLiteral(u"export：同时复制图片")},
         {QStringLiteral("classes-file"), QStringLiteral(u"export、import YOLO：类别文件 classes.txt，每行一个类别，第一行编号 0"), QStringLiteral("file")},
+        {QStringLiteral("pose-config"), QStringLiteral(u"export、import 姿态（yolo-pose、coco-pose）：姿态配置文件 .yaml，每个类别的关键点名称"), QStringLiteral("file")},
         {QStringLiteral("local-data"), QStringLiteral(u"本机数据文件夹（测试用）"), QStringLiteral("folder")},
         {QStringLiteral("licenses"), QStringLiteral(u"显示源码地址、Qt 的授权说明和附带的许可证列表")},
         {QStringLiteral("license"), QStringLiteral(u"显示一份许可证全文（名称见 --licenses）"), QStringLiteral("name")},
