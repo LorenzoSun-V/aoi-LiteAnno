@@ -2,6 +2,7 @@
 add_library(liteanno_ui_lib STATIC
     Canvas.cpp
     Canvas.h
+    ElidedLabel.h
     ListDelegates.cpp
     ListDelegates.h
     MainWindow.cpp

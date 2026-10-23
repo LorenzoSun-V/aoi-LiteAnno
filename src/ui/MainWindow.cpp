@@ -6,6 +6,7 @@
 #include "core/BundledLicenses.h"
 #include "dataset/DirectoryScanner.h"
 #include "imaging/ImageLoader.h"
+#include "ui/ElidedLabel.h"
 #include "ui/ListDelegates.h"
 #include "ui/Texts.h"
 #include "ui/Theme.h"
@@ -203,9 +204,9 @@ void MainWindow::buildUi()
     layout->setContentsMargins(14, 14, 14, 14);
     layout->setSpacing(8);
     auto* titleRow = new QHBoxLayout;
-    m_imageStatus = label(QString(), "title");
+    m_imageStatus = new ElidedLabel;  // long names end in "…"; the tooltip has them whole
+    m_imageStatus->setProperty("role", QStringLiteral("title"));
     m_imageStatus->setObjectName(QStringLiteral("imageStatus"));
-    m_imageStatus->setMinimumWidth(80);
     m_imageStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     titleRow->addWidget(m_imageStatus, 1);
     m_statusChip = new QLabel;
