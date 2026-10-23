@@ -8,6 +8,7 @@
 #include "platform/VolumeBinding.h"
 #include "ui/MainWindow.h"
 #include "ui/Prompts.h"
+#include "ui/Theme.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -422,6 +423,94 @@ private slots:
 
         w.window.closeProject();
         QVERIFY(!QDir(project.data.filePath(QStringLiteral("liteanno"))).exists());
+    }
+
+    // The theme (style sheet and icons) is built in, and the panel shows the status, the
+    // size and the shapes of the image.
+    void themedWindow()
+    {
+        const QString sheet = themeStyleSheet();
+        QVERIFY(sheet.contains(QStringLiteral("QPushButton#confirmButton")));
+        Project project;
+        Window w(project.options());
+        for (const char* name : {"edit_polygon", "create_rectangle", "create_polygon", "create_rotation", "create_point",
+                                 "create_line", "create_linestrip", "create_circle", "open_prev", "open_next", "fit_window"}) {
+            const QAction* action = w.window.findChild<QAction*>(QLatin1String(name));
+            QVERIFY2(action && !action->icon().pixmap(QSize(20, 20)).isNull(), name);
+            QVERIFY2(!action->text().contains(QLatin1Char('(')), name);  // the keys are in the tooltip
+            QVERIFY2(action->toolTip().contains(action->shortcut().toString(QKeySequence::NativeText)), name);
+        }
+
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* chip = w.window.findChild<QLabel*>(QStringLiteral("statusChip"));
+        QCOMPARE(chip->text(), QStringLiteral(u"未处理"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("new"));
+        QVERIFY2(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text().contains(QStringLiteral(u"第 1 / 3 张")),
+                 qPrintable(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(chip->text(), QStringLiteral(u"待确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("wait"));
+        QVERIFY(w.window.confirmCurrent());
+        QCOMPARE(chip->text(), QStringLiteral(u"已确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("ok"));
+
+        // The rows are drawn by the delegates, with the theme applied.
+        qApp->setStyleSheet(sheet);
+        QVERIFY(!w.window.grab().isNull());
+        qApp->setStyleSheet(QString());
+    }
+
+    // Review of #13: the open image is confirmed, then deleted on disk and the folder scanned
+    // again. The list and the panel must show "缺失", not the confirmed status of the open
+    // document.
+    void missingShowsBeforeTheDocumentStatus()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.imageStatusAt(0), std::optional<AnnotationStatus>(AnnotationStatus::Confirmed));
+
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        // The missing image is kept in the list (at its end) and stays the image shown.
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        int row = -1;
+        for (int i = 0; i < list->count(); ++i) {
+            if (list->item(i)->text().startsWith(QStringLiteral("line1/0001.png")))
+                row = i;
+        }
+        QVERIFY(row >= 0);
+        QVERIFY2(list->item(row)->text().contains(QStringLiteral(u"缺失")), qPrintable(list->item(row)->text()));
+        QCOMPARE(w.window.imageStatusAt(row), std::optional<AnnotationStatus>(AnnotationStatus::Missing));
+        QCOMPARE(w.window.currentIndex(), row);
+        auto* chip = w.window.findChild<QLabel*>(QStringLiteral("statusChip"));
+        QCOMPARE(chip->text(), QStringLiteral(u"缺失"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("problem"));
+    }
+
+    // Review of #13: the window shows the logo and the program's name only, also with a
+    // folder open; label tags pick the text colour by contrast.
+    void titleAndTagText()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
+        QVERIFY(!w.window.windowIcon().pixmap(QSize(32, 32)).isNull());
+        w.window.closeProject();
+        QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
+
+        const QColor dark(0x11, 0x11, 0x11);
+        QCOMPARE(readableTextOn(QColor(0xFF, 0xFF, 0x00)), dark);  // pure yellow (HSL lightness 0.5)
+        QCOMPARE(readableTextOn(QColor(0xFF, 0xB0, 0x20)), dark);
+        QCOMPARE(readableTextOn(QColor(0x00, 0xFF, 0x00)), dark);
+        QCOMPARE(readableTextOn(QColor(0x1F, 0x6F, 0xEB)), QColor(Qt::white));
+        QCOMPARE(readableTextOn(QColor(0x80, 0x00, 0x00)), QColor(Qt::white));
     }
 
     void projectOpenElsewhereIsLocked()

@@ -101,6 +101,9 @@ public:
     application::DocumentSession* session() const { return m_session.get(); }
     Canvas* canvas() const { return m_canvas; }
     QString saveStateText() const;
+    // The status the image list and the panel show for row `index`: "missing" before what the
+    // annotation file says; empty when not known yet.
+    std::optional<AnnotationStatus> imageStatusAt(int index) const;
     int savingWaits() const { return m_savingWaits; }
     bool hasProject() const { return m_project != nullptr; }
 
@@ -136,6 +139,8 @@ private:
     void refresh();
     // The batch line of the status bar, and the completion event when the batch is done.
     void refreshBatchState();
+    // The save line of the status bar.
+    void refreshSaveState();
     void refreshImageItem(int index);
     QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
@@ -273,7 +278,10 @@ private:
     Canvas* m_canvas = nullptr;
     QListWidget* m_imageList = nullptr;
     QListWidget* m_shapeList = nullptr;
-    QLabel* m_imageStatus = nullptr;
+    QLabel* m_imageStatus = nullptr;  // the image's path
+    QLabel* m_statusChip = nullptr;
+    QLabel* m_imageInfo = nullptr;  // size, format, place in the list
+    QLabel* m_shapeCount = nullptr;
     QLabel* m_readOnlyNote = nullptr;
     QLabel* m_blockers = nullptr;
     QLabel* m_saveState = nullptr;
@@ -284,6 +292,7 @@ private:
     QPushButton* m_unskipButton = nullptr;
     QPushButton* m_correctSizeButton = nullptr;
     QPushButton* m_deleteButton = nullptr;
+    QPushButton* m_editLabelButton = nullptr;
     QGroupBox* m_imageLabelPanel = nullptr;
     QVBoxLayout* m_imageLabelLayout = nullptr;
     QList<QAbstractButton*> m_imageLabelButtons;

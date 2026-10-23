@@ -68,6 +68,9 @@ public:
     // One image pixel per screen pixel, keeping the middle where it is.
     void zoomToOriginalSize();
     double zoom() const { return m_scale; }
+    QSize imageSize() const { return m_image.size(); }
+    // The colour shapes of the class are drawn in.
+    QColor colorFor(const QString& label) const;
     // Takes back the last point of a polygon being drawn (Ctrl+Z while drawing, as in
     // X-AnyLabeling). False when no polygon is being drawn.
     bool removeLastPolygonPoint();
@@ -121,7 +124,6 @@ private:
     // Z/X/C/V: turns the selected rotated box by `degrees`, as upstream's keys do.
     bool rotateSelectedBy(double degrees);
     void cancelDrawing();
-    QColor colorFor(const QString& label) const;
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
 
     QImage m_image;

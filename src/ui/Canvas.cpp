@@ -1,5 +1,7 @@
 #include "ui/Canvas.h"
 
+#include "ui/Theme.h"
+
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -42,7 +44,7 @@ Canvas::Canvas(QWidget* parent)
     setMinimumSize(200, 150);
     setAutoFillBackground(true);
     QPalette background = palette();
-    background.setColor(QPalette::Window, QColor(48, 48, 48));
+    background.setColor(QPalette::Window, QColor(0x2A, 0x2E, 0x33));
     setPalette(background);
 }
 
@@ -675,8 +677,9 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
     if (shape.kind != ShapeKind::Editable)
         pen.setStyle(Qt::DashLine);
     painter.setPen(pen);
+    // Only the selected shape is tinted, so that the image under the others stays clear.
     QColor fill = color;
-    fill.setAlpha(selected ? 80 : 40);
+    fill.setAlpha(selected ? 56 : 0);
 
     const QTransform t = transform();
     QPolygonF polygon;
@@ -711,12 +714,21 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
     }
 
     if (m_labelsVisible && !shape.label.isEmpty()) {
-        painter.setPen(color);
-        painter.drawText(polygon.boundingRect().topLeft() + QPointF(2, -4), shape.label);
+        // The label on a tag of the class colour above the shape's top left corner, in dark
+        // or white text, whichever contrasts more with the colour.
+        const QFontMetricsF metrics(painter.font());
+        const QPointF corner = polygon.boundingRect().topLeft();
+        const QRectF tag(corner.x() - pen.widthF() / 2, corner.y() - metrics.height() - 4,
+                         metrics.horizontalAdvance(shape.label) + 10, metrics.height() + 4);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawRoundedRect(tag, 2, 2);
+        painter.setPen(readableTextOn(color));
+        painter.drawText(tag, Qt::AlignCenter, shape.label);
     }
     if (selected) {
-        painter.setPen(QPen(Qt::white, 1));
-        painter.setBrush(color);
+        painter.setPen(QPen(color, 1.5));
+        painter.setBrush(Qt::white);
         for (const QPointF& p : polygon)
             painter.drawRect(QRectF(p - QPointF(kHandleRadius - 1, kHandleRadius - 1),
                                     QSizeF(2 * kHandleRadius - 2, 2 * kHandleRadius - 2)));
