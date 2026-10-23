@@ -19,6 +19,7 @@ class ShapeForm : public QWidget
 public:
     struct Shown {
         qsizetype index = -1;  // the shape's row; -1 hides the form
+        QString imagePath;  // with `index`, which shape it is
         QString label;
         QString type;
         QRectF box;  // in image pixels
@@ -34,6 +35,10 @@ public:
     // Shows `shown`. A field being typed in keeps its text while the same shape is shown.
     void setShape(const Shown& shown);
     const Shown& shown() const { return m_shown; }
+    // Takes what is typed in the field being edited, as Enter would. The window calls it
+    // before it leaves the image or the shape by a way that does not move the focus (the
+    // buttons under the canvas, keys, menus), while the shape shown is still the one edited.
+    void commitPending();
 
 signals:
     void labelChosen(const QString& label);

@@ -9,6 +9,7 @@
 #include <QWheelEvent>
 
 #include <algorithm>
+#include <limits>
 
 namespace liteanno::ui {
 
@@ -103,7 +104,7 @@ ShapeForm::ShapeForm(QWidget* parent)
 
 void ShapeForm::setShape(const Shown& shown)
 {
-    const bool same = shown.index >= 0 && shown.index == m_shown.index;
+    const bool same = shown.index >= 0 && shown.index == m_shown.index && shown.imagePath == m_shown.imagePath;
     m_shown = shown;
     setVisible(shown.index >= 0);
     if (shown.index < 0)
@@ -145,21 +146,42 @@ void ShapeForm::setShape(const Shown& shown)
     m_note->setVisible(!m_note->text().isEmpty());
 }
 
+void ShapeForm::commitPending()
+{
+    if (m_shown.index < 0)
+        return;
+    for (QDoubleSpinBox* field : {m_x, m_y, m_width, m_height}) {
+        if (field->hasFocus())
+            field->interpretText();  // sends valueChanged when the text is a new value
+    }
+    if (m_shown.freeText && m_label->hasFocus())
+        commitLabel(m_label->currentText(), true);
+}
+
 void ShapeForm::numberEdited(QDoubleSpinBox* field)
 {
     if (m_shown.index < 0 || !m_shown.editable || !m_shown.rectangle)
         return;
     // Only the field changed counts; the others keep the shape's exact values, not the
     // rounded ones shown.
-    QRectF box = m_shown.box;
+    // The fields' limits are rounded to the decimal shown, so the image's edges are kept
+    // here, against the exact box (one that is already outside stays where it is).
+    const QRectF& old = m_shown.box;
+    const bool sized = !m_shown.imageSize.isEmpty();
+    const double imageWidth = sized ? m_shown.imageSize.width() : std::numeric_limits<double>::max();
+    const double imageHeight = sized ? m_shown.imageSize.height() : std::numeric_limits<double>::max();
+    const auto limit = [](double value, double low, double high, double current) {
+        return std::clamp(value, std::min(low, current), std::max(high, current));
+    };
+    QRectF box = old;
     if (field == m_x)
-        box.moveLeft(m_x->value());
+        box.moveLeft(limit(m_x->value(), 0, imageWidth - old.width(), old.x()));
     else if (field == m_y)
-        box.moveTop(m_y->value());
+        box.moveTop(limit(m_y->value(), 0, imageHeight - old.height(), old.y()));
     else if (field == m_width)
-        box.setWidth(m_width->value());
+        box.setWidth(limit(m_width->value(), 1, imageWidth - old.x(), old.width()));
     else if (field == m_height)
-        box.setHeight(m_height->value());
+        box.setHeight(limit(m_height->value(), 1, imageHeight - old.y(), old.height()));
     else
         return;
     if (box != m_shown.box)

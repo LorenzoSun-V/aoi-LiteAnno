@@ -778,6 +778,7 @@ bool MainWindow::exportAnnotations()
 {
     if (!m_project)
         return false;
+    m_shapeForm->commitPending();
     const Busy busy(this);
     // What is exported is what the files hold.
     m_idleTimer.stop();
@@ -1429,6 +1430,7 @@ bool MainWindow::closeProject(bool force)
 {
     if (!m_project)
         return true;
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     commitCurrent();
     flushSaves();
@@ -1621,6 +1623,8 @@ bool MainWindow::goToImage(int index)
         return true;
     }
     const QString path = m_images[index].path;
+    // A number typed in "选中形状" belongs to this image: take it before leaving.
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     commitCurrent();
     // Architecture 8.2: at the limit, wait for saves before showing the next image.
@@ -1749,6 +1753,7 @@ void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
 
 void MainWindow::saveNow()
 {
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     // An explicit save asks again about an external change answered with "以后再说".
     const bool retry = std::exchange(m_externalChangeDeferred, false);
@@ -2053,6 +2058,7 @@ bool MainWindow::deleteSelectedShape()
 
 bool MainWindow::confirmCurrent()
 {
+    m_shapeForm->commitPending();
     if (!m_session || !m_session->confirm())
         return false;
     edited();
@@ -2061,6 +2067,7 @@ bool MainWindow::confirmCurrent()
 
 bool MainWindow::skipCurrent()
 {
+    m_shapeForm->commitPending();
     if (!m_session || m_session->isReadOnly())
         return false;
     const std::optional<QString> reason = m_prompts.skipReason();
@@ -2264,6 +2271,7 @@ void MainWindow::refreshShapeForm()
     if (m_session && index >= 0 && index < m_session->document().shapes().size()) {
         const Shape& shape = m_session->document().shapes()[index];
         shown.index = index;
+        shown.imagePath = m_session->imagePath();
         shown.label = shape.label;
         const bool recognized = shape.kind == ShapeKind::Editable;
         shown.type = shape.kind == ShapeKind::Unrecognized ? QStringLiteral(u"无法识别的对象") : shapeTypeText(shape.type);

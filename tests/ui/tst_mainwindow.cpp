@@ -637,6 +637,68 @@ private slots:
         QVERIFY(label->isEnabled());
     }
 
+    // Review of #15: the fields show one decimal, so their limits are rounded (139.75 shows
+    // as 139.8). A value at the shown limit must still keep the rectangle in the image.
+    void selectedShapeFormStaysInTheImage()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.session()->setShapePoints(
+            0, {QPointF(20.25, 10.5), QPointF(80.5, 10.5), QPointF(80.5, 60.25), QPointF(20.25, 60.25)}));
+        auto* shapes = w.window.findChild<QListWidget*>(QStringLiteral("shapeList"));
+        shapes->setCurrentRow(-1);
+        shapes->setCurrentRow(0);
+        const auto type = [&](const char* name, const QString& text) {
+            auto* field = w.window.findChild<QDoubleSpinBox*>(QLatin1String(name));
+            field->setFocus();
+            field->selectAll();
+            QTest::keyClicks(field, text);
+            QTest::keyClick(field, Qt::Key_Return);
+        };
+        type("shapeX", QStringLiteral("139.8"));
+        PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[2].x(), 200.0);
+        QCOMPARE(points[0].x(), 139.75);  // the width stays 60.25
+        QVERIFY(w.window.undo());
+        shapes->setCurrentRow(-1);
+        shapes->setCurrentRow(0);
+        type("shapeWidth", QStringLiteral("179.8"));
+        points = w.document().shapes()[0].points;
+        QCOMPARE(points[0].x(), 20.25);
+        QCOMPARE(points[2].x(), 200.0);
+        type("shapeHeight", QStringLiteral("89.8"));  // 100 - 10.5 = 89.5 at most
+        QVERIFY(w.document().shapes()[0].points[2].y() <= 100.0);
+    }
+
+    // Review of #15: a number typed but not yet entered is taken when the image is changed
+    // with a button that does not take the focus (the bar under the canvas).
+    void selectedShapeFormInputBeforeNextImage()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        const PointList drawn = w.document().shapes()[0].points;
+        auto* field = w.window.findChild<QDoubleSpinBox*>(QStringLiteral("shapeX"));
+        field->setFocus();
+        field->selectAll();
+        QTest::keyClicks(field, QStringLiteral("50"));
+        QToolButton* next = nullptr;
+        for (QToolButton* button : w.window.findChild<QWidget*>(QStringLiteral("navBar"))->findChildren<QToolButton*>()) {
+            if (button->defaultAction() && button->defaultAction()->objectName() == QLatin1String("open_next"))
+                next = button;
+        }
+        QVERIFY(next);
+        QTest::mouseClick(next, Qt::LeftButton);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(w.window.previousImage());
+        const PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[0].x(), 50.0);
+        QCOMPARE(points[2].x(), 50 + (drawn[2].x() - drawn[0].x()));  // read back from the saved file
+    }
+
     // Without a class list any name may be typed in the form, as in the label dialog.
     void selectedShapeFormFreeText()
     {
