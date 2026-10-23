@@ -39,6 +39,7 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QToolBar>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -125,9 +126,24 @@ void MainWindow::buildUi()
     setWindowIcon(appIcon());
     resize(1280, 800);
 
-    m_canvas = new Canvas(this);
+    // The canvas, with the bar for going through the images and zooming under it.
+    auto* centre = new QWidget;
+    auto* centreLayout = new QVBoxLayout(centre);
+    centreLayout->setContentsMargins(0, 0, 0, 0);
+    centreLayout->setSpacing(0);
+    m_canvas = new Canvas;
     m_canvas->setObjectName(QStringLiteral("canvas"));
-    setCentralWidget(m_canvas);
+    centreLayout->addWidget(m_canvas, 1);
+    m_navBar = new QWidget;
+    m_navBar->setObjectName(QStringLiteral("navBar"));
+    centreLayout->addWidget(m_navBar);
+    setCentralWidget(centre);
+    connect(m_canvas, &Canvas::zoomChanged, this, [this](double scale) {
+        m_zoomLabel->setText(QStringLiteral("%1%").arg(qRound(scale * 100)));
+    });
+    connect(m_canvas, &Canvas::cursorMoved, this, [this](const QPointF& point, bool inside) {
+        m_cursorLabel->setText(inside ? QStringLiteral(u"x %1 · y %2").arg(int(point.x())).arg(int(point.y())) : QString());
+    });
     connect(m_canvas, &Canvas::shapeDrawn, this, &MainWindow::addDrawnShape);
     connect(m_canvas, &Canvas::shapePointsChanged, this, [this](qsizetype index, const PointList& points) {
         if (m_session && m_session->setShapePoints(index, points))
@@ -476,7 +492,65 @@ void MainWindow::buildUi()
     next->setToolTip(QStringLiteral(u"下一张 (D)"));
     fit->setIcon(themeIcon(QStringLiteral("fit")));
     fit->setToolTip(QStringLiteral(u"适合窗口 (Ctrl+F)"));
-    tools->addAction(fit);
+    zoomIn->setToolTip(QStringLiteral(u"放大 (Ctrl++)"));
+    zoomOut->setToolTip(QStringLiteral(u"缩小 (Ctrl+-)"));
+
+    // The bar under the canvas: where the mouse is, the image's place in the list with the
+    // buttons for the previous and next image, and the zoom.
+    auto* bar = new QHBoxLayout(m_navBar);
+    bar->setContentsMargins(14, 6, 14, 6);
+    bar->setSpacing(8);
+    const auto button = [](QAction* action, QWidget* group) {
+        auto* widget = new QToolButton(group);
+        widget->setDefaultAction(action);
+        widget->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        widget->setIconSize(QSize(16, 16));
+        widget->setFocusPolicy(Qt::NoFocus);  // the keys stay with the canvas
+        return widget;
+    };
+    m_cursorLabel = new QLabel;
+    m_cursorLabel->setObjectName(QStringLiteral("cursorLabel"));
+    m_cursorLabel->setProperty("role", QStringLiteral("secondary"));
+    m_cursorLabel->setMinimumWidth(150);
+    bar->addWidget(m_cursorLabel);
+    bar->addStretch(1);
+    auto* pager = new QWidget;
+    pager->setObjectName(QStringLiteral("navGroup"));
+    auto* pagerLayout = new QHBoxLayout(pager);
+    pagerLayout->setContentsMargins(2, 2, 2, 2);
+    pagerLayout->setSpacing(2);
+    pagerLayout->addWidget(button(previous, pager));
+    m_positionLabel = new QLabel;
+    m_positionLabel->setObjectName(QStringLiteral("positionLabel"));
+    m_positionLabel->setAlignment(Qt::AlignCenter);
+    m_positionLabel->setMinimumWidth(96);
+    pagerLayout->addWidget(m_positionLabel);
+    QToolButton* nextButton = button(next, pager);
+    nextButton->setLayoutDirection(Qt::RightToLeft);  // the arrow after the text
+    pagerLayout->addWidget(nextButton);
+    bar->addWidget(pager);
+    bar->addStretch(1);
+    auto* zoom = new QWidget;
+    zoom->setObjectName(QStringLiteral("navGroup"));
+    auto* zoomLayout = new QHBoxLayout(zoom);
+    zoomLayout->setContentsMargins(2, 2, 2, 2);
+    zoomLayout->setSpacing(2);
+    QToolButton* outButton = button(zoomOut, zoom);
+    outButton->setText(QStringLiteral(u"−"));
+    outButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    zoomLayout->addWidget(outButton);
+    m_zoomLabel = new QLabel;
+    m_zoomLabel->setObjectName(QStringLiteral("zoomLabel"));
+    m_zoomLabel->setAlignment(Qt::AlignCenter);
+    m_zoomLabel->setMinimumWidth(52);
+    zoomLayout->addWidget(m_zoomLabel);
+    QToolButton* inButton = button(zoomIn, zoom);
+    inButton->setText(QStringLiteral("+"));
+    inButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    zoomLayout->addWidget(inButton);
+    zoomLayout->addWidget(button(fit, zoom));
+    bar->addWidget(zoom);
+    m_cursorLabel->setMinimumWidth(zoom->sizeHint().width());  // keeps the pager in the middle
 }
 
 void MainWindow::buildImageLabelPanel()
@@ -2124,6 +2198,8 @@ void MainWindow::refresh()
         m_shapeList->setCurrentRow(int(m_canvas->selectedShape()));
     }
     m_shapeList->blockSignals(false);
+    m_positionLabel->setText(m_current >= 0 && hasSession ? QStringLiteral("%1 / %2").arg(m_current + 1).arg(m_images.size())
+                                                           : QString());
     m_shapeCount->setText(hasSession ? QStringLiteral(u"%1 个").arg(m_shapeList->count()) : QString());
     m_deleteButton->setEnabled(editable && m_canvas->selectedShape() >= 0);
     m_editLabelButton->setEnabled(editable && m_canvas->selectedShape() >= 0);

@@ -34,6 +34,7 @@
 #include <QTimer>
 #include <QTest>
 #include <QThread>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <atomic>
@@ -511,6 +512,43 @@ private slots:
         QCOMPARE(readableTextOn(QColor(0x00, 0xFF, 0x00)), dark);
         QCOMPARE(readableTextOn(QColor(0x1F, 0x6F, 0xEB)), QColor(Qt::white));
         QCOMPARE(readableTextOn(QColor(0x80, 0x00, 0x00)), QColor(Qt::white));
+    }
+
+    // The bar under the canvas: the image's place in the list, the zoom and the mouse.
+    void navigationBar()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* position = w.window.findChild<QLabel*>(QStringLiteral("positionLabel"));
+        auto* zoom = w.window.findChild<QLabel*>(QStringLiteral("zoomLabel"));
+        auto* cursor = w.window.findChild<QLabel*>(QStringLiteral("cursorLabel"));
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(position->text(), QStringLiteral("2 / 3"));
+
+        QCOMPARE(zoom->text(), QStringLiteral("%1%").arg(qRound(w.window.canvas()->zoom() * 100)));
+        w.window.canvas()->zoomToOriginalSize();
+        QCOMPARE(zoom->text(), QStringLiteral("100%"));
+        w.window.canvas()->zoomBy(2);
+        QCOMPARE(zoom->text(), QStringLiteral("200%"));
+
+        // The buttons are the menu actions: "上一张" goes back.
+        auto* bar = w.window.findChild<QWidget*>(QStringLiteral("navBar"));
+        for (QToolButton* button : bar->findChildren<QToolButton*>()) {
+            if (button->defaultAction() && button->defaultAction()->objectName() == QLatin1String("open_prev"))
+                button->click();
+        }
+        QCOMPARE(w.window.currentIndex(), 0);
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+
+        Canvas* canvas = w.window.canvas();
+        canvas->fitToWindow();
+        const QPoint centre = canvas->rect().center();
+        QTest::mouseMove(canvas, centre);
+        QTRY_VERIFY2(cursor->text().startsWith(QStringLiteral("x ")), qPrintable(cursor->text()));
+        QTest::mouseMove(canvas, QPoint(1, 1));  // the margin around the image
+        QTRY_VERIFY(cursor->text().isEmpty());
     }
 
     void projectOpenElsewhereIsLocked()

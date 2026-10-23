@@ -206,6 +206,7 @@ void Canvas::fitToWindow()
     m_offset = QPointF((width() - m_image.width() * m_scale) / 2, (height() - m_image.height() * m_scale) / 2);
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
 }
 
 void Canvas::zoomAround(const QPointF& anchor, double factor)
@@ -219,6 +220,7 @@ void Canvas::zoomAround(const QPointF& anchor, double factor)
     m_offset = anchor - imagePoint * m_scale;
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
 }
 
 void Canvas::zoomBy(double factor)
@@ -439,6 +441,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF widgetPoint = event->position();
     const QPointF imagePoint = widgetToImage(widgetPoint);
+    emit cursorMoved(imagePoint, !m_image.isNull() && QRectF(QPointF(0, 0), QSizeF(m_image.size())).contains(imagePoint));
     if ((m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
         && (!m_document || m_selected < 0 || m_selected >= m_document->shapes().size())) {
         m_drag = Drag::None;
@@ -657,6 +660,12 @@ void Canvas::focusOutEvent(QFocusEvent* event)
 {
     m_spaceHeld = false;
     QWidget::focusOutEvent(event);
+}
+
+void Canvas::leaveEvent(QEvent* event)
+{
+    emit cursorMoved(QPointF(), false);
+    QWidget::leaveEvent(event);
 }
 
 QColor Canvas::colorFor(const QString& label) const

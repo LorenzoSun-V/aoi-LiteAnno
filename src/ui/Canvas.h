@@ -86,6 +86,10 @@ signals:
     // The user asked to change the label of the selected shape (double click).
     void labelEditRequested(qsizetype index);
     void deleteRequested(qsizetype index);
+    // The image is shown at another scale (1 = one image pixel per screen pixel).
+    void zoomChanged(double scale);
+    // The mouse is over the image at `imagePoint`, or (`inside` false) has left it.
+    void cursorMoved(const QPointF& imagePoint, bool inside);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -98,6 +102,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     enum class Drag {

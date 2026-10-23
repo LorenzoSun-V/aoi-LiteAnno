@@ -38,6 +38,15 @@ QLabel#statusChip[tone="problem"] { background: #FDE7E7; color: #A3201B; }
 QLabel#readOnlyNote { color: #A3201B; }
 QLabel#blockers { color: #7A5200; }
 
+QWidget#navBar { background: #FFFFFF; border-top: 1px solid #E1E5EA; }
+QWidget#navGroup { background: #FFFFFF; border: 1px solid #E1E5EA; border-radius: 8px; }
+QWidget#navBar QToolButton { color: #1F2933; padding: 4px 10px; border: none; border-radius: 6px; }
+QWidget#navBar QToolButton:hover { background: #F0F3F7; }
+QWidget#navBar QToolButton:pressed { background: #E6EAEF; }
+QWidget#navBar QToolButton:disabled { color: #A0A8B0; }
+QLabel#positionLabel { font-weight: bold; color: #1F2933; }
+QLabel#zoomLabel { color: #1F2933; }
+
 QListWidget { background: #FFFFFF; border: none; outline: 0; }
 
 QPushButton { min-height: 30px; padding: 0 14px; color: #1F2933; background: #FFFFFF; border: 1px solid #D5DAE0; border-radius: 6px; }
