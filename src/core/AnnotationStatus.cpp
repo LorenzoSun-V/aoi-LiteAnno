@@ -77,4 +77,31 @@ std::optional<AnnotationStatus> annotationStatusFromName(const QString& name)
     return std::nullopt;
 }
 
+QString annotationStatusText(AnnotationStatus status)
+{
+    switch (status) {
+    case AnnotationStatus::Missing:
+        return QStringLiteral(u"缺失");
+    case AnnotationStatus::NameCollision:
+        return QStringLiteral(u"名称冲突");
+    case AnnotationStatus::Corrupt:
+        return QStringLiteral(u"标注文件损坏");
+    case AnnotationStatus::OrientationPending:
+        return QStringLiteral(u"坐标方向待确认");
+    case AnnotationStatus::StateConflict:
+        return QStringLiteral(u"状态冲突");
+    case AnnotationStatus::Skipped:
+        return QStringLiteral(u"已跳过");
+    case AnnotationStatus::Confirmed:
+        return QStringLiteral(u"已确认");
+    case AnnotationStatus::ConfirmedWithProblems:
+        return QStringLiteral(u"已确认但有问题");
+    case AnnotationStatus::PendingConfirmation:
+        return QStringLiteral(u"待确认");
+    case AnnotationStatus::Unprocessed:
+        return QStringLiteral(u"未处理");
+    }
+    return QString();
+}
+
 } // namespace liteanno

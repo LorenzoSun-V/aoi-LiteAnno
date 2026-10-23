@@ -4,10 +4,12 @@
 
 #include "application/LocalDataPaths.h"
 #include "ui/MainWindow.h"
+#include "ui/Prompts.h"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QDialog>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -17,12 +19,14 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSemaphore>
 #include <QStatusBar>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QThread>
 #include <QWheelEvent>
@@ -114,6 +118,10 @@ struct Answers {
     bool discardUnsaved = false;
     int batch = 0;  // the batch chosen from the list offered
     QStringList batchesOffered;
+    std::optional<ExportChoice> exportChoice;
+    bool skipUnconvertible = false;
+    int exportBatchOffered = -1;
+    QStringList unconvertibleTexts;
     // Run while the recovery question or a message is shown, like the event loop behind a
     // dialog.
     std::function<void()> duringRecovery;
@@ -158,6 +166,14 @@ struct Answers {
             if (batch < 0)
                 return std::nullopt;
             return batch;
+        };
+        p.exportOptions = [this](int batchNumber) {
+            exportBatchOffered = batchNumber;
+            return exportChoice;
+        };
+        p.skipUnconvertible = [this](const QString& text) {
+            unconvertibleTexts.append(text);
+            return skipUnconvertible;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -1739,6 +1755,178 @@ private slots:
     }
 
     // A damaged list is not opened or repaired, and its images are not given out again.
+    void exportFromTheWindow()
+    {
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        QVERIFY(w.window.nextImage());
+        QVERIFY(w.window.confirmCurrent());  // no objects: a negative sample
+        // The edits are still unwritten; exporting writes them first.
+
+        QTemporaryDir out;
+        w.answers.exportChoice.reset();
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(w.answers.exportBatchOffered, 1);
+        QVERIFY(w.answers.messages.isEmpty());
+
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        QVERIFY(w.window.exportAnnotations());
+        QCOMPARE(w.answers.messages.size(), 1);
+        QVERIFY2(w.answers.messages[0].startsWith(QStringLiteral(u"导出完成")), qPrintable(w.answers.messages[0]));
+        QVERIFY2(w.answers.messages[0].contains(QStringLiteral(u"已导出 2 张图片（其中无目标 1 张）")),
+                 qPrintable(w.answers.messages[0]));
+        QVERIFY2(w.answers.messages[0].contains(QStringLiteral(u"未完成 1 张")), qPrintable(w.answers.messages[0]));
+        QCOMPARE(readFile(out.filePath(QStringLiteral("det/line1/0001.txt"))).count('\n'), 1);
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("det/line1/0002.txt"))));
+        QVERIFY(!QFile::exists(out.filePath(QStringLiteral("det/line1/0003.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("det/liteanno-export.json"))));
+
+        // A rectangle cannot go into a segmentation format: the export stops and asks.
+        choice.format = formats::ExportFormat::YoloSegmentation;
+        choice.wholeProject = false;
+        choice.outputDir = out.filePath(QStringLiteral("seg"));
+        w.answers.exportChoice = choice;
+        w.answers.skipUnconvertible = false;
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
+        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("line1/0001.png")),
+                 qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY(QDir(out.filePath(QStringLiteral("seg"))).isEmpty());
+        QCOMPARE(w.answers.messages.size(), 1);
+
+        w.answers.skipUnconvertible = true;
+        QVERIFY(w.window.exportAnnotations());
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 2);
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"无法转换 1 张")), qPrintable(w.answers.messages.last()));
+        QVERIFY(!QFile::exists(out.filePath(QStringLiteral("seg/line1/0001.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/line1/0002.txt"))));
+        QVERIFY(QFile::exists(out.filePath(QStringLiteral("seg/liteanno-export.json"))));
+    }
+
+    // A close that comes while the window waits for a save (the wait runs events) happens after
+    // the wait; closing in the middle freed what the wait was using (a crash on Windows CI).
+    void closingDuringASaveWaitWaitsForIt()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        options.saveStageHook = [](application::SaveStage stage) {
+            if (stage == application::SaveStage::RecoveryRecordWritten)
+                QThread::msleep(300);
+        };
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.saveNow();
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());
+            QVERIFY(w.window.hasProject());
+        });
+        w.window.flushSaves();
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(QFile::exists(project.json(1)));
+    }
+
+    // Review of PR #8 (fourth round): the close asked for during the wait must also wait for
+    // what follows it: here the real "changed by another program" question, answered "later",
+    // after which "处理未写入的编辑…" goes on with the saver. The steps of the review, through the
+    // menu, with the program's own message box.
+    void closingWaitsForTheQuestionAfterASaveWait()
+    {
+        Project project;
+        MainWindow::Options options = project.options();
+        options.saveStageHook = [](application::SaveStage stage) {
+            if (stage == application::SaveStage::RecoveryRecordWritten)
+                QThread::msleep(300);
+        };
+        Window w(options);
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.window.setPrompts(Prompts::dialogs(&w.window));  // the program's own questions from here
+        // Another program writes the annotation file meanwhile.
+        writeFile(project.json(1), R"({"version": "4.2.0", "flags": {}, "shapes": [], "imagePath": "0001.png", )"
+                                   R"("imageData": null, "imageHeight": 100, "imageWidth": 200})");
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());
+        });
+        int questions = 0;
+        QStringList asked;
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            asked.append(dialog->windowTitle());
+            if (auto* box = qobject_cast<QMessageBox*>(dialog)) {
+                for (QAbstractButton* button : box->buttons()) {
+                    if (button->text() == QStringLiteral(u"稍后处理")) {
+                        ++questions;
+                        button->click();
+                        return;
+                    }
+                }
+            }
+            dialog->reject();  // anything else (the unwritten edit is offered again): later
+        });
+        answer.start(20);
+        QAction* resolve = nullptr;
+        for (QAction* action : w.window.findChildren<QAction*>()) {
+            if (action->text() == QStringLiteral(u"处理未写入的编辑…"))
+                resolve = action;
+        }
+        QVERIFY(resolve);
+        resolve->trigger();
+        QCOMPARE(closes, 1);
+        QCOMPARE(questions, 1);
+        QTRY_VERIFY2(!w.window.hasProject(), qPrintable(asked.join(QLatin1Char('|'))));
+        answer.stop();
+    }
+
+    void closingDuringAnExportWaitsForIt()
+    {
+        // The review's steps: export, and close the window before the progress dialog shows.
+        Project project("\"batchSize\": 2", 3);
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.window.startNextBatch());
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.wholeProject = true;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        w.answers.exportChoice = choice;
+        int closes = 0;
+        QTimer::singleShot(0, &w.window, [&] {
+            ++closes;
+            QVERIFY(!w.window.close());  // the export still uses the project: it is not closed now
+            QVERIFY(w.window.hasProject());
+        });
+        QVERIFY(!w.window.exportAnnotations());
+        QCOMPARE(closes, 1);
+        QVERIFY(w.window.hasProject());
+        QVERIFY(w.answers.messages.isEmpty());  // cancelled: no report
+        QVERIFY(QDir(out.filePath(QStringLiteral("det"))).isEmpty());
+        // The close asked for happens once the export has ended.
+        QTRY_VERIFY(!w.window.hasProject());
+        QVERIFY(!w.window.isVisible());
+    }
+
     void damagedListIsNotUsed()
     {
         Project project("\"batchSize\": 2", 3);

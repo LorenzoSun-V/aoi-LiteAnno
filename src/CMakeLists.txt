@@ -6,5 +6,6 @@ add_subdirectory(application)
 if(LITEANNO_BUILD_UI)
     # Decoding images needs Qt Gui.
     add_subdirectory(imaging)
+    add_subdirectory(cli)
     add_subdirectory(ui)
 endif()

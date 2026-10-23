@@ -68,6 +68,8 @@ public:
     void resolveRecoveryRecords();
     // "重新扫描": lists the folder again and checks what changed (architecture 6.1).
     void rescan();
+    // "导出…" (architecture 11): writes the edits first, then exports the files.
+    bool exportAnnotations();
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 
@@ -220,6 +222,24 @@ private:
         MainWindow* m_window;
     };
     int m_listHolds = 0;
+    // Every event loop this window's code runs (a question, a wait for saves, an export, a
+    // folder dialog) is inside a Busy: a close asked for meanwhile cancels an export and is
+    // put off. When the last Busy ends it is asked again through the event queue, so it runs
+    // either in a later loop of this code, which puts it off again, or once the code that
+    // ran the loops has returned. Closing in the middle would free what that code uses.
+    class Busy
+    {
+    public:
+        explicit Busy(MainWindow* window);
+        ~Busy();
+        Busy(const Busy&) = delete;
+        Busy& operator=(const Busy&) = delete;
+
+    private:
+        MainWindow* m_window;
+    };
+    int m_busy = 0;
+    bool m_closeAsked = false;
     std::optional<QList<dataset::CatalogEntry>> m_pendingImages;
     // A recovery record of the image waits: put off by the user, or held back for a name
     // collision. The image is read-only until the record is restored or given up.

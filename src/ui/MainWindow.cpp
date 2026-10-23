@@ -1,5 +1,6 @@
 #include "ui/MainWindow.h"
 
+#include "application/ExportService.h"
 #include "application/FileStatus.h"
 #include "application/RecoveryService.h"
 #include "dataset/DirectoryScanner.h"
@@ -21,6 +22,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QStatusBar>
@@ -212,6 +214,7 @@ void MainWindow::buildUi()
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
     // No shortcut: X-AnyLabeling has no such action.
     fileMenu->addAction(QStringLiteral(u"重新扫描文件夹"), this, &MainWindow::rescan);
+    fileMenu->addAction(QStringLiteral(u"导出…"), this, [this] { exportAnnotations(); });
     fileMenu->addSeparator();
     QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
     quit->setShortcut(QKeySequence(QStringLiteral("Ctrl+Q")));
@@ -321,7 +324,11 @@ void MainWindow::buildImageLabelPanel()
 
 void MainWindow::chooseProject()
 {
-    const QString root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开项目（选择数据根目录）"));
+    QString root;
+    {
+        const Busy busy(this);  // the dialog runs events; a close waits until it is answered
+        root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开项目（选择数据根目录）"));
+    }
     if (!root.isEmpty())
         openProject(root);
 }
@@ -392,6 +399,7 @@ bool MainWindow::openProject(const QString& root)
         m_catalog->start();
         if (m_options.waitForScan) {
             m_catalog->waitForScan(-1);
+            const Busy busy(this);
             QCoreApplication::processEvents();
         }
     }
@@ -424,6 +432,85 @@ void MainWindow::scanFinished(bool complete)
     showScanReports(reports.unsupported, reports.unreadable);
     if (m_current < 0 && !m_images.isEmpty())
         goToImage(startIndex());
+}
+
+bool MainWindow::exportAnnotations()
+{
+    if (!m_project)
+        return false;
+    const Busy busy(this);
+    // What is exported is what the files hold.
+    m_idleTimer.stop();
+    flushSaves();
+    writeProgress();
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    const int batchNumber = batch && batch->list ? batch->number : 0;
+    const std::optional<ExportChoice> choice = m_prompts.exportOptions(batchNumber);
+    if (!choice)
+        return false;
+    application::ExportRequest request;
+    request.format = choice->format;
+    request.outputDir = choice->outputDir;
+    request.copyImages = choice->copyImages;
+    if (!choice->wholeProject && batchNumber > 0)
+        request.batches = {m_batchStem};
+    const application::ExportService service(*m_project, imaging::readImageInfo);
+    // The progress dialog runs events; a list a scan brings meanwhile waits.
+    const ListHold hold(this);
+    const auto run = [&] {
+        QProgressDialog progress(QStringLiteral(u"正在导出…"), QStringLiteral(u"取消"), 0, 0, this);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(400);
+        application::ExportReport result = service.run(request, [&](int done, int total) {
+            progress.setMaximum(std::max(total, 0));
+            progress.setValue(done);  // runs events once the dialog shows, which blocks the window
+            // Until then only what keeps the window painted: no clicks or keys reach it.
+            if (!progress.isVisible())
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            return !progress.wasCanceled() && !m_closeAsked;
+        });
+        return result;
+    };
+    application::ExportReport report = run();
+    // A close asked for meanwhile happens when this returns (Busy).
+    if (m_closeAsked)
+        return false;
+    const QList<application::ExportItem> unconvertible = report.unconvertible();
+    if (!report.written && !report.cancelled && !unconvertible.isEmpty()) {
+        QStringList lines;
+        for (const application::ExportItem& item : unconvertible.mid(0, 10))
+            lines.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
+        if (unconvertible.size() > 10)
+            lines.append(QStringLiteral(u"……共 %1 张").arg(unconvertible.size()));
+        const QString text = QStringLiteral(u"有 %1 张图片包含不能导出为“%2”的对象，这些图片不能导出：\n%3\n\n"
+                                            u"可以跳过这些图片导出其余图片，跳过的图片会列在导出清单里；也可以先修改标注再导出。")
+                                 .arg(unconvertible.size())
+                                 .arg(exportFormatText(request.format), lines.join(QLatin1Char('\n')));
+        if (!m_prompts.skipUnconvertible(text))
+            return false;
+        request.skipUnconvertible = true;
+        report = run();
+        if (m_closeAsked)
+            return false;
+    }
+    if (!report.written) {
+        if (!report.cancelled)
+            m_prompts.message(QStringLiteral(u"没有导出"), report.error);
+        return false;
+    }
+    QString text = QStringLiteral(u"已导出 %1 张图片（其中无目标 %2 张）。\n跳过 %3 张，未完成 %4 张，无法转换 %5 张，没有导出。\n"
+                                  u"导出清单：%6")
+                       .arg(report.count(application::ExportResult::Exported)
+                            + report.count(application::ExportResult::Negative))
+                       .arg(report.count(application::ExportResult::Negative))
+                       .arg(report.count(application::ExportResult::Skipped))
+                       .arg(report.count(application::ExportResult::NotDone))
+                       .arg(report.count(application::ExportResult::Unconvertible))
+                       .arg(QDir::toNativeSeparators(report.manifestPath));
+    if (!m_unwritten.isEmpty())
+        text += QStringLiteral(u"\n\n有 %1 张图片的修改还没写入标注文件，导出的是文件里原来的内容。").arg(m_unwritten.size());
+    m_prompts.message(QStringLiteral(u"导出完成"), text);
+    return true;
 }
 
 void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
@@ -468,6 +555,17 @@ void MainWindow::reloadImages()
         setImages(m_catalog->reader().images());
 }
 
+MainWindow::Busy::Busy(MainWindow* window) : m_window(window)
+{
+    ++m_window->m_busy;
+}
+
+MainWindow::Busy::~Busy()
+{
+    if (--m_window->m_busy == 0 && m_window->m_closeAsked)
+        QTimer::singleShot(0, m_window, &QWidget::close);
+}
+
 MainWindow::ListHold::ListHold(MainWindow* window)
     : m_window(window)
 {
@@ -492,10 +590,12 @@ MainWindow::ListHold::~ListHold()
 
 void MainWindow::setPrompts(Prompts prompts)
 {
-    // Each question runs an event loop; the list waits until it is answered.
+    // Each question runs an event loop; the list waits until it is answered, and so does a
+    // close asked for meanwhile (Busy): the code that asked goes on with the project after it.
     auto held = [this](auto ask) {
         return [this, ask](auto&&... args) {
             ListHold hold(this);
+            const Busy busy(this);
             return ask(std::forward<decltype(args)>(args)...);
         };
     };
@@ -506,6 +606,8 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.message = held(std::move(prompts.message));
     m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
     m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
+    m_prompts.exportOptions = held(std::move(prompts.exportOptions));
+    m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
 }
 
 void MainWindow::setImages(QList<dataset::CatalogEntry> images)
@@ -1270,6 +1372,7 @@ void MainWindow::saveNow()
 bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
 {
     const ListHold hold(this);
+    const Busy busy(this);
     ++m_savingWaits;
     m_saveState->setText(QStringLiteral(u"正在保存…"));
     // Results are handled after the wait, not in the middle of switching images.
@@ -1683,6 +1786,12 @@ void MainWindow::refreshBatchState()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    if (m_busy > 0) {
+        m_closeAsked = true;
+        event->ignore();
+        return;
+    }
+    m_closeAsked = false;
     if (closeProject())
         event->accept();
     else

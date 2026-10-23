@@ -23,4 +23,8 @@ ProjectFileResult parseProjectFile(const QByteArray& bytes);
 
 ProjectFileResult readProjectFile(const QString& path);
 
+// A new project file ("liteanno-cli init"): formatVersion, projectId, the name when set,
+// createdAt, shapeTypes, classes and batchSize. Image labels and attributes are added by hand.
+QByteArray projectFileToBytes(const ProjectConfig& config);
+
 } // namespace liteanno::formats

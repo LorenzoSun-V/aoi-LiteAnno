@@ -106,9 +106,9 @@ private:
     qint64 m_errorOffset = -1;
 };
 
-void appendIndent(std::string& out, int depth)
+void appendIndent(std::string& out, int depth, int indent)
 {
-    out.append(static_cast<std::size_t>(depth) * 2, ' ');
+    out.append(static_cast<std::size_t>(depth) * static_cast<std::size_t>(indent), ' ');
 }
 
 // Python's json.encoder with ensure_ascii=False: escape '"', '\\' and the C0 control
@@ -140,7 +140,7 @@ void appendString(std::string& out, const std::string& text)
     out.push_back('"');
 }
 
-void appendValue(std::string& out, const Json& value, int depth)
+void appendValue(std::string& out, const Json& value, int depth, int indent)
 {
     switch (value.type()) {
     case Json::value_t::null:
@@ -173,11 +173,11 @@ void appendValue(std::string& out, const Json& value, int depth)
                 out.push_back(',');
             first = false;
             out.push_back('\n');
-            appendIndent(out, depth + 1);
-            appendValue(out, element, depth + 1);
+            appendIndent(out, depth + 1, indent);
+            appendValue(out, element, depth + 1, indent);
         }
         out.push_back('\n');
-        appendIndent(out, depth);
+        appendIndent(out, depth, indent);
         out.push_back(']');
         return;
     }
@@ -193,13 +193,13 @@ void appendValue(std::string& out, const Json& value, int depth)
                 out.push_back(',');
             first = false;
             out.push_back('\n');
-            appendIndent(out, depth + 1);
+            appendIndent(out, depth + 1, indent);
             appendString(out, it.key());
             out += ": ";
-            appendValue(out, it.value(), depth + 1);
+            appendValue(out, it.value(), depth + 1, indent);
         }
         out.push_back('\n');
-        appendIndent(out, depth);
+        appendIndent(out, depth, indent);
         out.push_back('}');
         return;
     }
@@ -245,8 +245,13 @@ JsonParseResult parseJson(const QByteArray& bytes)
 
 QByteArray serializeJson(const Json& value)
 {
+    return serializeJson(value, 2, 0);
+}
+
+QByteArray serializeJson(const Json& value, int indent, int depth)
+{
     std::string out;
-    appendValue(out, value, 0);
+    appendValue(out, value, depth, indent);
     return QByteArray(out.data(), static_cast<qsizetype>(out.size()));
 }
 

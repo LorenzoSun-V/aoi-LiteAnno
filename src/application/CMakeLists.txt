@@ -3,6 +3,8 @@ add_library(liteanno_application STATIC
     BackgroundSaver.h
     DocumentSession.cpp
     DocumentSession.h
+    ExportService.cpp
+    ExportService.h
     FileStatus.cpp
     FileStatus.h
     LocalDataPaths.cpp

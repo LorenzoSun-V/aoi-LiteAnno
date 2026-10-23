@@ -31,6 +31,9 @@ JsonParseResult parseJson(const QByteArray& bytes);
 // Serializes exactly like Python's json.dumps(value, ensure_ascii=False, indent=2), encoded
 // as UTF-8 without BOM and without a trailing newline (format spec 13.5).
 QByteArray serializeJson(const Json& value);
+// The same with json.dumps(value, ensure_ascii=False, indent=indent), as if `value` were
+// nested `depth` levels deep: lines after the first are indented by depth * indent more.
+QByteArray serializeJson(const Json& value, int indent, int depth);
 
 // The shortest representation of a double that reads back to the same value, written the way
 // Python's repr(float) writes it: "80.0", "0.0001", "1e-05", "1e+16".

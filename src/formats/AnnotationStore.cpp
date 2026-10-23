@@ -5,9 +5,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
+#include <QTemporaryFile>
 #include <QThread>
 
 #include <algorithm>
+
+#ifdef Q_OS_WIN
+#include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace liteanno::formats {
 
@@ -34,6 +45,17 @@ SaveResult writeOnce(const QString& path, const QByteArray& bytes)
     if (!out.commit())
         return {SaveStatus::Failed, out.errorString()};
     return {SaveStatus::Saved, QString()};
+}
+
+// fsync, or FlushFileBuffers on Windows: the bytes are on the disk, not only in the cache.
+bool syncToDisk(int fd)
+{
+#ifdef Q_OS_WIN
+    const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(fd));
+    return handle != INVALID_HANDLE_VALUE && FlushFileBuffers(handle);
+#else
+    return ::fsync(fd) == 0;
+#endif
 }
 
 } // namespace
@@ -85,7 +107,7 @@ QString existingAnnotationPath(const QString& jsonPath)
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,
-                                    const QStringList& imageLabelOptions)
+                                    const QStringList& imageLabelOptions, QByteArray* bytesRead)
 {
     QFile file(jsonPath);
     if (!file.exists())
@@ -93,6 +115,8 @@ LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& im
     if (!file.open(QIODevice::ReadOnly))
         return {AnnotationFile::unreadable(image, file.errorString()), readFileStamp(jsonPath)};
     const QByteArray bytes = file.readAll();
+    if (bytesRead)
+        *bytesRead = bytes;
     return {AnnotationFile::fromBytes(bytes, image), stampOf(jsonPath, bytes)};
 }
 
@@ -145,6 +169,39 @@ SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, con
             break;
     }
     return result;
+}
+
+SaveResult createFileExclusively(const QString& path, const QByteArray& bytes, const std::function<void()>& beforePublish)
+{
+    if (QFileInfo::exists(path))
+        return {SaveStatus::ExternallyModified, QStringLiteral("the file exists")};
+    // Next to the target, so the name can be given without copying.
+    QTemporaryFile temporary(path + QStringLiteral(".XXXXXX"));
+    if (!temporary.open())
+        return {SaveStatus::Failed, temporary.errorString()};
+    // flush() reports a write cut short (disk full), which the buffered count does not.
+    if (temporary.write(bytes) != bytes.size() || !temporary.flush()) {
+        const QString error = temporary.errorString();
+        return {SaveStatus::Failed, error.isEmpty() ? QStringLiteral("the file was not written whole") : error};
+    }
+    // On the disk before it gets its name (format spec 1), as QSaveFile does for the others.
+    if (!syncToDisk(temporary.handle()))
+        return {SaveStatus::Failed, QStringLiteral("the file could not be written to the disk")};
+    temporary.close();
+    // A temporary file is only for its owner; the project file is read by others as usual.
+    temporary.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadUser | QFile::WriteUser
+                             | QFile::ReadGroup | QFile::ReadOther);
+    if (beforePublish)
+        beforePublish();
+    // QFile::rename never replaces a file: renameat2(RENAME_NOREPLACE) or link() on Unix,
+    // MoveFileEx without MOVEFILE_REPLACE_EXISTING on Windows; the check and the naming are one.
+    if (!temporary.rename(path)) {
+        if (QFileInfo::exists(path))
+            return {SaveStatus::ExternallyModified, QStringLiteral("the file exists")};
+        return {SaveStatus::Failed, temporary.errorString()};
+    }
+    temporary.setAutoRemove(false);
+    return {SaveStatus::Saved, QString(), 1};
 }
 
 SaveResult checkUnchanged(const QString& path, const FileStamp& expected)

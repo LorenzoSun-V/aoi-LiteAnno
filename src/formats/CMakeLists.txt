@@ -9,6 +9,10 @@ add_library(liteanno_formats STATIC
     ProjectFile.h
     RecoveryRecord.cpp
     RecoveryRecord.h
+    Exporters.cpp
+    Exporters.h
+    PolygonRaster.cpp
+    PolygonRaster.h
     WorksetFiles.cpp
     WorksetFiles.h
 )

@@ -3,6 +3,7 @@
 // The questions the window asks the user. Tests replace them so nothing modal blocks.
 
 #include "application/RecoveryService.h"
+#include "formats/Exporters.h"
 
 #include <QByteArray>
 #include <QString>
@@ -27,6 +28,14 @@ enum class RecoveryChoice {
     Later,
 };
 
+// What "导出…" asks for.
+struct ExportChoice {
+    formats::ExportFormat format = formats::ExportFormat::YoloDetection;
+    bool wholeProject = true;  // else the batch shown
+    QString outputDir;
+    bool copyImages = false;
+};
+
 struct Prompts {
     // The class of a new shape, or nullopt when the user cancelled.
     std::function<std::optional<QString>(const QStringList& classes, const QString& suggested)> chooseLabel;
@@ -40,6 +49,11 @@ struct Prompts {
     std::function<bool(const QString& text)> confirmDiscard;
     // One of `batches` ("第 3 批 …"), `current` preselected; nullopt when cancelled.
     std::function<std::optional<int>(const QStringList& batches, int current)> chooseBatch;
+    // The export settings; `batchNumber` is the batch shown, 0 when all images are.
+    std::function<std::optional<ExportChoice>(int batchNumber)> exportOptions;
+    // Some images hold objects the format cannot take (`text` lists them). True: export the
+    // others; the default answer exports nothing.
+    std::function<bool(const QString& text)> skipUnconvertible;
 
     // Dialogs on `parent`.
     static Prompts dialogs(QWidget* parent);

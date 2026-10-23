@@ -41,6 +41,8 @@ AnnotationStatus deriveStatus(const StatusFacts& facts);
 bool countsAsDone(AnnotationStatus status);
 
 const char* annotationStatusName(AnnotationStatus status);
+// As the window and the reports show it to the user.
+QString annotationStatusText(AnnotationStatus status);
 // The inverse of annotationStatusName(); nothing for a name it never returns.
 std::optional<AnnotationStatus> annotationStatusFromName(const QString& name);
 

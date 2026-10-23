@@ -4,29 +4,7 @@ namespace liteanno::ui {
 
 QString statusText(AnnotationStatus status)
 {
-    switch (status) {
-    case AnnotationStatus::Missing:
-        return QStringLiteral(u"缺失");
-    case AnnotationStatus::NameCollision:
-        return QStringLiteral(u"名称冲突");
-    case AnnotationStatus::Corrupt:
-        return QStringLiteral(u"标注文件损坏");
-    case AnnotationStatus::OrientationPending:
-        return QStringLiteral(u"坐标方向待确认");
-    case AnnotationStatus::StateConflict:
-        return QStringLiteral(u"状态冲突");
-    case AnnotationStatus::Skipped:
-        return QStringLiteral(u"已跳过");
-    case AnnotationStatus::Confirmed:
-        return QStringLiteral(u"已确认");
-    case AnnotationStatus::ConfirmedWithProblems:
-        return QStringLiteral(u"已确认但有问题");
-    case AnnotationStatus::PendingConfirmation:
-        return QStringLiteral(u"待确认");
-    case AnnotationStatus::Unprocessed:
-        return QStringLiteral(u"未处理");
-    }
-    return QString();
+    return annotationStatusText(status);
 }
 
 QString shapeTypeText(ShapeType type)
@@ -92,6 +70,25 @@ QString readOnlyText(formats::ReadOnlyReason reason)
         return QStringLiteral(u"这是带 EXIF 方向信息的旧标注，坐标方向待确认，只能查看。请交给工程师处理。");
     case ReadOnlyReason::ImageSizeMismatch:
         return QStringLiteral(u"标注文件中的图片尺寸与实际图片不一致，只能查看。可以按当前图片尺寸更正（只改尺寸，不缩放坐标）。");
+    }
+    return QString();
+}
+
+QString exportFormatText(formats::ExportFormat format)
+{
+    switch (format) {
+    case formats::ExportFormat::YoloDetection:
+        return QStringLiteral(u"YOLO 检测（矩形）");
+    case formats::ExportFormat::YoloSegmentation:
+        return QStringLiteral(u"YOLO 分割（多边形）");
+    case formats::ExportFormat::VocRectangle:
+        return QStringLiteral(u"VOC（矩形）");
+    case formats::ExportFormat::VocPolygon:
+        return QStringLiteral(u"VOC（矩形和多边形）");
+    case formats::ExportFormat::CocoDetection:
+        return QStringLiteral(u"COCO 检测（矩形）");
+    case formats::ExportFormat::CocoSegmentation:
+        return QStringLiteral(u"COCO 实例分割（多边形）");
     }
     return QString();
 }
