@@ -433,7 +433,8 @@ ClassesFile parseClassesFile(const QByteArray& bytes)
     QByteArray data = bytes;
     if (data.startsWith("\xEF\xBB\xBF"))
         data.remove(0, 3);
-    QStringDecoder decoder(QStringDecoder::Utf8);
+    // Stateless: bytes cut off at the end are an error, not held back for a next call.
+    QStringDecoder decoder(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
     QString text = decoder(data);
     if (decoder.hasError()) {
         result.error = QStringLiteral(u"不是 UTF-8 编码的文本文件");

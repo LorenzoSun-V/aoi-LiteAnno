@@ -56,6 +56,8 @@ QString openErrorText(const ProjectSession::OpenResult& result)
     switch (result.error) {
     case ProjectSession::OpenError::None:
         return QString();
+    case ProjectSession::OpenError::ProjectFileUnreadable:
+        return QStringLiteral(u"有 liteanno 文件夹，但项目文件 liteanno/project.json 不存在或无法读取（%1）。").arg(result.message);
     case ProjectSession::OpenError::InvalidProjectFile:
         return QStringLiteral(u"项目文件有错误：%1（%2）").arg(result.field, result.message);
     case ProjectSession::OpenError::LocationUnknown:
@@ -93,6 +95,23 @@ int init(const QCommandLineParser& parser, const Common& common)
         printError(QStringLiteral(u"%1 已经有项目文件，没有改动。").arg(QDir::toNativeSeparators(file)));
         return Failed;
     }
+    // The folder as a plain one, under the lock the window takes (format spec 8): never while
+    // it is open there, and not while edits the window kept for it wait in local recovery
+    // records, which the project's new id would no longer find (13.6).
+    const std::unique_ptr<ProjectSession> folder = openProject(common);
+    if (!folder)
+        return Failed;
+    if (!folder->isPlainFolder()) {
+        printError(QStringLiteral(u"%1 已经有项目文件，没有改动。").arg(QDir::toNativeSeparators(file)));
+        return Failed;
+    }
+    const application::RecoveryScan records = application::RecoveryService(folder->paths(), folder->location()).scan();
+    if (!records.candidates.isEmpty() || !records.unusable.isEmpty()) {
+        printError(QStringLiteral(u"这个文件夹在本机还有 %1 份没有写入标注文件的编辑。请先用窗口打开这个文件夹，"
+                                  u"在“文件 > 处理未写入的编辑”中处理完，再创建项目文件。")
+                       .arg(records.candidates.size() + records.unusable.size()));
+        return Failed;
+    }
     ProjectConfig config;
     config.formatVersion = QString::fromLatin1(kFormatVersion);
     config.projectId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -125,10 +144,15 @@ int init(const QCommandLineParser& parser, const Common& common)
         printError(QStringLiteral(u"项目设置有错误：%1（%2）").arg(check.field, check.error));
         return Usage;
     }
-    QDir().mkpath(QFileInfo(file).absolutePath());
-    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up;
-    // and never in place of a project file, also one another program makes meanwhile.
+    const QString liteannoFolder = QFileInfo(file).absolutePath();
+    const bool newFolder = !QFileInfo::exists(liteannoFolder);
+    QDir().mkpath(liteannoFolder);
+    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up
+    // (a liteanno folder without a project file would not open again, 13.6); and never in
+    // place of a project file, also one another program makes meanwhile.
     const formats::SaveResult written = formats::createFileExclusively(file, bytes);
+    if (written.status != formats::SaveStatus::Saved && newFolder)
+        QDir().rmdir(liteannoFolder);  // only when still empty
     if (written.status == formats::SaveStatus::ExternallyModified) {
         printError(QStringLiteral(u"%1 已存在，没有改动。").arg(QDir::toNativeSeparators(file)));
         return Failed;

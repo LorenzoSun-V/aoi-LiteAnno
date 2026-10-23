@@ -222,8 +222,11 @@ Prompts Prompts::dialogs(QWidget* parent)
             label = QInputDialog::getItem(parent, QStringLiteral(u"类别"), QStringLiteral(u"选择类别："), classes,
                                           std::max<qsizetype>(0, classes.indexOf(suggested)), false, &ok);
         }
-        label = label.trimmed();
-        if (!ok || label.isEmpty())
+        // A name chosen from the list stays as it is written there (a classes.txt keeps its
+        // spaces); only what is typed loses the spaces around it.
+        if (label != suggested && !classes.contains(label))
+            label = label.trimmed();
+        if (!ok || label.trimmed().isEmpty())
             return std::nullopt;
         return label;
     };

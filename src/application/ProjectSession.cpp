@@ -10,7 +10,9 @@
 #include <QFile>
 #include <QFileInfo>
 
+#include <filesystem>
 #include <optional>
+#include <system_error>
 
 namespace liteanno::application {
 
@@ -32,10 +34,24 @@ ProjectSession::OpenResult ProjectSession::open(const QString& root, const Local
     OpenResult result;
     const QString rootPath = QDir::cleanPath(QFileInfo(root).absoluteFilePath());
     const QString projectFile = rootPath + QLatin1String("/liteanno/project.json");
-    const bool plainFolder = !QFileInfo(projectFile).exists();
+    // A plain folder only when liteanno/ is certainly not there: one that cannot be looked
+    // into (permissions, a broken link) may hold a project file whose rules must not be lost.
+    std::error_code noEntry;
+    const std::filesystem::file_status liteanno =
+        std::filesystem::symlink_status(std::filesystem::path((rootPath + QLatin1String("/liteanno")).toStdU16String()), noEntry);
+    const bool plainFolder = liteanno.type() == std::filesystem::file_type::not_found
+                             && noEntry == std::errc::no_such_file_or_directory;
     std::optional<ProjectConfig> config;
     QString digest = QStringLiteral("plain-folder");
     if (!plainFolder) {
+        std::error_code error;
+        const std::filesystem::file_status status =
+            std::filesystem::status(std::filesystem::path(projectFile.toStdU16String()), error);
+        if (error || status.type() != std::filesystem::file_type::regular) {
+            result.error = OpenError::ProjectFileUnreadable;
+            result.message = error ? QString::fromLocal8Bit(error.message()) : QStringLiteral("not a file");
+            return result;
+        }
         formats::ProjectFileResult parsed = formats::readProjectFile(projectFile);
         if (!parsed.config) {
             result.error = OpenError::InvalidProjectFile;
@@ -96,6 +112,8 @@ const char* openErrorName(ProjectSession::OpenError error)
     switch (error) {
     case ProjectSession::OpenError::None:
         return "none";
+    case ProjectSession::OpenError::ProjectFileUnreadable:
+        return "project-file-unreadable";
     case ProjectSession::OpenError::InvalidProjectFile:
         return "invalid-project-file";
     case ProjectSession::OpenError::LocationUnknown:

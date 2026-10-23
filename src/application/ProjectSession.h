@@ -18,6 +18,7 @@ class ProjectSession
 public:
     enum class OpenError {
         None,
+        ProjectFileUnreadable,  // liteanno/ is there (or cannot be checked), its project.json cannot be read
         InvalidProjectFile,  // field and message say what is wrong
         LocationUnknown,     // the volume of the folder cannot be identified
         Locked,              // holder says who has it open

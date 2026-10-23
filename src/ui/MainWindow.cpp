@@ -54,6 +54,10 @@ QString openErrorText(const ProjectSession::OpenResult& result)
     switch (result.error) {
     case ProjectSession::OpenError::None:
         return QString();
+    case ProjectSession::OpenError::ProjectFileUnreadable:
+        return QStringLiteral(u"文件夹里有 liteanno 文件夹，但其中的项目文件 project.json 不存在或无法读取（%1）。"
+                              u"请检查文件夹权限，或交给工程师处理。")
+            .arg(result.message);
     case ProjectSession::OpenError::InvalidProjectFile:
         return QStringLiteral(u"项目文件有错误，不能打开。\n出错的字段：%1\n原因：%2")
             .arg(result.field.isEmpty() ? QStringLiteral(u"（整个文件）") : result.field, result.message);

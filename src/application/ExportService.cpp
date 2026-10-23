@@ -2,6 +2,7 @@
 
 #include "application/FileStatus.h"
 #include "application/WorksetStore.h"
+#include "core/Validation.h"
 #include "core/Version.h"
 #include "formats/PngFile.h"
 #include "dataset/DirectoryScanner.h"
@@ -163,6 +164,33 @@ private:
     QStringList m_folders;
     QString m_error;
 };
+
+// Why an unconfirmed image of a plain folder cannot be exported: the conditions a confirm
+// checks (format spec 5.3) hold for every exported image, confirmed or not.
+QStringList confirmProblems(const ImageOnDisk& image, const ProjectConfig& config)
+{
+    const formats::AnnotationFile& file = image.annotation->file;
+    const bool sizeMismatch = file.readOnlyReason() == formats::ReadOnlyReason::ImageSizeMismatch;
+    QStringList problems;
+    for (const ConfirmBlocker& blocker : confirmBlockers(file.document(), config, sizeMismatch)) {
+        const QString number = QString::number(blocker.shapeIndex + 1);
+        switch (blocker.code) {
+        case ConfirmBlockerCode::ImageSizeMismatch:
+            problems.append(QStringLiteral(u"标注文件中的图片尺寸与实际不一致"));
+            break;
+        case ConfirmBlockerCode::InvalidGeometry:
+            problems.append(QStringLiteral(u"第 %1 个形状几何无效（面积为 0 或点数不足）").arg(number));
+            break;
+        case ConfirmBlockerCode::UnrecognizedObject:
+            problems.append(QStringLiteral(u"第 %1 个对象无法识别").arg(number));
+            break;
+        default:
+            problems.append(QStringLiteral(u"第 %1 个形状不满足确认条件").arg(number));
+            break;
+        }
+    }
+    return problems;
+}
 
 QString notDoneReason(AnnotationStatus status)
 {
@@ -384,6 +412,18 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
     const auto exportable = [plain = m_project.isPlainFolder()](AnnotationStatus status) {
         return status == AnnotationStatus::Confirmed || (plain && status == AnnotationStatus::PendingConfirmation);
     };
+    // An unconfirmed one must still be what a confirm would accept: no image-level marks alone
+    // taken for "no objects", no size mismatch or invalid shape exported.
+    const auto unconfirmedProblem = [&config](const ImageOnDisk& image) -> std::optional<std::pair<ExportResult, QString>> {
+        if (image.status != AnnotationStatus::PendingConfirmation)
+            return std::nullopt;
+        if (image.annotation->file.document().shapes().isEmpty())
+            return std::pair{ExportResult::NotDone, QStringLiteral(u"没有形状，也没有确认无目标")};
+        const QStringList problems = confirmProblems(image, config);
+        if (!problems.isEmpty())
+            return std::pair{ExportResult::Unconvertible, problems.join(QStringLiteral(u"；"))};
+        return std::nullopt;
+    };
     int done = 0;
     int total = 0;
     const auto step = [&]() { return !progress || progress(done, total); };
@@ -417,6 +457,9 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             item.reason = image.annotation->file.document().review().skipReason;
         } else if (!exportable(image.status)) {
             item.reason = notDoneReason(image.status);
+        } else if (const auto problem = unconfirmedProblem(image); problem) {
+            item.result = problem->first;
+            item.reason = problem->second;
         } else if (classification) {
             const AnnotationDocument& document = image.annotation->file.document();
             QStringList chosen;
@@ -518,7 +561,7 @@ ExportReport ExportService::run(const ExportRequest& request, const Progress& pr
             if (!image.annotation || image.annotation->stamp.digest != first.digest)
                 return fail(QStringLiteral(u"导出过程中 %1 的标注文件被修改了，请重新导出。").arg(item.image));
             const formats::ExportImage shapes = formats::exportImageOf(item.image, image.bytes, image.annotation->file);
-            if (!exportable(image.status) || shapes.width != first.width || shapes.height != first.height)
+            if (!exportable(image.status) || unconfirmedProblem(image) || shapes.width != first.width || shapes.height != first.height)
                 return fail(QStringLiteral(u"导出过程中 %1 的图片变了（%2），请重新导出。")
                                 .arg(item.image, annotationStatusText(image.status)));
             const QString stem = output + QLatin1Char('/') + stemPath(item.image);

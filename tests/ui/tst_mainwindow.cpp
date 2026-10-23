@@ -14,6 +14,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QImage>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -274,6 +275,32 @@ private slots:
         QVERIFY(!w.window.hasProject());
         QCOMPARE(w.answers.messages.size(), 1);
         QVERIFY2(w.answers.messages[0].contains(QStringLiteral("/batchSize")), qPrintable(w.answers.messages[0]));
+    }
+
+    // Review of #11, 5: a name chosen in the program's own class dialog stays as the
+    // classes.txt has it; only a typed name loses the spaces around it.
+    void classChosenInTheDialogKeepsItsSpaces()
+    {
+        QWidget parent;
+        const Prompts prompts = Prompts::dialogs(&parent);
+        QString typed;  // empty: take the item shown
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            if (!typed.isEmpty())
+                dialog->setTextValue(typed);
+            dialog->accept();
+        });
+        answer.start(20);
+        const QStringList classes{QStringLiteral(" scratch "), QStringLiteral("dent")};
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral(" scratch ")));
+        typed = QStringLiteral("  hole ");
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral("hole")));
+        typed.clear();
+        QCOMPARE(prompts.chooseLabel(classes, QStringLiteral(" scratch "), false),
+                 std::optional<QString>(QStringLiteral(" scratch ")));
     }
 
     // A folder of images without a project file opens as in X-AnyLabeling: any label, every
