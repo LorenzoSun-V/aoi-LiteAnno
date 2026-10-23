@@ -7,6 +7,7 @@
 #include "application/ProjectSession.h"
 #include "application/RecoveryService.h"
 #include "application/WorksetStore.h"
+#include "core/BundledLicenses.h"
 #include "core/FormatVersion.h"
 #include "core/Version.h"
 #include "dataset/DirectoryScanner.h"
@@ -315,6 +316,19 @@ int exportProject(const QCommandLineParser& parser, const Common& common)
     return Ok;
 }
 
+// LGPL 3.0, section 4: where the source is, the terms Qt is used under, and how to link the
+// program again with another Qt (Help > About says the same in the window).
+QString licenseNotice()
+{
+    return QStringLiteral(
+               u"aoi-LiteAnno %1\n"
+               u"源码：https://github.com/LorenzoSun-V/aoi-LiteAnno\n"
+               u"本程序使用 Qt %2，按 GNU LGPL 3.0 授权使用。单文件版把 Qt 静态链接在内，可以用修改过的 Qt "
+               u"重新编译、链接，做法见源码中 README 的“单文件版与 Qt 许可”。Qt 的源码：https://download.qt.io/archive/qt/\n"
+               u"另含 nlohmann/json（MIT）、OpenCV 的多边形填充代码（Apache-2.0）、SQLite（公有领域）以及 Qt 自带的第三方库。")
+        .arg(QString::fromLatin1(kAppVersion), QString::fromLatin1(qVersion()));
+}
+
 } // namespace
 
 int main(int argc, char* argv[])
@@ -351,8 +365,48 @@ int main(int argc, char* argv[])
         {QStringLiteral("copy-images"), QStringLiteral(u"export：同时复制图片")},
         {QStringLiteral("classes-file"), QStringLiteral(u"export：类别文件 classes.txt，每行一个类别，第一行编号 0"), QStringLiteral("file")},
         {QStringLiteral("local-data"), QStringLiteral(u"本机数据文件夹（测试用）"), QStringLiteral("folder")},
+        {QStringLiteral("licenses"), QStringLiteral(u"显示源码地址、Qt 的授权说明和附带的许可证列表")},
+        {QStringLiteral("license"), QStringLiteral(u"显示一份许可证全文（名称见 --licenses）"), QStringLiteral("name")},
+        {QStringLiteral("check-single-file"), QStringLiteral(u"检查单文件版带齐了许可证和读图格式（打包检查用）")},
     });
     parser.process(app);
+    if (parser.isSet(QStringLiteral("licenses"))) {
+        print(licenseNotice());
+        const QStringList names = bundledLicenseNames();
+        if (names.isEmpty())
+            print(QStringLiteral(u"这个版本没有附带许可证全文，请见源码仓库。"));
+        else
+            print(QStringLiteral(u"附带的许可证（用 --license <名称> 显示全文）：\n  %1").arg(names.join(QStringLiteral("\n  "))));
+        return Ok;
+    }
+    if (parser.isSet(QStringLiteral("license"))) {
+        const QString text = bundledLicenseText(parser.value(QStringLiteral("license")));
+        if (text.isEmpty()) {
+            printError(QStringLiteral(u"没有这份许可证，名称见 --licenses。"));
+            return Usage;
+        }
+        print(text);
+        return Ok;
+    }
+    if (parser.isSet(QStringLiteral("check-single-file"))) {
+#ifdef QT_STATIC
+        const bool staticQt = true;
+#else
+        const bool staticQt = false;
+#endif
+        const QStringList missingLicenses = missingRequiredLicenses();
+        const QStringList missingFormats = imaging::missingImageFormats();
+        if (!staticQt)
+            printError(QStringLiteral(u"Qt 不是静态链接的。"));
+        if (!missingLicenses.isEmpty())
+            printError(QStringLiteral(u"缺少许可证：%1").arg(missingLicenses.join(QLatin1Char(' '))));
+        if (!missingFormats.isEmpty())
+            printError(QStringLiteral(u"缺少读图格式：%1").arg(missingFormats.join(QLatin1Char(' '))));
+        if (!staticQt || !missingLicenses.isEmpty() || !missingFormats.isEmpty())
+            return Failed;
+        print(QStringLiteral(u"静态 Qt，许可证 %1 份，读图格式齐全。").arg(bundledLicenseNames().size()));
+        return Ok;
+    }
     const QStringList args = parser.positionalArguments();
     if (args.size() != 2) {
         printError(parser.helpText());

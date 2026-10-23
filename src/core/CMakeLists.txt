@@ -20,6 +20,8 @@ add_library(liteanno_core STATIC
     Validation.h
     AnnotationStatus.cpp
     AnnotationStatus.h
+    BundledLicenses.cpp
+    BundledLicenses.h
     "${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h"
 )
 target_include_directories(liteanno_core PUBLIC

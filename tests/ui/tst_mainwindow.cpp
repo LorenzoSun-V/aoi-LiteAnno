@@ -286,6 +286,27 @@ private slots:
         QVERIFY2(w.answers.messages[0].contains(QStringLiteral("/batchSize")), qPrintable(w.answers.messages[0]));
     }
 
+    // "帮助 > 关于": the source and the Qt licence notice (LGPL 3.0, section 4).
+    void aboutNamesTheSourceAndTheLicences()
+    {
+        Window w(Project().options());
+        QStringList shown;
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            for (const QLabel* label : dialog->findChildren<QLabel*>())
+                shown.append(label->text());
+            dialog->reject();
+        });
+        answer.start(20);
+        w.window.showAbout();
+        const QString text = shown.join(QLatin1Char('\n'));
+        QVERIFY2(text.contains(QStringLiteral("https://github.com/LorenzoSun-V/aoi-LiteAnno")), qPrintable(text));
+        QVERIFY2(text.contains(QStringLiteral("LGPL 3.0")), qPrintable(text));
+    }
+
     // Review of #11, round 2: "处理未写入的编辑" also deals with records the program cannot
     // use, which liteanno-cli init otherwise waits for forever.
     void unusableRecordsCanBeMovedAside()

@@ -1,0 +1,1 @@
+text of libjpeg-ijg-license.txt

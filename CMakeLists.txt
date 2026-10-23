@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(LiteAnnoToolchainPin)
 include(LiteAnnoDependencyRules)
+include(LiteAnnoBundledFiles)
 
 option(LITEANNO_BUILD_UI "Build the desktop application" ON)
 option(LITEANNO_BUILD_TESTS "Build the tests" ON)
