@@ -13,6 +13,7 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDir>
@@ -782,6 +783,40 @@ private slots:
         QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("shapeType"))->text(), QStringLiteral(u"多边形"));
         QVERIFY(!w.window.findChild<QDoubleSpinBox*>(QStringLiteral("shapeX"))->isEnabled());
         QVERIFY(label->isEnabled());
+    }
+
+    // "遮挡" shows for a selected keypoint only; clicking it is an edit that can be undone.
+    void occludedKeypointCheckbox()
+    {
+        Project project;
+        project.writeProjectFile(QByteArray(), R"("rectangle", "point")");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* occluded = w.window.findChild<QCheckBox*>(QStringLiteral("shapeOccluded"));
+        QVERIFY(occluded);
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(!occluded->isVisible());
+
+        Canvas* canvas = w.canvas();
+        canvas->setTool(Canvas::Tool::Point);
+        click(canvas, QPointF(150, 40));
+        canvas->setTool(Canvas::Tool::Select);
+        QCOMPARE(w.document().shapes().size(), 2);
+        canvas->setSelectedShape(1);
+        w.window.findChild<QListWidget*>(QStringLiteral("shapeList"))->setCurrentRow(1);
+        QVERIFY(occluded->isVisible());
+        QVERIFY(occluded->isEnabled());
+        QVERIFY(!occluded->isChecked());
+
+        occluded->click();
+        QVERIFY(w.document().shapes()[1].difficult);
+        QVERIFY(occluded->isChecked());
+        QVERIFY(w.window.undo());
+        QVERIFY(!w.document().shapes()[1].difficult);
+        canvas->setSelectedShape(1);
+        w.window.findChild<QListWidget*>(QStringLiteral("shapeList"))->setCurrentRow(1);
+        QVERIFY(occluded->isVisible());
+        QVERIFY(!occluded->isChecked());
     }
 
     // Review of #15: the fields show one decimal, so their limits are rounded (139.75 shows

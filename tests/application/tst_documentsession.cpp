@@ -119,6 +119,29 @@ private slots:
         QVERIFY(!session.canRedo());
     }
 
+    // "遮挡" is an edit of the content: it takes the confirmation away and can be undone.
+    void occludedKeypointIsAnEdit()
+    {
+        Setup setup;
+        DocumentSession session = setup.open();
+        Shape point;
+        point.type = ShapeType::Point;
+        point.label = QStringLiteral("scratch");
+        point.points = {QPointF(5, 5)};
+        const qsizetype index = session.addShape(point);
+        QVERIFY(index >= 0);
+        QVERIFY(session.confirm());
+        QVERIFY(session.setShapeDifficult(index, true));
+        QVERIFY(session.document().shapes().at(index).difficult);
+        QVERIFY(!session.document().review().checked);
+        QVERIFY(!session.setShapeDifficult(index, true));
+        QVERIFY(session.undo());
+        QVERIFY(!session.document().shapes().at(index).difficult);
+        QVERIFY(session.document().review().checked);
+        QVERIFY(session.redo());
+        QVERIFY(session.document().shapes().at(index).difficult);
+    }
+
     void confirmFollowsTheConditions()
     {
         Setup setup;

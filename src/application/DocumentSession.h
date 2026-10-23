@@ -48,6 +48,7 @@ public:
     bool setShapeRotation(qsizetype index, const RotatedBox& box);
     bool setShapeLabel(qsizetype index, const QString& label);
     bool setShapeGroupId(qsizetype index, std::optional<qint64> groupId);
+    bool setShapeDifficult(qsizetype index, bool difficult);
     bool removeShape(qsizetype index);
     bool setImageLabel(const QString& name, bool value);
     // Single choice: selects `name` and clears the other configured options in one step.

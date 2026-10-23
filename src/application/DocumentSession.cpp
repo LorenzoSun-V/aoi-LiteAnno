@@ -73,6 +73,11 @@ bool DocumentSession::setShapeGroupId(qsizetype index, std::optional<qint64> gro
     return edit([&](AnnotationDocument& document) { return document.setShapeGroupId(index, groupId); });
 }
 
+bool DocumentSession::setShapeDifficult(qsizetype index, bool difficult)
+{
+    return edit([&](AnnotationDocument& document) { return document.setShapeDifficult(index, difficult); });
+}
+
 bool DocumentSession::setShapeLabel(qsizetype index, const QString& label)
 {
     return edit([&](AnnotationDocument& document) { return document.setShapeLabel(index, label); });

@@ -1,5 +1,6 @@
 #include "ui/ShapeForm.h"
 
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
@@ -106,9 +107,15 @@ ShapeForm::ShapeForm(QWidget* parent)
     for (QDoubleSpinBox* field : {m_x, m_y, m_width, m_height})
         connect(field, &QDoubleSpinBox::valueChanged, this, [this, field] { numberEdited(field); });
 
+    m_occluded = new QCheckBox(QStringLiteral(u"遮挡"));
+    m_occluded->setObjectName(QStringLiteral("shapeOccluded"));
+    m_occluded->setToolTip(QStringLiteral(u"关键点被挡住但位置可以估计：姿态导出写 v=1，不勾选写 v=2"));
+    grid->addWidget(m_occluded, 6, 1, 1, 2);
+    connect(m_occluded, &QCheckBox::clicked, this, [this](bool checked) { emit occludedChosen(checked); });
+
     m_note = caption(QString());
     m_note->setWordWrap(true);
-    grid->addWidget(m_note, 6, 0, 1, 3);
+    grid->addWidget(m_note, 7, 0, 1, 3);
     setVisible(false);
 }
 
@@ -143,6 +150,9 @@ void ShapeForm::setShape(const Shown& shown)
     if (!(same && m_group->hasFocus()))
         m_group->setText(shown.groupId ? QString::number(*shown.groupId) : QString());
     m_group->setEnabled(shown.editable);
+    m_occluded->setVisible(shown.keypoint);
+    m_occluded->setChecked(shown.difficult);
+    m_occluded->setEnabled(shown.editable);
 
     const double width = shown.imageSize.width();
     const double height = shown.imageSize.height();

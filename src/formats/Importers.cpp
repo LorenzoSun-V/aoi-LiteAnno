@@ -101,6 +101,7 @@ Shape newShape(ShapeType type, const QString& label, PointList points)
 void setUnedited(Shape& shape, bool difficult, std::optional<qint64> groupId = std::nullopt)
 {
     shape.groupId = groupId;
+    shape.difficult = difficult;
     Json object = Json::object();
     if (difficult)
         object["difficult"] = true;

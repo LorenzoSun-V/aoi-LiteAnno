@@ -3,6 +3,7 @@
 // compared with upstream's in python/export_compat.py and python/import_compat.py.
 
 #include "core/AnnotationDocument.h"
+#include "formats/AnnotationFile.h"
 #include "formats/Exporters.h"
 #include "formats/Importers.h"
 #include "formats/PoseConfig.h"
@@ -180,6 +181,54 @@ private slots:
         QVERIFY(group);
         QVERIFY(*group != max && *group != max - 1);
         QCOMPARE(document.shapes().at(2).groupId, group);
+    }
+
+    // "遮挡": a keypoint's "difficult". Checked exports v=1, unchecked v=2, a missing one v=0.
+    // A value that is not true reads as unchecked and stays as it is until it is changed.
+    void occludedKeypoints()
+    {
+        const QByteArray original = R"({"shapes": [
+            {"label": "person", "points": [[10, 10], [90, 10], [90, 90], [10, 90]], "group_id": 1, "shape_type": "rectangle"},
+            {"label": "nose", "points": [[20, 20]], "group_id": 1, "difficult": false, "shape_type": "point"},
+            {"label": "eye", "points": [[30, 30]], "group_id": 1, "difficult": true, "shape_type": "point"},
+            {"label": "ear", "points": [[40, 40]], "group_id": 1, "difficult": "yes", "shape_type": "point"}],
+            "imagePath": "a.png", "imageData": null, "imageHeight": 100, "imageWidth": 100})";
+        AnnotationFile file = AnnotationFile::fromBytes(original, ImageInfo{QStringLiteral("a.png"), 100, 100, 1});
+        AnnotationDocument& document = file.document();
+        QVERIFY(!document.shapes().at(1).difficult);
+        QVERIFY(document.shapes().at(2).difficult);
+        QVERIFY(!document.shapes().at(3).difficult);
+        const PoseConfig pose = parsePoseConfig("classes:\n  person: [nose, eye, ear, tail]\n");
+        QVERIFY(pose.error.isEmpty());
+        const auto flags = [&](const QByteArray& bytes) {
+            const AnnotationFile read = AnnotationFile::fromBytes(bytes, ImageInfo{QStringLiteral("a.png"), 100, 100, 1});
+            const QList<QByteArray> fields = yoloPoseLabels(exportImageOf(QStringLiteral("a.json"), bytes, read), pose)
+                                                 .trimmed().split(' ');
+            QByteArray found;
+            for (qsizetype k = 0; k < 4; ++k)
+                found += fields.at(5 + 3 * k + 2);
+            return found;
+        };
+        QCOMPARE(flags(original), QByteArray("2120"));
+
+        QVERIFY(document.setShapeDifficult(1, true));
+        QVERIFY(document.setShapeDifficult(2, false));
+        QVERIFY(!document.setShapeDifficult(3, false));
+        const QByteArray bytes = file.toBytes();
+        QVERIFY(bytes.contains(R"("difficult": "yes")"));
+        QCOMPARE(flags(bytes), QByteArray("1220"));
+
+        // A pasted copy keeps the mark, and a new keypoint can take it.
+        Shape copy = document.shapes().at(1);
+        copy.copiedObject = file.shapeObject(1);
+        QVERIFY(document.shapes().at(document.addShape(copy)).difficult);
+        Shape unmarked = document.shapes().at(1);
+        unmarked.copiedObject = file.shapeObject(1);
+        unmarked.difficult = false;
+        const qsizetype added = document.addShape(unmarked);
+        QVERIFY(file.toBytes().count(R"("difficult": false)") >= 1);
+        QVERIFY(!AnnotationFile::fromBytes(file.toBytes(), ImageInfo{QStringLiteral("a.png"), 100, 100, 1})
+                     .document().shapes().at(added).difficult);
     }
 };
 
