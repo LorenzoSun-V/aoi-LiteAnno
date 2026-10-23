@@ -41,6 +41,7 @@ file(GLOB _test_licenses "${LITEANNO_TEST_DATA_DIR}/bundled-licenses/*")
 qt_add_resources(tst_bundledlicenses "test_licenses" PREFIX "/licenses" BASE "${LITEANNO_TEST_DATA_DIR}/bundled-licenses"
     FILES ${_test_licenses})
 liteanno_add_test(tst_jsontext formats/tst_jsontext.cpp)
+liteanno_add_test(tst_poseconfig formats/tst_poseconfig.cpp)
 liteanno_add_test(tst_annotationread formats/tst_annotationread.cpp)
 liteanno_add_test(tst_annotationwrite formats/tst_annotationwrite.cpp)
 liteanno_add_test(tst_annotationstore formats/tst_annotationstore.cpp)
