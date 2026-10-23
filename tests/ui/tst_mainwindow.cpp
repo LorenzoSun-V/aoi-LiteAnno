@@ -13,15 +13,18 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDialog>
 #include <QDir>
 #include <QDirIterator>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QImage>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLineEdit>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -563,6 +566,93 @@ private slots:
         QTest::mouseMove(canvas, QPoint(1, 1));  // the margin around the image
         canvas->fitToWindow();
         QTRY_VERIFY(cursor->text().isEmpty());
+    }
+
+    // "选中形状": the class and a rectangle's position and size can be typed; the numbers not
+    // typed keep their exact values, the rectangle stays in the image, and undo takes it back.
+    void selectedShapeForm()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* form = w.window.findChild<QWidget*>(QStringLiteral("shapeForm"));
+        QVERIFY(!form->isVisible());
+        w.drawRectangle(QPointF(20.25, 10.5), QPointF(80.75, 60.25));
+        QCOMPARE(w.canvas()->selectedShape(), qsizetype(0));
+        QVERIFY(form->isVisible());
+        QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("shapeType"))->text(), QStringLiteral(u"矩形"));
+        auto* label = w.window.findChild<QComboBox*>(QStringLiteral("shapeLabel"));
+        QCOMPARE(label->currentText(), QStringLiteral("scratch"));
+        QVERIFY(!label->isEditable());  // the project's classes only
+        const PointList drawn = w.document().shapes()[0].points;
+        const double left = drawn[0].x(), top = drawn[0].y();
+        const double right = drawn[2].x(), bottom = drawn[2].y();
+
+        const auto type = [&](const char* name, const QString& text) {
+            auto* field = w.window.findChild<QDoubleSpinBox*>(QLatin1String(name));
+            QVERIFY2(field && field->isEnabled(), name);
+            field->setFocus();
+            field->selectAll();
+            QTest::keyClicks(field, text);
+            QTest::keyClick(field, Qt::Key_Return);
+        };
+        type("shapeX", QStringLiteral("30"));
+        PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[0], QPointF(30, top));
+        QCOMPARE(points[2], QPointF(30 + (right - left), bottom));
+        type("shapeHeight", QStringLiteral("40"));
+        points = w.document().shapes()[0].points;
+        QCOMPARE(points[0], QPointF(30, top));
+        QCOMPARE(points[2].y(), top + 40);
+        QCOMPARE(points[2].x(), 30 + (right - left));
+
+        // Too wide for the image (200 pixels): the field stops at the image's edge.
+        type("shapeWidth", QStringLiteral("500"));
+        points = w.document().shapes()[0].points;
+        QVERIFY2(points[2].x() <= 200, qPrintable(QString::number(points[2].x())));
+        QCOMPARE(points[0], QPointF(30, top));
+
+        // The class from the list.
+        emit label->activated(int(label->findText(QStringLiteral("dent"))));
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("dent"));
+
+        // Undo, one step at a time.
+        QVERIFY(w.window.undo());
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("scratch"));
+        while (w.window.undo() && w.document().shapes().size() == 1 && w.document().shapes()[0].points != drawn) {
+        }
+        QCOMPARE(w.document().shapes()[0].points, drawn);
+
+        // A polygon shows its bounding box, which cannot be typed.
+        w.canvas()->setTool(Canvas::Tool::Polygon);
+        for (const QPointF& p : {QPointF(120, 20), QPointF(180, 30), QPointF(150, 80)})
+            click(w.canvas(), p);
+        QTest::keyClick(w.canvas(), Qt::Key_Return);
+        w.canvas()->setTool(Canvas::Tool::Select);
+        QCOMPARE(w.document().shapes().size(), 2);
+        w.canvas()->setSelectedShape(1);
+        w.window.findChild<QListWidget*>(QStringLiteral("shapeList"))->setCurrentRow(1);
+        QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("shapeType"))->text(), QStringLiteral(u"多边形"));
+        QVERIFY(!w.window.findChild<QDoubleSpinBox*>(QStringLiteral("shapeX"))->isEnabled());
+        QVERIFY(label->isEnabled());
+    }
+
+    // Without a class list any name may be typed in the form, as in the label dialog.
+    void selectedShapeFormFreeText()
+    {
+        Project project;
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.answers.label = QStringLiteral("dent");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        auto* label = w.window.findChild<QComboBox*>(QStringLiteral("shapeLabel"));
+        QVERIFY(label->isEditable());
+        label->setFocus();
+        label->lineEdit()->selectAll();
+        QTest::keyClicks(label->lineEdit(), QStringLiteral("  hole "));
+        QTest::keyClick(label->lineEdit(), Qt::Key_Return);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("hole"));
     }
 
     void projectOpenElsewhereIsLocked()

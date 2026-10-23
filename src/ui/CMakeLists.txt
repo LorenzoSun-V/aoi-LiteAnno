@@ -9,6 +9,8 @@ add_library(liteanno_ui_lib STATIC
     MainWindow.h
     Prompts.cpp
     Prompts.h
+    ShapeForm.cpp
+    ShapeForm.h
     Texts.cpp
     Texts.h
     Theme.cpp

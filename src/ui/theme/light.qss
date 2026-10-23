@@ -27,6 +27,7 @@ QWidget#currentPanel { border-left: 1px solid #E1E5EA; }
 QLabel[role="title"] { font-weight: bold; color: #1F2933; }
 QLabel[role="secondary"] { color: #5B6672; }
 QLabel[role="section"] { font-weight: bold; color: #5B6672; padding-top: 6px; }
+QLabel[role="field"] { min-height: 28px; padding: 0 8px; color: #5B6672; background: #F3F5F8; border: 1px solid #E1E5EA; border-radius: 6px; }
 QFrame[role="line"] { background: #E1E5EA; border: none; max-height: 1px; min-height: 1px; }
 
 QLabel#statusChip { border-radius: 9px; padding: 1px 8px; font-weight: bold; }
@@ -65,6 +66,9 @@ QGroupBox { border: none; margin-top: 22px; font-weight: bold; color: #5B6672; }
 QGroupBox::title { subcontrol-origin: margin; left: 0; padding: 0; }
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit, QTextEdit { min-height: 28px; padding: 0 8px; border: 1px solid #D5DAE0; border-radius: 6px; background: #FFFFFF; selection-background-color: #1F6FEB; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled { color: #8A949E; background: #F3F5F8; border-color: #E1E5EA; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView { border: 1px solid #D5DAE0; selection-background-color: #E8F0FE; selection-color: #1F2933; outline: 0; }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus, QTextEdit:focus { border-color: #1F6FEB; }
 
 QStatusBar { background: #FFFFFF; border-top: 1px solid #E1E5EA; color: #5B6672; }
