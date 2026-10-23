@@ -96,6 +96,9 @@ if(LITEANNO_BUILD_UI)
     target_compile_definitions(tst_export PRIVATE LITEANNO_CLI="$<TARGET_FILE:liteanno_cli>")
     add_dependencies(tst_export liteanno_cli)
 
+    liteanno_add_test(tst_import application/tst_import.cpp)
+    target_link_libraries(tst_import PRIVATE liteanno_imaging)
+
     # Format spec 11: round trips checked with X-AnyLabeling's own reader and writer.
     add_executable(liteanno_compat_roundtrip tools/compat_roundtrip.cpp)
     target_link_libraries(liteanno_compat_roundtrip PRIVATE liteanno_imaging liteanno_formats Qt6::Gui)
@@ -121,6 +124,12 @@ if(LITEANNO_BUILD_UI)
                     "$<TARGET_FILE:liteanno_cli>" "${CMAKE_CURRENT_BINARY_DIR}/upstream_export")
         set_property(TEST upstream_export PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
         liteanno_set_test_environment(upstream_export)
+        # Architecture 11.2: each import format against upstream's own converter.
+        add_test(NAME upstream_import
+            COMMAND "${LITEANNO_UPSTREAM_PYTHON}" "${CMAKE_CURRENT_SOURCE_DIR}/python/import_compat.py"
+                    "$<TARGET_FILE:liteanno_cli>" "${CMAKE_CURRENT_BINARY_DIR}/upstream_import")
+        set_property(TEST upstream_import PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+        liteanno_set_test_environment(upstream_import)
     endif()
 
     # Architecture 14: catalog timings; CI runs it with larger folders and prints the table.

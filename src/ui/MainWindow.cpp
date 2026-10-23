@@ -1,6 +1,7 @@
 #include "ui/MainWindow.h"
 
 #include "application/ExportService.h"
+#include "application/ImportService.h"
 #include "application/FileStatus.h"
 #include "application/RecoveryService.h"
 #include "core/BundledLicenses.h"
@@ -30,8 +31,10 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QListWidget>
+#include <QMenu>
 #include <QMenuBar>
 #include <QPlainTextEdit>
 #include <QProgressDialog>
@@ -39,6 +42,7 @@
 #include <QRadioButton>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTableWidget>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -164,6 +168,7 @@ void MainWindow::buildUi()
     });
     connect(m_canvas, &Canvas::labelEditRequested, this, &MainWindow::editLabel);
     connect(m_canvas, &Canvas::deleteRequested, this, [this] { deleteSelectedShape(); });
+    connect(m_canvas, &Canvas::contextMenuRequested, this, &MainWindow::showCanvasMenu);
 
     // Images.
     m_imageList = new QListWidget;
@@ -333,7 +338,14 @@ void MainWindow::buildUi()
     m_confirmButton->setToolTip(QStringLiteral(u"确认这张图片 (Ctrl+Alt+K)"));
     connect(m_confirmButton, &QPushButton::clicked, this, [this] { confirmCurrent(); });
     layout->addWidget(m_confirmButton);
+    // The one-hand keys, on the panel: people at the line do not hover for tooltips.
+    auto* keysHint = new QLabel(QStringLiteral(u"F 确认并下一张　　E 跳过"));
+    keysHint->setObjectName(QStringLiteral("reviewKeys"));
+    keysHint->setProperty("role", QStringLiteral("secondary"));
+    keysHint->setAlignment(Qt::AlignCenter);
+    layout->addWidget(keysHint);
     m_skipButton = new QPushButton(QStringLiteral(u"跳过…"));
+    m_skipButton->setToolTip(QStringLiteral(u"跳过这张图片，需要写明原因 (E)"));
     connect(m_skipButton, &QPushButton::clicked, this, [this] { skipCurrent(); });
     layout->addWidget(m_skipButton);
     m_unskipButton = new QPushButton(QStringLiteral(u"取消跳过"));
@@ -369,6 +381,7 @@ void MainWindow::buildUi()
     fileMenu->addAction(QStringLiteral(u"处理未写入的编辑…"), this, &MainWindow::resolveRecoveryRecords);
     // No shortcut: X-AnyLabeling has no such action.
     fileMenu->addAction(QStringLiteral(u"重新扫描文件夹"), this, &MainWindow::rescan);
+    fileMenu->addAction(QStringLiteral(u"导入…"), this, [this] { importAnnotations(); });
     fileMenu->addAction(QStringLiteral(u"导出…"), this, [this] { exportAnnotations(); });
     fileMenu->addSeparator();
     QAction* quit = named(fileMenu->addAction(QStringLiteral(u"退出"), this, &QWidget::close), "quit");
@@ -398,6 +411,18 @@ void MainWindow::buildUi()
     QAction* checkAction = named(editMenu->addAction(QStringLiteral(u"确认当前图片"), this, [this] { confirmCurrent(); }),
                                  "toggle_annotation_checked");
     checkAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+K")));
+    // One-hand keys next to A/D (the user's choice). Upstream uses F and E only in its automatic
+    // labelling, which this program does not have; it has no skip, so Ctrl+Alt+S (next to its
+    // Ctrl+Alt+K) is taken by nothing there either.
+    QAction* confirmNext = named(editMenu->addAction(QStringLiteral(u"确认并下一张"), this, [this] { confirmAndNext(); }),
+                                 "confirm_and_next");
+    confirmNext->setShortcut(QKeySequence(QStringLiteral("F")));
+    // Held down, F would confirm images nobody looked at: each one needs its own press.
+    confirmNext->setAutoRepeat(false);
+    QAction* skipAction =
+        named(editMenu->addAction(QStringLiteral(u"跳过当前图片…"), this, [this] { skipCurrent(); }), "skip_image");
+    skipAction->setShortcuts({QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))});
+    skipAction->setAutoRepeat(false);
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral(u"视图(&V)"));
     QAction* zoomIn = named(viewMenu->addAction(QStringLiteral(u"放大"), this, [this] { m_canvas->zoomBy(1.1); }), "zoom_in");
@@ -447,6 +472,9 @@ void MainWindow::buildUi()
     previousUnchecked->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
 
     QMenu* helpMenu = menuBar()->addMenu(QStringLiteral(u"帮助(&H)"));
+    // F1: X-AnyLabeling leaves it free.
+    QAction* keys = named(helpMenu->addAction(QStringLiteral(u"快捷键一览"), this, &MainWindow::showShortcuts), "show_shortcuts");
+    keys->setShortcut(QKeySequence(QStringLiteral("F1")));
     named(helpMenu->addAction(QStringLiteral(u"关于 aoi-LiteAnno…"), this, &MainWindow::showAbout), "about");
 
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
@@ -471,7 +499,7 @@ void MainWindow::buildUi()
     m_selectTool = tool(u"选择", "edit_polygon", "select", "Ctrl+J");
     m_rectangleTool = tool(u"矩形", "create_rectangle", "rectangle", "R");
     m_polygonTool = tool(u"多边形", "create_polygon", "polygon", "P");
-    m_rotationTool = tool(u"旋转框", "create_rotation", "rotation", "O", u"旋转框 (O)：拖出后选中，按 Z/V 转 1°，X/C 转 0.1°");
+    m_rotationTool = tool(u"旋转框", "create_rotation", "rotation", "O", u"旋转框 (O)：点两个角或拖出；选中后按 Z/V 转 1°，X/C 转 0.1°");
     const struct {
         const char16_t* text;
         const char* name;
@@ -724,6 +752,76 @@ void MainWindow::scanFinished(bool complete)
         goToImage(startIndex());
 }
 
+QList<std::pair<QString, QString>> MainWindow::shortcutList() const
+{
+    QList<std::pair<QString, QString>> rows;
+    QSet<const QAction*> listed;
+    const auto add = [&](const QAction* action) {
+        QStringList keys;
+        for (const QKeySequence& sequence : action->shortcuts())
+            keys.append(sequence.toString(QKeySequence::NativeText));
+        if (!keys.isEmpty() && !listed.contains(action)) {
+            listed.insert(action);
+            rows.append({QString(action->text()).remove(QStringLiteral(u"…")), keys.join(QStringLiteral(u"、"))});
+        }
+    };
+    const auto addMenu = [&](const QMenu* menu, const auto& self) -> void {
+        for (const QAction* action : menu->actions()) {
+            if (action->menu()) {
+                self(action->menu(), self);
+                continue;
+            }
+            add(action);
+        }
+    };
+    for (const QAction* top : menuBar()->actions()) {
+        if (top->menu())
+            addMenu(top->menu(), addMenu);
+    }
+    for (const QAction* action : findChild<QToolBar*>(QStringLiteral("tools"))->actions())
+        add(action);
+    // Keys the canvas handles itself (Canvas::keyPressEvent and the mouse).
+    const std::pair<const char16_t*, const char16_t*> canvas[] = {
+        {u"拖动画面", u"按住空格 + 左键拖动，或右键拖动"},
+        {u"缩放画面", u"Ctrl + 滚轮"},
+        {u"选中形状移动 1 像素", u"方向键"},
+        {u"旋转框转 1° / 0.1°", u"Z、V / X、C"},
+        {u"多边形、折线：完成", u"Enter 或双击"},
+        {u"多边形、折线：删掉最后一个点", u"Backspace"},
+        {u"取消正在画的形状 / 取消选中", u"Esc"},
+    };
+    for (const auto& [text, keys] : canvas)
+        rows.append({QString::fromUtf16(text), QString::fromUtf16(keys)});
+    return rows;
+}
+
+void MainWindow::showShortcuts()
+{
+    const Busy busy(this);  // the dialog runs events; a close waits until it is closed
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("shortcutsDialog"));
+    dialog.setWindowTitle(QStringLiteral(u"快捷键一览"));
+    auto* layout = new QVBoxLayout(&dialog);
+    const QList<std::pair<QString, QString>> rows = shortcutList();
+    auto* table = new QTableWidget(int(rows.size()), 2);
+    table->setHorizontalHeaderLabels({QStringLiteral(u"操作"), QStringLiteral(u"按键")});
+    for (int row = 0; row < rows.size(); ++row) {
+        table->setItem(row, 0, new QTableWidgetItem(rows[row].first));
+        table->setItem(row, 1, new QTableWidgetItem(rows[row].second));
+    }
+    table->verticalHeader()->hide();
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+    layout->addWidget(table);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.resize(520, 600);
+    dialog.exec();
+}
+
 void MainWindow::showAbout()
 {
     const Busy busy(this);  // the dialog runs events; a close waits until it is closed
@@ -867,6 +965,116 @@ bool MainWindow::exportAnnotations()
     return true;
 }
 
+bool MainWindow::importAnnotations()
+{
+    if (!m_project)
+        return false;
+    m_shapeForm->commitPending();
+    const Busy busy(this);
+    // The files are changed under the window: its edits go in first.
+    m_idleTimer.stop();
+    flushSaves();
+    writeProgress();
+    const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
+    const int batchNumber = batch && batch->list ? batch->number : 0;
+    ImportQuestion question;
+    question.batchNumber = batchNumber;
+    question.plainFolder = m_project->isPlainFolder();
+    const std::optional<ImportChoice> choice = m_prompts.importOptions(question);
+    if (!choice)
+        return false;
+    application::ImportRequest request;
+    request.format = choice->format;
+    if (formats::importReadsOneFile(choice->format))
+        request.labelFile = choice->labels;
+    else
+        request.labelDir = choice->labels;
+    request.classesFile = choice->classesFile;
+    request.mappingFile = choice->mappingFile;
+    request.mode = choice->mode;
+    for (auto it = m_heldEdits.cbegin(); it != m_heldEdits.cend(); ++it)
+        request.heldImages.insert(it.key());
+    if (!choice->wholeProject && batchNumber > 0)
+        request.batches = {m_batchStem};
+    const application::ImportService service(*m_project, imaging::readImageInfo, imaging::readMaskImage);
+    const ListHold hold(this);
+    const auto run = [&] {
+        QProgressDialog progress(QStringLiteral(u"正在导入…"), QStringLiteral(u"取消"), 0, 0, this);
+        progress.setWindowModality(Qt::WindowModal);
+        progress.setMinimumDuration(400);
+        return service.run(request, [&](int done, int total) {
+            progress.setMaximum(std::max(total, 0));
+            progress.setValue(done);
+            if (!progress.isVisible())
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
+            return !progress.wasCanceled() && !m_closeAsked;
+        });
+    };
+    application::ImportReport report = run();
+    const QString formatText = importFormatText(request.format);
+    const auto unconvertibleLines = [](const application::ImportReport& r) {
+        const QList<application::ImportItem> items = r.unconvertible();
+        QStringList lines;
+        for (const application::ImportItem& item : items.mid(0, 10))
+            lines.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
+        if (items.size() > 10)
+            lines.append(QStringLiteral(u"……共 %1 张").arg(items.size()));
+        return lines.join(QLatin1Char('\n'));
+    };
+    if (!m_closeAsked && !report.written && !report.cancelled && !report.unconvertible().isEmpty()) {
+        const QString text = QStringLiteral(u"有 %1 张图片的“%2”标注文件不能导入，这些图片不会改动：\n%3\n\n"
+                                            u"可以跳过这些图片导入其余图片；也可以先修正标注文件再导入。")
+                                 .arg(report.unconvertible().size())
+                                 .arg(formatText, unconvertibleLines(report));
+        if (!m_prompts.skipUnconvertible(text))
+            return false;
+        request.skipUnconvertible = true;
+        report = run();
+    }
+    // Files written by a cancelled or closed import stay; the window shows them.
+    if (report.written) {
+        reloadCurrent();
+        rescan();
+    }
+    if (m_closeAsked)
+        return report.written;
+    if (!report.written && !report.error.isEmpty()) {
+        if (!report.cancelled)
+            m_prompts.message(QStringLiteral(u"没有导入"), report.error);
+        return false;
+    }
+    int empty = 0;
+    QStringList notWritten;
+    for (const application::ImportItem& item : report.items) {
+        if (item.result == application::ImportResult::Imported && item.shapes == 0)
+            ++empty;
+        if (item.result == application::ImportResult::NotWritten && notWritten.size() < 10)
+            notWritten.append(QStringLiteral(u"%1：%2").arg(item.image, item.reason));
+    }
+    QString text = QStringLiteral(u"已导入 %1 张图片（其中标注文件里没有对象的 %2 张），都要逐张检查后确认。\n"
+                                  u"已有标注而没有改动 %3 张，没有标注文件 %4 张，没有写入 %5 张，无法转换 %6 张，"
+                                  u"标注文件里没有对象而不用写入 %7 张。")
+                       .arg(report.count(application::ImportResult::Imported))
+                       .arg(empty)
+                       .arg(report.count(application::ImportResult::HasAnnotation))
+                       .arg(report.count(application::ImportResult::NoLabelFile))
+                       .arg(report.count(application::ImportResult::NotWritten))
+                       .arg(report.count(application::ImportResult::Unconvertible))
+                       .arg(report.count(application::ImportResult::Unchanged));
+    if (report.cancelled)
+        text.prepend(QStringLiteral(u"导入已取消，取消前写入的图片保留。\n"));
+    if (!notWritten.isEmpty())
+        text += QStringLiteral(u"\n\n没有写入的图片：\n%1").arg(notWritten.join(QLatin1Char('\n')));
+    if (!report.unmatched.isEmpty()) {
+        QStringList names;
+        for (const application::UnmatchedLabel& label : report.unmatched.mid(0, 10))
+            names.append(QStringLiteral(u"%1：%2").arg(label.fileName, label.reason));
+        text += QStringLiteral(u"\n\nCOCO 文件里有 %1 张图片在文件夹里找不到：\n%2").arg(report.unmatched.size()).arg(names.join(QLatin1Char('\n')));
+    }
+    m_prompts.message(report.written ? QStringLiteral(u"导入完成") : QStringLiteral(u"没有导入"), text);
+    return report.written;
+}
+
 void MainWindow::showScanReports(const QStringList& unsupported, const QStringList& unreadable)
 {
     if (!unreadable.isEmpty()) {
@@ -961,6 +1169,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.confirmDiscard = held(std::move(prompts.confirmDiscard));
     m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
     m_prompts.exportOptions = held(std::move(prompts.exportOptions));
+    m_prompts.importOptions = held(std::move(prompts.importOptions));
     m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
     m_prompts.setAsideUnusable = held(std::move(prompts.setAsideUnusable));
 }
@@ -2067,6 +2276,67 @@ bool MainWindow::confirmCurrent()
     if (!m_session || !m_session->confirm())
         return false;
     edited();
+    return true;
+}
+
+QMenu* MainWindow::canvasMenu()
+{
+    // Like X-AnyLabeling's canvas menu, with only what this program has. Each item runs the
+    // menu bar's action, so keys and checks stay in one place; the key is only shown here
+    // (after a tab) so no second shortcut exists.
+    auto* menu = new QMenu(this);
+    menu->setObjectName(QStringLiteral("canvasMenu"));
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    const qsizetype selected = m_canvas->selectedShape();
+    const bool editable = m_session && !m_session->isReadOnly();
+    const bool shape = m_session && selected >= 0 && selected < m_session->document().shapes().size();
+    const auto add = [&](const char* name, bool enabled) {
+        QAction* source = findChild<QAction*>(QLatin1String(name));
+        if (!source)
+            return;
+        QString text = source->text();
+        if (!source->shortcut().isEmpty())
+            text += QLatin1Char('\t') + source->shortcut().toString(QKeySequence::NativeText);
+        QAction* item = menu->addAction(source->icon(), text, source, &QAction::trigger);
+        item->setObjectName(QLatin1String(name));
+        item->setCheckable(source->isCheckable());
+        item->setChecked(source->isChecked());
+        item->setEnabled(source->isEnabled() && enabled);
+    };
+    add("confirm_and_next", editable);
+    add("toggle_annotation_checked", editable);
+    add("skip_image", editable);
+    menu->addSeparator();
+    add("edit_label", editable && shape);
+    add("copy_polygon", shape);
+    add("paste_polygon", editable && m_copiedShape.has_value());
+    add("hide_selected_polygons", shape);
+    add("delete_polygon", editable && shape);
+    menu->addSeparator();
+    for (const char* tool : {"edit_polygon", "create_rectangle", "create_polygon", "create_rotation", "create_point",
+                             "create_line", "create_linestrip", "create_circle"})
+        add(tool, true);
+    menu->addSeparator();
+    add("undo", true);
+    add("redo", true);
+    return menu;
+}
+
+void MainWindow::showCanvasMenu(const QPoint& globalPosition)
+{
+    m_shapeForm->commitPending();
+    // popup, not exec: no event loop of its own, so nothing has to wait for it (see Busy).
+    canvasMenu()->popup(globalPosition);
+}
+
+bool MainWindow::confirmAndNext()
+{
+    m_shapeForm->commitPending();
+    // Only a properly confirmed image just moves on. Anything else is confirmed first, with the
+    // confirm conditions (a checked file failing them stays; checked and skipped is cleared).
+    if (!m_session || (m_session->status() != AnnotationStatus::Confirmed && !confirmCurrent()))
+        return false;
+    nextImage();
     return true;
 }
 

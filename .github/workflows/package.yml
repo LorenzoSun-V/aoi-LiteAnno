@@ -1,9 +1,10 @@
 name: Package
 
-# The Windows test build (architecture 12): LiteAnno.exe and liteanno-cli.exe, each one file
-# with Qt and the MSVC runtime linked in, so they run from any folder, a USB drive included,
-# with nothing next to them. Every run keeps them as a workflow artifact; a "v*" tag also
-# publishes them as a pre-release.
+# The Windows test build (architecture 12): LiteAnno.exe, one file with Qt and the MSVC
+# runtime linked in, so it runs from any folder, a USB drive included, with nothing next to
+# it. Every run keeps it as a workflow artifact; a "v*" tag also publishes it as a
+# pre-release. liteanno-cli.exe is built and checked here too but not shipped: the people
+# who test the build do not use it.
 on:
   push:
     tags: ["v*"]
@@ -99,7 +100,6 @@ jobs:
           $dir = "dist/$name"
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item build/windows-msvc/Release/LiteAnno.exe $dir
-          Copy-Item build/windows-msvc/Release/liteanno-cli.exe $dir
           "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem $dir | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
 
@@ -134,11 +134,12 @@ jobs:
           $env:QT_FORCE_STDERR_LOGGING = "1"
           $env:QT_DEBUG_PLUGINS = "1"
           New-Item -ItemType Directory -Force startup-check | Out-Null
-          function Test-Start($exe, $arguments) {
+          function Test-Start($source, $arguments) {
+            $exe = Split-Path -Leaf $source
             Write-Host "== $exe $arguments"
             $dir = Join-Path $env:RUNNER_TEMP "alone-$([guid]::NewGuid())"
             New-Item -ItemType Directory $dir | Out-Null
-            Copy-Item "dist/$env:PACKAGE_NAME/$exe" $dir
+            Copy-Item $source $dir
             $p = Start-Process -FilePath "$dir\$exe" -ArgumentList $arguments -PassThru `
                 -RedirectStandardError "startup-check/$exe.stderr.txt" -RedirectStandardOutput "startup-check/$exe.stdout.txt"
             $null = $p.Handle  # keeps the exit code readable after the process ends
@@ -157,10 +158,10 @@ jobs:
             if (-not $finished) { Write-Error "$exe did not quit within 60 s"; exit 1 }
             if ($p.ExitCode -ne 0) { Write-Error "$exe exited with $($p.ExitCode)"; exit 1 }
           }
-          Test-Start "liteanno-cli.exe" "--version"
-          Test-Start "liteanno-cli.exe" "--check-single-file"
-          Test-Start "LiteAnno.exe" "--check-single-file"
-          Test-Start "LiteAnno.exe" "--smoke-test"
+          Test-Start "build/windows-msvc/Release/liteanno-cli.exe" "--version"
+          Test-Start "build/windows-msvc/Release/liteanno-cli.exe" "--check-single-file"
+          Test-Start "dist/$env:PACKAGE_NAME/LiteAnno.exe" "--check-single-file"
+          Test-Start "dist/$env:PACKAGE_NAME/LiteAnno.exe" "--smoke-test"
 
       - name: Keep the start-up check output
         if: failure()
@@ -191,6 +192,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/LiteAnno.exe dist/liteanno-cli.exe --repo "$GITHUB_REPOSITORY" \
+          gh release create "$GITHUB_REF_NAME" dist/LiteAnno.exe --repo "$GITHUB_REPOSITORY" \
             --prerelease --title "$GITHUB_REF_NAME" \
-            --notes "测试版：下载 LiteAnno.exe 直接运行，不用安装。命令行工具是 liteanno-cli.exe。"
+            --notes "测试版：下载 LiteAnno.exe 直接运行，不用安装。"

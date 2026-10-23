@@ -39,6 +39,8 @@ public:
     // A rotated box turned: new corners and angle together.
     bool setShapeRotation(qsizetype index, const RotatedBox& box);
     bool setShapeLabel(qsizetype index, const QString& label);
+    // "group_id": which pose (rectangle and keypoints) or instance the shape belongs to.
+    bool setShapeGroupId(qsizetype index, std::optional<qint64> groupId);
     // Returns the index of the new shape, or -1 when it is not an editable shape this
     // build can create.
     qsizetype addShape(Shape shape);

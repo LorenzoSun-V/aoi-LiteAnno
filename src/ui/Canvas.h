@@ -86,6 +86,8 @@ signals:
     // The user asked to change the label of the selected shape (double click).
     void labelEditRequested(qsizetype index);
     void deleteRequested(qsizetype index);
+    // A right click (not a pan): the shape under it, if any, is selected first.
+    void contextMenuRequested(const QPoint& globalPosition);
     // The image is shown at another scale (1 = one image pixel per screen pixel).
     void zoomChanged(double scale);
     // The mouse is over the image at `imagePoint`, or (`inside` false) has left it.
@@ -129,6 +131,9 @@ private:
     // Z/X/C/V: turns the selected rotated box by `degrees`, as upstream's keys do.
     bool rotateSelectedBy(double degrees);
     void cancelDrawing();
+    // Rectangle, rotated box, line or circle from `start` to `end`; false if too small to keep.
+    bool finishBox(const QPointF& start, const QPointF& end);
+    void updateCursor();
     // Sends cursorMoved for the mouse's last position, after the view moved or zoomed under it.
     void reportCursor();
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
@@ -149,11 +154,14 @@ private:
 
     Drag m_drag = Drag::None;
     QPointF m_pressWidget;
+    QPointF m_panStart;  // where the pan's button went down
+    Qt::MouseButton m_panButton = Qt::NoButton;
     QPointF m_pressImage;
     QPointF m_currentImage;
     int m_dragVertex = -1;
     PointList m_dragPoints;      // the selected shape's points during a move
     PointList m_polygonPoints;   // a polygon being drawn
+    std::optional<QPointF> m_clickStart;  // first corner of a box begun by a click
 
     QList<quint64> m_hidden;  // ids of hidden shapes, in the order they were hidden
     bool m_shapesVisible = true;

@@ -103,4 +103,29 @@ QString exportFormatText(formats::ExportFormat format)
     return QString();
 }
 
+QString importFormatText(formats::ImportFormat format)
+{
+    switch (format) {
+    case formats::ImportFormat::YoloDetection:
+        return QStringLiteral(u"YOLO 检测（矩形）");
+    case formats::ImportFormat::YoloSegmentation:
+        return QStringLiteral(u"YOLO 分割（多边形）");
+    case formats::ImportFormat::YoloObb:
+        return QStringLiteral(u"YOLO 旋转框（OBB）");
+    case formats::ImportFormat::VocRectangle:
+        return QStringLiteral(u"VOC（矩形）");
+    case formats::ImportFormat::VocPolygon:
+        return QStringLiteral(u"VOC（矩形和多边形）");
+    case formats::ImportFormat::Dota:
+        return QStringLiteral(u"DOTA（旋转框）");
+    case formats::ImportFormat::CocoDetection:
+        return QStringLiteral(u"COCO 检测（矩形）");
+    case formats::ImportFormat::CocoSegmentation:
+        return QStringLiteral(u"COCO 实例分割（多边形）");
+    case formats::ImportFormat::Mask:
+        return QStringLiteral(u"掩膜 PNG（灰度或彩色）");
+    }
+    return QString();
+}
+
 } // namespace liteanno::ui
