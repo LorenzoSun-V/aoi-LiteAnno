@@ -83,6 +83,13 @@ if(LITEANNO_BUILD_UI)
     liteanno_add_test(tst_imageloader imaging/tst_imageloader.cpp)
     target_link_libraries(tst_imageloader PRIVATE liteanno_imaging)
     set_property(TEST tst_imageloader PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    liteanno_add_test(tst_iconfile imaging/tst_iconfile.cpp)
+    target_link_libraries(tst_iconfile PRIVATE liteanno_imaging)
+    target_compile_definitions(tst_iconfile PRIVATE LITEANNO_DEFAULT_LOGO="${PROJECT_SOURCE_DIR}/branding/logo.png")
+    add_test(NAME make_icon_non_ascii_paths
+        COMMAND ${CMAKE_COMMAND} -DTOOL=$<TARGET_FILE:liteanno_make_icon> -DLOGO=${PROJECT_SOURCE_DIR}/branding/logo.png
+                -DWORK=${CMAKE_CURRENT_BINARY_DIR}/make-icon-paths -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/make_icon_paths.cmake)
+    liteanno_set_test_environment(make_icon_non_ascii_paths)
 
     liteanno_add_test(tst_export application/tst_export.cpp)
     target_link_libraries(tst_export PRIVATE liteanno_imaging)

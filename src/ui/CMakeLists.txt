@@ -17,8 +17,10 @@ add_library(liteanno_ui_lib STATIC
     Theme.h
 )
 target_link_libraries(liteanno_ui_lib PUBLIC liteanno_application liteanno_imaging liteanno_core Qt6::Widgets)
+liteanno_embed_logo(liteanno_ui_lib)
 
-# The style sheet and the icons (rendered from icons/svg by icons/render.sh).
+# The style sheet and the icons (rendered from icons/svg by icons/render.sh); the logo comes
+# from LITEANNO_LOGO (cmake/LiteAnnoLogo.cmake).
 file(GLOB LITEANNO_ICON_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/icons/png/*.png")
 foreach(icon IN LISTS LITEANNO_ICON_FILES)
@@ -36,5 +38,6 @@ qt_add_executable(liteanno_ui WIN32
 set_target_properties(liteanno_ui PROPERTIES OUTPUT_NAME LiteAnno)
 target_link_libraries(liteanno_ui PRIVATE liteanno_ui_lib)
 
+liteanno_exe_icon(liteanno_ui)
 liteanno_bundle_qt_translation(liteanno_ui)
 liteanno_bundle_licenses(liteanno_ui)
