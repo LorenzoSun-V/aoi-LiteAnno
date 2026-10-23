@@ -316,6 +316,30 @@ private slots:
         QVERIFY(saved(annotation)["shapes"][static_cast<std::size_t>(ungrouped)]["group_id"].is_null());
     }
 
+    // The group numbers of objects this build does not recognize are taken too: a keypoint
+    // drawn in an ungrouped rectangle never joins one of them, and they are kept as they are.
+    void newGroupSkipsUnrecognizedObjects()
+    {
+        const QByteArray original = R"({"shapes": [
+            {"label": "x", "points": [[1, 1]], "group_id": 0, "shape_type": "custom_type"},
+            {"label": "person", "points": [[0, 0], [10, 0], [10, 10], [0, 10]], "group_id": null, "shape_type": "rectangle"}],
+            "imagePath": "0007.png", "imageData": null, "imageHeight": 100, "imageWidth": 100})";
+        AnnotationFile annotation = AnnotationFile::fromBytes(original, imageInfo("0007.png", 100, 100));
+        AnnotationDocument& document = annotation.document();
+        QCOMPARE(document.shapes().at(0).kind, ShapeKind::Unrecognized);
+        Shape point;
+        point.type = ShapeType::Point;
+        point.label = QStringLiteral("nose");
+        point.points = {QPointF(5, 5)};
+        const qsizetype index = document.addKeypoint(point);
+        QVERIFY(index >= 0);
+        const Json shapes = saved(annotation)["shapes"];
+        QCOMPARE(serializeJson(shapes[0]), serializeJson(test::parseOrFail(original)["shapes"][0]));
+        QVERIFY(shapes[1]["group_id"].is_number_integer());
+        QVERIFY(shapes[1]["group_id"].get<qint64>() != 0);
+        LITEANNO_COMPARE_JSON(shapes[static_cast<std::size_t>(index)]["group_id"], shapes[1]["group_id"]);
+    }
+
     // Upstream's paste keeps every field of the copied object; only what the copy changes
     // (label, points, ...) is written anew, and unknown fields come first, as in to_dict().
     void pastedShapeKeepsTheCopiedFields()
