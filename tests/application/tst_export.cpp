@@ -6,7 +6,9 @@
 #include "application/ExportService.h"
 #include "application/LocalDataPaths.h"
 #include "application/ProjectSession.h"
+#include "application/RecoveryService.h"
 #include "application/WorksetStore.h"
+#include "formats/RecoveryRecord.h"
 #include "imaging/ImageLoader.h"
 
 #include <QDir>
@@ -78,8 +80,11 @@ struct Project {
     QTemporaryDir data;
     QTemporaryDir out;
 
-    Project()
+    // `plainFolder`: no project file, as X-AnyLabeling opens a folder.
+    explicit Project(bool plainFolder = false)
     {
+        if (plainFolder)
+            return;
         writeFile(data.filePath(QStringLiteral("liteanno/project.json")),
                   R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "shapeTypes": ["rectangle", "polygon"], )"
                   R"("classes": [{"id": 0, "name": "scratch"}, {"id": 1, "name": "dent"}], "batchSize": 2})");
@@ -123,6 +128,271 @@ class TestExport : public QObject
     Q_OBJECT
 
 private slots:
+    // A folder without a project file: what is labeled is exported, confirmed or not, with the
+    // class ids of a classes.txt; nothing is written into the folder.
+    void plainFolderExportsWhatIsLabeled()
+    {
+        Project project(true);
+        project.image(QStringLiteral("line1/0001.png"), rectangle("scratch", 10, 10, 60, 50), false);
+        project.image(QStringLiteral("line1/0002.png"), QByteArray(), false);  // opened, nothing drawn
+        project.image(QStringLiteral("line1/0003.png"), rectangle("dent", 1, 1, 9, 9), true);
+        project.image(QStringLiteral("line1/0004.png"), QByteArray(), true);  // confirmed: no objects
+        const QStringList before = filesUnder(project.data.path());
+        const auto session = project.open();
+        QVERIFY(session->isPlainFolder());
+        QVERIFY(session->config().classes.isEmpty());
+        QVERIFY(session->location().projectId.startsWith(QStringLiteral("folder-")));
+        ExportService service(*session, imaging::readImageInfo);
+
+        ExportRequest request;
+        request.outputDir = project.output("none");
+        ExportReport report = service.run(request);
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral("classes.txt")), qPrintable(report.error));
+
+        const QString classes = project.out.filePath(QStringLiteral("classes.txt"));
+        writeFile(classes, "\xEF\xBB\xBF" "dent\r\nscratch\r\n\r\n");
+        request.classesFile = classes;
+        request.outputDir = project.output("yolo");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(report.count(ExportResult::Exported), 2);
+        QCOMPARE(report.count(ExportResult::Negative), 1);
+        QCOMPARE(report.count(ExportResult::NotDone), 1);
+        QVERIFY(readFile(project.output("yolo") + QStringLiteral("/line1/0001.txt")).startsWith("1 "));
+        QVERIFY(readFile(project.output("yolo") + QStringLiteral("/line1/0003.txt")).startsWith("0 "));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/line1/0004.txt")), QByteArray());
+        QVERIFY(!QFile::exists(project.output("yolo") + QStringLiteral("/line1/0002.txt")));
+        QCOMPARE(readFile(project.output("yolo") + QStringLiteral("/classes.txt")), QByteArray("dent\nscratch\n"));
+
+        // Upstream's COCO numbering: detection from 1.
+        request.format = formats::ExportFormat::CocoDetection;
+        request.outputDir = project.output("coco");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        const QJsonObject coco = QJsonDocument::fromJson(readFile(project.output("coco") + QStringLiteral("/coco_detection.json"))).object();
+        QCOMPARE(coco[QStringLiteral("categories")].toArray()[0].toObject()[QStringLiteral("id")].toInt(), 1);
+        QCOMPARE(coco[QStringLiteral("categories")].toArray()[0].toObject()[QStringLiteral("name")].toString(), QStringLiteral("dent"));
+
+        // A label the file does not list cannot be numbered.
+        writeFile(classes, "dent\n");
+        request.format = formats::ExportFormat::YoloDetection;
+        request.outputDir = project.output("missing");
+        report = service.run(request);
+        QVERIFY(!report.written);
+        QCOMPARE(report.unconvertible().size(), 1);
+        QVERIFY2(report.unconvertible()[0].reason.contains(QStringLiteral("scratch")), qPrintable(report.unconvertible()[0].reason));
+
+        QCOMPARE(filesUnder(project.data.path()), before);
+    }
+
+    // Review of #11, 1 and 7: an unconfirmed image is exported only when a confirm would
+    // accept it, and image-level marks alone are not "no objects".
+    void plainFolderChecksUnconfirmedImages()
+    {
+        Project project(true);
+        const auto annotation = [&project](const char* stem, const QByteArray& shapes, int width, const char* flags) {
+            QImage image(200, 100, QImage::Format_RGB32);
+            image.fill(Qt::darkCyan);
+            QVERIFY(image.save(project.data.filePath(QLatin1String(stem) + QStringLiteral(".png"))));
+            writeFile(project.data.filePath(QLatin1String(stem) + QStringLiteral(".json")),
+                      QByteArray(R"({"version": "4.2.0", "flags": )") + flags + R"(, "shapes": [)" + shapes
+                          + R"(], "imagePath": ")" + stem + R"(.png", "imageData": null, "imageHeight": 100, "imageWidth": )"
+                          + QByteArray::number(width) + R"(, "checked": false})");
+        };
+        annotation("good", rectangle("scratch", 10, 10, 60, 50), 200, "{}");
+        annotation("wrongsize", rectangle("scratch", 10, 10, 60, 50), 100, "{}");
+        annotation("flat", rectangle("scratch", 10, 10, 10, 50), 200, "{}");
+        annotation("point", R"({"label": "scratch", "points": [[5.0, 5.0], [5.0, 5.0], [5.0, 5.0]], "group_id": null, )"
+                            R"("description": "", "difficult": false, "shape_type": "polygon", "flags": {}})",
+                   200, "{}");
+        annotation("marked", QByteArray(), 200, R"({"NG": true})");
+        const QString classes = project.out.filePath(QStringLiteral("classes.txt"));
+        writeFile(classes, "scratch\n");
+        const auto session = project.open();
+        ExportService service(*session, imaging::readImageInfo);
+        ExportRequest request;
+        request.classesFile = classes;
+        request.outputDir = project.output("refused");
+        ExportReport report = service.run(request);
+        QVERIFY(!report.written);
+        QStringList refused;
+        for (const ExportItem& item : report.unconvertible())
+            refused.append(item.image + QLatin1Char(':') + item.reason);
+        refused.sort();
+        QCOMPARE(refused.size(), 3);
+        QVERIFY2(refused[0].startsWith(QStringLiteral("flat.png:")) && refused[0].contains(QStringLiteral(u"几何无效")), qPrintable(refused[0]));
+        QVERIFY2(refused[1].startsWith(QStringLiteral("point.png:")) && refused[1].contains(QStringLiteral(u"几何无效")), qPrintable(refused[1]));
+        QVERIFY2(refused[2].startsWith(QStringLiteral("wrongsize.png:")) && refused[2].contains(QStringLiteral(u"尺寸")), qPrintable(refused[2]));
+        QVERIFY(QDir(project.output("refused")).isEmpty());
+
+        request.skipUnconvertible = true;
+        request.outputDir = project.output("skipped");
+        report = service.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(report.count(ExportResult::Exported), 1);
+        QCOMPARE(report.count(ExportResult::Negative), 0);
+        QCOMPARE(report.count(ExportResult::NotDone), 1);  // "marked": not a negative sample
+        QCOMPARE(filesUnder(project.output("skipped")),
+                 (QStringList{QStringLiteral("classes.txt"), QStringLiteral("good.txt"), QStringLiteral("liteanno-export.json")}));
+    }
+
+    // Review of #11, 2: a liteanno folder that cannot be looked into is not a plain folder.
+    void projectFolderThatCannotBeReadIsNotPlain()
+    {
+        QTemporaryDir local;
+        QTemporaryDir data;
+        const LocalDataPaths paths(local.path());
+        QVERIFY(QDir(data.path()).mkdir(QStringLiteral("liteanno")));
+        ProjectSession::OpenResult result = ProjectSession::open(data.path(), paths);
+        QCOMPARE(openErrorName(result.error), "project-file-unreadable");
+        QVERIFY(QDir(data.filePath(QStringLiteral("liteanno"))).removeRecursively());
+        QVERIFY(QFile::link(data.filePath(QStringLiteral("gone")), data.filePath(QStringLiteral("liteanno"))));
+        result = ProjectSession::open(data.path(), paths);
+        QCOMPARE(openErrorName(result.error), "project-file-unreadable");
+#ifndef Q_OS_WIN
+        QFile::remove(data.filePath(QStringLiteral("liteanno")));
+        writeFile(data.filePath(QStringLiteral("liteanno/project.json")),
+                  R"({"formatVersion": "1.0", "projectId": "3f6c2a9e-8b1d-4c57-9a0e-2d4b7f1e6c33", "classes": [{"id": 0, "name": "scratch"}]})");
+        QVERIFY(ProjectSession::open(data.path(), paths).session);
+        QVERIFY(QFile::setPermissions(data.filePath(QStringLiteral("liteanno")), QFileDevice::Permissions()));
+        const bool readable = QFileInfo::exists(data.filePath(QStringLiteral("liteanno/project.json")));
+        result = ProjectSession::open(data.path(), paths);
+        QFile::setPermissions(data.filePath(QStringLiteral("liteanno")),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        if (readable)
+            QSKIP("this user reads folders without permission (root)");
+        QCOMPARE(openErrorName(result.error), "project-file-unreadable");
+#endif
+    }
+
+    // Review of #11, 3 and 4: init takes the folder's lock, and leaves a folder whose edits
+    // still wait in local recovery records alone.
+    void initKeepsToTheFolder()
+    {
+        QTemporaryDir data;
+        QTemporaryDir local;
+        const QString projectFile = data.filePath(QStringLiteral("liteanno/project.json"));
+        const auto init = [&] {
+            QProcess process;
+            process.start(QStringLiteral(LITEANNO_CLI), {QStringLiteral("init"), data.path(), QStringLiteral("--classes"),
+                                                         QStringLiteral("scratch"), QStringLiteral("--local-data"), local.path()});
+            if (!process.waitForFinished(60000))
+                qFatal("liteanno-cli did not finish");
+            return process.exitCode();
+        };
+        const LocalDataPaths paths(local.path());
+        {
+            ProjectSession::OpenResult open = ProjectSession::open(data.path(), paths);
+            QVERIFY(open.session && open.session->isPlainFolder());
+            QVERIFY(init() != 0);  // open in the window
+            QVERIFY(!QFileInfo::exists(projectFile));
+
+            const ProjectLocation& location = open.session->location();
+            formats::RecoveryRecord record;
+            record.formatVersion = QStringLiteral("1.0");
+            record.projectId = location.projectId;
+            record.bindingId = location.bindingId;
+            record.rootPathAtWrite = location.rootPath;
+            record.imagePath = QStringLiteral("0001.png");
+            record.documentVersion = 1;
+            record.createdAt = QStringLiteral("2026-10-23T10:00:00+08:00");
+            record.annotation = R"({"version": "4.2.0", "flags": {}, "shapes": [], "imagePath": "0001.png", )"
+                                R"("imageData": null, "imageHeight": 100, "imageWidth": 200})";
+            const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+            QVERIFY(QDir().mkpath(dir));
+            writeFile(dir + QStringLiteral("/0001.json"), *formats::recoveryRecordToBytes(record));
+            QCOMPARE(RecoveryService(paths, location).scan().candidates.size(), 1);
+        }
+        QVERIFY(init() != 0);  // the edit would no longer be offered
+        QVERIFY(!QFileInfo::exists(projectFile));
+
+        {
+            ProjectSession::OpenResult open = ProjectSession::open(data.path(), paths);
+            QVERIFY(QDir(paths.recoveryDir(open.session->location().projectId, open.session->location().bindingId))
+                        .removeRecursively());
+        }
+        QCOMPARE(init(), 0);
+        QVERIFY(QFileInfo::exists(projectFile));
+    }
+
+    // Review of #11, round 2: a record folder that cannot be listed is not an empty one, and
+    // a record that cannot be used holds init back until it is moved aside.
+    void initWaitsForRecordsItCannotSee()
+    {
+        QTemporaryDir data;
+        QTemporaryDir local;
+        const QString projectFile = data.filePath(QStringLiteral("liteanno/project.json"));
+        const auto init = [&] {
+            QProcess process;
+            process.start(QStringLiteral(LITEANNO_CLI),
+                          {QStringLiteral("init"), data.path(), QStringLiteral("--local-data"), local.path()});
+            if (!process.waitForFinished(60000))
+                qFatal("liteanno-cli did not finish");
+            return process.exitCode();
+        };
+        const LocalDataPaths paths(local.path());
+        ProjectLocation location;
+        {
+            ProjectSession::OpenResult open = ProjectSession::open(data.path(), paths);
+            QVERIFY(open.session);
+            location = open.session->location();
+        }
+        const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+        QVERIFY(QDir().mkpath(QFileInfo(dir).absolutePath()));
+
+        // Not a folder: cannot be listed.
+        writeFile(dir, "not a folder");
+        QVERIFY(!RecoveryService(paths, location).scan().error.isEmpty());
+        QVERIFY(init() != 0);
+        QVERIFY(!QFileInfo::exists(projectFile));
+        QVERIFY(QFile::remove(dir));
+
+        // A damaged record: init refuses until it is moved aside, kept as it is.
+        QVERIFY(QDir().mkpath(dir));
+        writeFile(dir + QStringLiteral("/0001.json"), "{\"formatVersion\": \"1.0\", \"proj");
+        QCOMPARE(RecoveryService(paths, location).scan().unusable.size(), 1);
+        QVERIFY(init() != 0);
+        QVERIFY(moveRecordToUnusable(dir + QStringLiteral("/0001.json")));
+        const RecoveryScan after = RecoveryService(paths, location).scan();
+        QVERIFY(after.candidates.isEmpty() && after.unusable.isEmpty() && after.error.isEmpty());
+        QCOMPARE(QDir(dir + QStringLiteral("/unusable")).entryList(QDir::Files).size(), 1);
+
+#ifndef Q_OS_WIN
+        // A folder this user may not read (as the review found it).
+        QVERIFY(QFile::setPermissions(dir, QFileDevice::Permissions()));
+        const bool readable = QDir(dir).entryList(QDir::AllEntries | QDir::NoDotAndDotDot).size() > 0;
+        const int refused = readable ? 1 : init();
+        const bool created = QFileInfo::exists(projectFile);
+        QFile::setPermissions(dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        if (!readable) {
+            QVERIFY(refused != 0);
+            QVERIFY(!created);
+        }
+#endif
+        QCOMPARE(init(), 0);
+        QVERIFY(QFileInfo::exists(projectFile));
+#ifndef Q_OS_WIN
+        if (readable)
+            QSKIP("this user reads folders without permission (root)");
+#endif
+    }
+
+    void classesFileRules()
+    {
+        QCOMPARE(formats::parseClassesFile("a\nb c\n").names, (QStringList{QStringLiteral("a"), QStringLiteral("b c")}));
+        QCOMPARE(formats::parseClassesFile("a\rb").names, (QStringList{QStringLiteral("a"), QStringLiteral("b")}));
+        QCOMPARE(formats::parseClassesFile("\xEF\xBB\xBF\xE5\x88\x92\xE7\x97\x95\n\n\n").names, QStringList{QStringLiteral(u"划痕")});
+        QVERIFY(formats::parseClassesFile("a\n\nb\n").error.contains(QStringLiteral(u"第 2 行")));
+        QVERIFY(formats::parseClassesFile("a\nb\na\n").error.contains(QStringLiteral(u"第 3 行")));
+        QVERIFY(!formats::parseClassesFile("\n\n").error.isEmpty());
+        QVERIFY(!formats::parseClassesFile("\xFF\xFE").error.isEmpty());
+        // Review of #11, 6: bytes cut off at the end are not dropped quietly.
+        QVERIFY(!formats::parseClassesFile("scratch\xC3").error.isEmpty());
+        QVERIFY(!formats::parseClassesFile("scratch\n\xE5\x88").error.isEmpty());
+        QVERIFY(!formats::readClassesFile(QStringLiteral("/nonexistent/classes.txt")).error.isEmpty());
+    }
+
     void onlyConfirmedImagesAreExported()
     {
         Project project;

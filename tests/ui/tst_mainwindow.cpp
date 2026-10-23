@@ -3,6 +3,9 @@
 // Runs offscreen; the prompts are replaced so nothing modal blocks.
 
 #include "application/LocalDataPaths.h"
+#include "application/ProjectSession.h"
+#include "application/RecoveryService.h"
+#include "platform/VolumeBinding.h"
 #include "ui/MainWindow.h"
 #include "ui/Prompts.h"
 
@@ -14,6 +17,7 @@
 #include <QDirIterator>
 #include <QFile>
 #include <QImage>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -129,6 +133,11 @@ struct Answers {
     std::function<void()> duringExternalChange;
     std::function<void()> duringLabel;
 
+    QStringList unusableTexts;
+    bool setAsideUnusable = false;
+    QStringList labelsOffered;
+    bool labelFreeText = false;
+    ExportQuestion exportQuestion;
     int externalChangeAsked = 0;
     QList<application::RecoveryState> recoveryAsked;
     QStringList messages;
@@ -137,7 +146,9 @@ struct Answers {
     Prompts prompts()
     {
         Prompts p;
-        p.chooseLabel = [this](const QStringList&, const QString&) -> std::optional<QString> {
+        p.chooseLabel = [this](const QStringList& classes, const QString&, bool freeText) -> std::optional<QString> {
+            labelsOffered = classes;
+            labelFreeText = freeText;
             if (duringLabel)
                 duringLabel();
             if (label.isEmpty())
@@ -167,13 +178,18 @@ struct Answers {
                 return std::nullopt;
             return batch;
         };
-        p.exportOptions = [this](int batchNumber) {
-            exportBatchOffered = batchNumber;
+        p.exportOptions = [this](const ExportQuestion& question) {
+            exportBatchOffered = question.batchNumber;
+            exportQuestion = question;
             return exportChoice;
         };
         p.skipUnconvertible = [this](const QString& text) {
             unconvertibleTexts.append(text);
             return skipUnconvertible;
+        };
+        p.setAsideUnusable = [this](const QString& text) {
+            unusableTexts.append(text);
+            return setAsideUnusable;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -268,11 +284,123 @@ private slots:
         QVERIFY(!w.window.hasProject());
         QCOMPARE(w.answers.messages.size(), 1);
         QVERIFY2(w.answers.messages[0].contains(QStringLiteral("/batchSize")), qPrintable(w.answers.messages[0]));
+    }
 
-        // A folder without a project file.
-        QTemporaryDir empty;
-        QVERIFY(!w.window.openProject(empty.path()));
-        QVERIFY(w.answers.messages[1].contains(QStringLiteral("project.json")));
+    // Review of #11, round 2: "处理未写入的编辑" also deals with records the program cannot
+    // use, which liteanno-cli init otherwise waits for forever.
+    void unusableRecordsCanBeMovedAside()
+    {
+        Project project;
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        const application::LocalDataPaths paths(project.local.path());
+        const QString root = QDir::cleanPath(QFileInfo(project.data.path()).absoluteFilePath());
+        const QString bindingId = platform::bindingIdForDirectory(root);
+        const application::ProjectLocation location{application::plainFolderConfig(bindingId).projectId, bindingId, root};
+        const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+        QVERIFY(QDir().mkpath(dir));
+        writeFile(dir + QStringLiteral("/0001.json"), "{\"formatVersion\": \"1.0\", \"proj");
+
+        w.answers.setAsideUnusable = false;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 1);
+        QVERIFY2(w.answers.unusableTexts[0].contains(QStringLiteral("0001.json")), qPrintable(w.answers.unusableTexts[0]));
+        QVERIFY(QFile::exists(dir + QStringLiteral("/0001.json")));
+
+        w.answers.setAsideUnusable = true;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
+        QVERIFY(!QFile::exists(dir + QStringLiteral("/0001.json")));
+        QCOMPARE(QDir(dir + QStringLiteral("/unusable")).entryList(QDir::Files).size(), 1);
+        const application::RecoveryScan scan = application::RecoveryService(paths, location).scan();
+        QVERIFY(scan.candidates.isEmpty() && scan.unusable.isEmpty());
+
+        // Nothing left: not asked again.
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
+    }
+
+    // Review of #11, 5: a name chosen in the program's own class dialog stays as the
+    // classes.txt has it; only a typed name loses the spaces around it.
+    void classChosenInTheDialogKeepsItsSpaces()
+    {
+        QWidget parent;
+        const Prompts prompts = Prompts::dialogs(&parent);
+        QString typed;  // empty: take the item shown
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            if (!typed.isEmpty())
+                dialog->setTextValue(typed);
+            dialog->accept();
+        });
+        answer.start(20);
+        const QStringList classes{QStringLiteral(" scratch "), QStringLiteral("dent")};
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral(" scratch ")));
+        typed = QStringLiteral("  hole ");
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral("hole")));
+        typed.clear();
+        QCOMPARE(prompts.chooseLabel(classes, QStringLiteral(" scratch "), false),
+                 std::optional<QString>(QStringLiteral(" scratch ")));
+    }
+
+    // A folder of images without a project file opens as in X-AnyLabeling: any label, every
+    // shape tool, no batches, and nothing in the folder but the annotation files.
+    void plainFolderOpensWithoutAProjectFile()
+    {
+        Project project;
+        QFile::remove(project.data.filePath(QStringLiteral("liteanno/project.json")));
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        writeFile(project.data.filePath(QStringLiteral("classes.txt")), "dent\nscratch\n");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.answers.messages.isEmpty());
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(!w.window.startNextBatch());
+        for (const char* tool : {"create_rectangle", "create_polygon", "create_rotation"}) {
+            const QAction* action = w.window.findChild<QAction*>(QLatin1String(tool));
+            QVERIFY2(action && action->isEnabled(), tool);
+        }
+
+        // A name the classes.txt does not have is typed in; the names known are offered.
+        w.answers.label = QStringLiteral("hole");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("hole"));
+        QVERIFY(w.answers.labelFreeText);
+        QCOMPARE(w.answers.labelsOffered, (QStringList{QStringLiteral("dent"), QStringLiteral("scratch")}));
+        QVERIFY(w.blockers().isEmpty());
+        w.window.flushSaves();
+        QVERIFY(QFile::exists(project.json(1)));
+        QVERIFY(w.window.nextImage());
+        w.answers.label = QStringLiteral("dent");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.answers.labelsOffered,
+                 (QStringList{QStringLiteral("dent"), QStringLiteral("scratch"), QStringLiteral("hole")}));
+
+        // The export offers the folder's classes.txt; unconfirmed images are exported too.
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        choice.classesFile = project.data.filePath(QStringLiteral("classes.txt"));
+        w.answers.exportChoice = choice;
+        w.answers.skipUnconvertible = true;  // "hole" is not in classes.txt
+        QVERIFY(w.window.exportAnnotations());
+        QVERIFY(w.answers.exportQuestion.plainFolder);
+        QCOMPARE(w.answers.exportQuestion.batchNumber, 0);
+        QCOMPARE(w.answers.exportQuestion.classesFile,
+                 QDir::toNativeSeparators(project.data.filePath(QStringLiteral("classes.txt"))));
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
+        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("hole")), qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已导出 1 张图片")), qPrintable(w.answers.messages.last()));
+        QVERIFY(readFile(out.filePath(QStringLiteral("det/line1/0002.txt"))).startsWith("0 "));
+
+        w.window.closeProject();
+        QVERIFY(!QDir(project.data.filePath(QStringLiteral("liteanno"))).exists());
     }
 
     void projectOpenElsewhereIsLocked()

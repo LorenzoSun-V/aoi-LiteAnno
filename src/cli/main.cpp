@@ -51,13 +51,13 @@ void printError(const QString& text)
     std::fflush(stderr);
 }
 
-QString openErrorText(const ProjectSession::OpenResult& result, const QString& root)
+QString openErrorText(const ProjectSession::OpenResult& result)
 {
     switch (result.error) {
     case ProjectSession::OpenError::None:
         return QString();
-    case ProjectSession::OpenError::NoProjectFile:
-        return QStringLiteral(u"%1 中没有项目文件 liteanno/project.json；可以先用 init 创建。").arg(root);
+    case ProjectSession::OpenError::ProjectFileUnreadable:
+        return QStringLiteral(u"有 liteanno 文件夹，但项目文件 liteanno/project.json 不存在或无法读取（%1）。").arg(result.message);
     case ProjectSession::OpenError::InvalidProjectFile:
         return QStringLiteral(u"项目文件有错误：%1（%2）").arg(result.field, result.message);
     case ProjectSession::OpenError::LocationUnknown:
@@ -80,7 +80,7 @@ std::unique_ptr<ProjectSession> openProject(const Common& common)
 {
     ProjectSession::OpenResult result = ProjectSession::open(common.root, common.localData);
     if (!result.session)
-        printError(openErrorText(result, common.root));
+        printError(openErrorText(result));
     return std::move(result.session);
 }
 
@@ -93,6 +93,30 @@ int init(const QCommandLineParser& parser, const Common& common)
     }
     if (QFileInfo::exists(file)) {
         printError(QStringLiteral(u"%1 已经有项目文件，没有改动。").arg(QDir::toNativeSeparators(file)));
+        return Failed;
+    }
+    // The folder as a plain one, under the lock the window takes (format spec 8): never while
+    // it is open there, and not while edits the window kept for it wait in local recovery
+    // records, which the project's new id would no longer find (13.6).
+    const std::unique_ptr<ProjectSession> folder = openProject(common);
+    if (!folder)
+        return Failed;
+    if (!folder->isPlainFolder()) {
+        printError(QStringLiteral(u"%1 已经有项目文件，没有改动。").arg(QDir::toNativeSeparators(file)));
+        return Failed;
+    }
+    const application::RecoveryScan records = application::RecoveryService(folder->paths(), folder->location()).scan();
+    if (!records.error.isEmpty()) {
+        printError(QStringLiteral(u"无法读取这个文件夹在本机的恢复记录（%1：%2），不能确认没有未写入的编辑，没有创建项目文件。")
+                       .arg(QDir::toNativeSeparators(folder->paths().recoveryDir(folder->location().projectId,
+                                                                                 folder->location().bindingId)),
+                            records.error));
+        return Failed;
+    }
+    if (!records.candidates.isEmpty() || !records.unusable.isEmpty()) {
+        printError(QStringLiteral(u"这个文件夹在本机还有 %1 份没有写入标注文件的编辑。请先用窗口打开这个文件夹，"
+                                  u"在“文件 > 处理未写入的编辑”中处理完，再创建项目文件。")
+                       .arg(records.candidates.size() + records.unusable.size()));
         return Failed;
     }
     ProjectConfig config;
@@ -127,10 +151,15 @@ int init(const QCommandLineParser& parser, const Common& common)
         printError(QStringLiteral(u"项目设置有错误：%1（%2）").arg(check.field, check.error));
         return Usage;
     }
-    QDir().mkpath(QFileInfo(file).absolutePath());
-    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up;
-    // and never in place of a project file, also one another program makes meanwhile.
+    const QString liteannoFolder = QFileInfo(file).absolutePath();
+    const bool newFolder = !QFileInfo::exists(liteannoFolder);
+    QDir().mkpath(liteannoFolder);
+    // Format spec 1: written whole or not at all, so a failed init leaves nothing to clear up
+    // (a liteanno folder without a project file would not open again, 13.6); and never in
+    // place of a project file, also one another program makes meanwhile.
     const formats::SaveResult written = formats::createFileExclusively(file, bytes);
+    if (written.status != formats::SaveStatus::Saved && newFolder)
+        QDir().rmdir(liteannoFolder);  // only when still empty
     if (written.status == formats::SaveStatus::ExternallyModified) {
         printError(QStringLiteral(u"%1 已存在，没有改动。").arg(QDir::toNativeSeparators(file)));
         return Failed;
@@ -265,6 +294,7 @@ int exportProject(const QCommandLineParser& parser, const Common& common)
     request.batches = common.batches;
     request.skipUnconvertible = parser.isSet(QStringLiteral("skip-unconvertible"));
     request.copyImages = parser.isSet(QStringLiteral("copy-images"));
+    request.classesFile = parser.value(QStringLiteral("classes-file"));
     const application::ExportService service(*project, imaging::readImageInfo);
     const application::ExportReport report = service.run(request);
     for (const application::ExportItem& item : report.unconvertible())
@@ -302,7 +332,7 @@ int main(int argc, char* argv[])
         u"  init <数据文件夹>      创建项目文件 liteanno/project.json\n"
         u"  status <数据文件夹>    统计各状态的图片数量\n"
         u"  confirm <数据文件夹>   把满足确认条件的待确认图片标为已确认\n"
-        u"  export <数据文件夹>    导出已确认的图片"));
+        u"  export <数据文件夹>    导出已确认的图片（没有项目文件的文件夹：导出有标注的图片）"));
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("init | status | confirm | export"));
@@ -319,6 +349,7 @@ int main(int argc, char* argv[])
         {QStringLiteral("out"), QStringLiteral(u"export：导出文件夹，必须是新的或空的"), QStringLiteral("folder")},
         {QStringLiteral("skip-unconvertible"), QStringLiteral(u"export：跳过有无法转换对象的图片，继续导出")},
         {QStringLiteral("copy-images"), QStringLiteral(u"export：同时复制图片")},
+        {QStringLiteral("classes-file"), QStringLiteral(u"export：类别文件 classes.txt，每行一个类别，第一行编号 0"), QStringLiteral("file")},
         {QStringLiteral("local-data"), QStringLiteral(u"本机数据文件夹（测试用）"), QStringLiteral("folder")},
     });
     parser.process(app);

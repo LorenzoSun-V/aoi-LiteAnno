@@ -49,13 +49,15 @@ QByteArray readFile(const QString& path)
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 
-QString openErrorText(const ProjectSession::OpenResult& result, const QString& root)
+QString openErrorText(const ProjectSession::OpenResult& result)
 {
     switch (result.error) {
     case ProjectSession::OpenError::None:
         return QString();
-    case ProjectSession::OpenError::NoProjectFile:
-        return QStringLiteral(u"文件夹 %1 中没有项目文件 liteanno/project.json。").arg(root);
+    case ProjectSession::OpenError::ProjectFileUnreadable:
+        return QStringLiteral(u"文件夹里有 liteanno 文件夹，但其中的项目文件 project.json 不存在或无法读取（%1）。"
+                              u"请检查文件夹权限，或交给工程师处理。")
+            .arg(result.message);
     case ProjectSession::OpenError::InvalidProjectFile:
         return QStringLiteral(u"项目文件有错误，不能打开。\n出错的字段：%1\n原因：%2")
             .arg(result.field.isEmpty() ? QStringLiteral(u"（整个文件）") : result.field, result.message);
@@ -212,7 +214,7 @@ void MainWindow::buildUi()
         return action;
     };
     QMenu* fileMenu = menuBar()->addMenu(QStringLiteral(u"文件(&F)"));
-    QAction* open = named(fileMenu->addAction(QStringLiteral(u"打开项目…"), this, &MainWindow::chooseProject), "open_dir");
+    QAction* open = named(fileMenu->addAction(QStringLiteral(u"打开文件夹…"), this, &MainWindow::chooseProject), "open_dir");
     open->setShortcut(QKeySequence(QStringLiteral("Ctrl+U")));
     QAction* save = named(fileMenu->addAction(QStringLiteral(u"立即保存"), this, &MainWindow::saveNow), "save");
     save->setShortcut(QKeySequence(QStringLiteral("Ctrl+S")));
@@ -279,12 +281,15 @@ void MainWindow::buildUi()
 
     // Architecture 7: fixed batches, picked up where they were left.
     QMenu* batchMenu = menuBar()->addMenu(QStringLiteral(u"批次(&B)"));
-    batchMenu->addAction(QStringLiteral(u"继续上次批次"), this, [this] { continueLastBatch(); });
-    batchMenu->addAction(QStringLiteral(u"开始下一批"), this, [this] { startNextBatch(); });
-    batchMenu->addAction(QStringLiteral(u"选择批次…"), this, [this] { chooseBatch(); });
-    batchMenu->addAction(QStringLiteral(u"查看未完成项"), this, [this] { showUnfinished(); });
+    // A plain folder has no batches (no project file to keep them with).
+    m_batchActions = {
+        batchMenu->addAction(QStringLiteral(u"继续上次批次"), this, [this] { continueLastBatch(); }),
+        batchMenu->addAction(QStringLiteral(u"开始下一批"), this, [this] { startNextBatch(); }),
+        batchMenu->addAction(QStringLiteral(u"选择批次…"), this, [this] { chooseBatch(); }),
+        batchMenu->addAction(QStringLiteral(u"查看未完成项"), this, [this] { showUnfinished(); }),
+    };
     batchMenu->addSeparator();
-    batchMenu->addAction(QStringLiteral(u"显示全部图片"), this, &MainWindow::showAllImages);
+    m_batchActions.append(batchMenu->addAction(QStringLiteral(u"显示全部图片"), this, &MainWindow::showAllImages));
     batchMenu->addSeparator();
     QAction* nextUnchecked = named(batchMenu->addAction(QStringLiteral(u"下一张未完成"), this, [this] { nextUnfinished(); }),
                                    "open_next_unchecked");
@@ -381,7 +386,7 @@ void MainWindow::chooseProject()
     QString root;
     {
         const Busy busy(this);  // the dialog runs events; a close waits until it is answered
-        root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开项目（选择数据根目录）"));
+        root = QFileDialog::getExistingDirectory(this, QStringLiteral(u"打开图片文件夹"));
     }
     if (!root.isEmpty())
         openProject(root);
@@ -393,7 +398,7 @@ bool MainWindow::openProject(const QString& root)
         return false;
     ProjectSession::OpenResult result = ProjectSession::open(root, m_options.localData);
     if (!result.session) {
-        m_prompts.message(QStringLiteral(u"无法打开项目"), openErrorText(result, root));
+        m_prompts.message(QStringLiteral(u"无法打开文件夹"), openErrorText(result));
         return false;
     }
     m_project = std::move(result.session);
@@ -416,11 +421,16 @@ bool MainWindow::openProject(const QString& root)
     m_selectTool->setChecked(true);
     m_canvas->setTool(Canvas::Tool::Select);
     buildImageLabelPanel();
+    loadKnownLabels();
+    for (QAction* action : std::as_const(m_batchActions))
+        action->setEnabled(!m_project->isPlainFolder());
 
     handleRecoveryRecords();
-    loadWorksets();
+    if (!m_project->isPlainFolder())
+        loadWorksets();
 
-    const QString name = m_project->config().name.isEmpty() ? m_project->rootPath() : m_project->config().name;
+    const QString name = m_project->config().name.isEmpty() ? QDir::toNativeSeparators(m_project->rootPath())
+                                                            : m_project->config().name;
     setWindowTitle(QStringLiteral("%1 - aoi-LiteAnno").arg(name));
 
     // Architecture 6: the list the catalog has is shown at once; the scan brings it up to date.
@@ -502,13 +512,21 @@ bool MainWindow::exportAnnotations()
     writeProgress();
     const application::WorksetStore::Batch* batch = m_worksets ? m_worksets->find(m_batchStem) : nullptr;
     const int batchNumber = batch && batch->list ? batch->number : 0;
-    const std::optional<ExportChoice> choice = m_prompts.exportOptions(batchNumber);
+    ExportQuestion question;
+    question.batchNumber = batchNumber;
+    question.plainFolder = m_project->isPlainFolder();
+    question.projectClasses = !m_project->config().classes.isEmpty();
+    const QString classesFile = m_project->rootPath() + QStringLiteral("/classes.txt");
+    if (!question.projectClasses && QFileInfo(classesFile).isFile())
+        question.classesFile = QDir::toNativeSeparators(classesFile);
+    const std::optional<ExportChoice> choice = m_prompts.exportOptions(question);
     if (!choice)
         return false;
     application::ExportRequest request;
     request.format = choice->format;
     request.outputDir = choice->outputDir;
     request.copyImages = choice->copyImages;
+    request.classesFile = choice->classesFile;
     if (!choice->wholeProject && batchNumber > 0)
         request.batches = {m_batchStem};
     const application::ExportService service(*m_project, imaging::readImageInfo);
@@ -665,6 +683,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.chooseBatch = held(std::move(prompts.chooseBatch));
     m_prompts.exportOptions = held(std::move(prompts.exportOptions));
     m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
+    m_prompts.setAsideUnusable = held(std::move(prompts.setAsideUnusable));
 }
 
 void MainWindow::setImages(QList<dataset::CatalogEntry> images)
@@ -1161,6 +1180,7 @@ bool MainWindow::closeProject(bool force)
     m_catalog.reset();
     m_scanState->clear();
     m_project.reset();
+    m_knownLabels.clear();
     m_worksets.reset();
     m_batchStem.clear();
     m_lastBatchStem.clear();
@@ -1193,6 +1213,38 @@ void MainWindow::resolveRecoveryRecords()
     dropSession();
     m_deferredRecords.clear();
     handleRecoveryRecords();
+    // Records this program cannot use stay until the user moves them aside here: otherwise
+    // nothing ever clears them (liteanno-cli init waits for none to be left, 13.6).
+    const RecoveryService recovery(m_project->paths(), m_project->location());
+    const application::RecoveryScan scan = recovery.scan();
+    const QString folder =
+        QDir::toNativeSeparators(m_project->paths().recoveryDir(m_project->location().projectId, m_project->location().bindingId));
+    if (!scan.error.isEmpty()) {
+        m_prompts.message(QStringLiteral(u"无法读取恢复记录"),
+                          QStringLiteral(u"无法读取本机恢复记录文件夹 %1（%2），里面可能有未写入的编辑。请检查这个文件夹的权限。")
+                              .arg(folder, scan.error));
+    } else if (!scan.unusable.isEmpty()) {
+        QStringList lines;
+        for (const application::UnusableRecord& record : scan.unusable.mid(0, 10))
+            lines.append(QStringLiteral(u"%1：%2").arg(QFileInfo(record.recordPath).fileName(), record.error));
+        if (scan.unusable.size() > 10)
+            lines.append(QStringLiteral(u"……共 %1 份").arg(scan.unusable.size()));
+        const QString text = QStringLiteral(u"有 %1 份恢复记录本程序无法使用（损坏、版本更新或属于别的位置）：\n%2\n\n"
+                                            u"可以把它们原样移到 %3 下的 unusable 文件夹保留，交给工程师查看；不会删除。")
+                                 .arg(scan.unusable.size())
+                                 .arg(lines.join(QLatin1Char('\n')), folder);
+        if (m_prompts.setAsideUnusable(text)) {
+            QStringList stuck;
+            for (const application::UnusableRecord& record : scan.unusable) {
+                if (!application::moveRecordToUnusable(record.recordPath))
+                    stuck.append(QFileInfo(record.recordPath).fileName());
+            }
+            if (!stuck.isEmpty()) {
+                m_prompts.message(QStringLiteral(u"没有全部移走"),
+                                  QStringLiteral(u"有 %1 份记录没能移动（例如 %2），仍留在原处。").arg(stuck.size()).arg(stuck.first()));
+            }
+        }
+    }
     if (m_current >= 0)
         loadCurrentImage();
 }
@@ -1276,8 +1328,11 @@ void MainWindow::handleRecoveryRecords(const QString& onlyImage)
                                   .arg(candidate.record.imagePath, result.error));
         }
     }
-    if (onlyImage.isEmpty() && !scan.unusable.isEmpty()) {
-        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留；保存同一张图片前会把它移到恢复目录下的 unusable 文件夹。")
+    if (onlyImage.isEmpty() && !scan.error.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"无法读取本机恢复记录文件夹（%1），里面可能有未写入的编辑。请检查权限。").arg(scan.error),
+                                 15000);
+    } else if (onlyImage.isEmpty() && !scan.unusable.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral(u"有 %1 份本机恢复记录无法使用，已保留；可在“文件 > 处理未写入的编辑”中移到 unusable 文件夹。")
                                      .arg(scan.unusable.size()), 15000);
     }
 }
@@ -1368,6 +1423,8 @@ void MainWindow::loadCurrentImage()
     m_session = std::make_unique<DocumentSession>(scanned.path, std::move(loaded), m_project->config(),
                                                   scanned.nameCollision);
     m_session->setBlocked(recordHeldBack(scanned.path));
+    for (const Shape& shape : m_session->document().shapes())
+        addKnownLabel(shape.label);
     m_canvas->setDocument(&m_session->document(), m_session->isReadOnly());
     if (held != m_heldEdits.cend())
         m_idleTimer.start();
@@ -1622,11 +1679,40 @@ QStringList MainWindow::classNames() const
     return names;
 }
 
+std::optional<QString> MainWindow::askLabel(const QString& suggested)
+{
+    const QStringList classes = classNames();
+    // Without a class list any name goes, as in X-AnyLabeling; the names used are offered.
+    const std::optional<QString> label =
+        classes.isEmpty() ? m_prompts.chooseLabel(m_knownLabels, suggested, true) : m_prompts.chooseLabel(classes, suggested, false);
+    if (label)
+        addKnownLabel(*label);
+    return label;
+}
+
+void MainWindow::loadKnownLabels()
+{
+    m_knownLabels.clear();
+    // A classes.txt next to the images is offered first, in its order.
+    const QString classesFile = m_project->rootPath() + QStringLiteral("/classes.txt");
+    if (QFileInfo(classesFile).isFile()) {
+        const formats::ClassesFile read = formats::readClassesFile(classesFile);
+        for (const QString& name : read.names)
+            addKnownLabel(name);
+    }
+}
+
+void MainWindow::addKnownLabel(const QString& label)
+{
+    if (!label.isEmpty() && !m_knownLabels.contains(label))
+        m_knownLabels.append(label);
+}
+
 void MainWindow::addDrawnShape(const Shape& drawn)
 {
     if (!m_session || m_session->isReadOnly())
         return;
-    const std::optional<QString> label = m_prompts.chooseLabel(classNames(), m_lastLabel);
+    const std::optional<QString> label = askLabel(m_lastLabel);
     if (!label) {
         refresh();
         return;
@@ -1645,8 +1731,7 @@ void MainWindow::editLabel(qsizetype index)
 {
     if (!m_session || m_session->isReadOnly() || index < 0 || index >= m_session->document().shapes().size())
         return;
-    const std::optional<QString> label =
-        m_prompts.chooseLabel(classNames(), m_session->document().shapes()[index].label);
+    const std::optional<QString> label = askLabel(m_session->document().shapes()[index].label);
     if (label && m_session->setShapeLabel(index, *label)) {
         m_lastLabel = *label;
         edited();

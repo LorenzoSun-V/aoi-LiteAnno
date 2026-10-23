@@ -57,6 +57,10 @@ struct ExportRequest {
     QStringList batches;             // list stems ("b000003"); empty: the whole project
     bool skipUnconvertible = false;  // "跳过这些图片继续导出" (architecture 11)
     bool copyImages = false;
+    // A classes.txt whose line numbers are the class ids, as X-AnyLabeling takes them; empty:
+    // the project file's classes. COCO then numbers as upstream does: detection from 1,
+    // segmentation with "_background_" as 0.
+    QString classesFile;
 };
 
 enum class ExportResult {
