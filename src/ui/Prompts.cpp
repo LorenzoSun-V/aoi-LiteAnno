@@ -134,6 +134,123 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuesti
     return choice;
 }
 
+std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuestion& question)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral(u"导入"));
+    dialog.setMinimumWidth(620);  // the hints in the file boxes stay readable
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+    auto* format = new QComboBox;
+    format->setObjectName(QStringLiteral("importFormat"));
+    for (formats::ImportFormat f : formats::importFormats())
+        format->addItem(importFormatText(f), int(f));
+    form->addRow(QStringLiteral(u"格式："), format);
+    const int batchNumber = question.batchNumber;
+    auto* batch = new QRadioButton(batchNumber > 0 ? QStringLiteral(u"当前批次（第 %1 批）").arg(batchNumber)
+                                                   : QStringLiteral(u"当前批次"));
+    auto* project = new QRadioButton(question.plainFolder ? QStringLiteral(u"整个文件夹") : QStringLiteral(u"整个项目"));
+    batch->setEnabled(batchNumber > 0);
+    (batchNumber > 0 ? batch : project)->setChecked(true);
+    if (!question.plainFolder) {
+        auto* scope = new QVBoxLayout;
+        scope->addWidget(batch);
+        scope->addWidget(project);
+        form->addRow(QStringLiteral(u"范围："), scope);
+    }
+    const auto chosenFormat = [format] { return formats::ImportFormat(format->currentData().toInt()); };
+
+    // A file chooser row: the text box and its "选择…" button.
+    const auto fileRow = [&dialog, form](const QString& name, const QString& label, const std::function<QString(const QString&)>& choose) {
+        auto* edit = new QLineEdit;
+        edit->setObjectName(name);
+        auto* browse = new QPushButton(QStringLiteral(u"选择…"));
+        QObject::connect(browse, &QPushButton::clicked, &dialog, [edit, choose] {
+            const QString chosen = choose(edit->text());
+            if (!chosen.isEmpty())
+                edit->setText(chosen);
+        });
+        auto* row = new QHBoxLayout;
+        row->addWidget(edit, 1);
+        row->addWidget(browse);
+        form->addRow(label, row);
+        return std::pair{edit, browse};
+    };
+    auto* labelsLabel = new QLabel;
+    const auto [labels, browseLabels] = fileRow(QStringLiteral("importLabels"), QString(), [&dialog, chosenFormat](const QString& start) {
+        if (formats::importReadsOneFile(chosenFormat()))
+            return QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择 COCO 标注文件"), start,
+                                                QStringLiteral(u"COCO 标注文件 (*.json);;所有文件 (*)"));
+        return QFileDialog::getExistingDirectory(&dialog, QStringLiteral(u"选择标注文件夹"), start);
+    });
+    form->setWidget(form->rowCount() - 1, QFormLayout::LabelRole, labelsLabel);
+    const auto [classes, browseClasses] = fileRow(QStringLiteral("importClasses"), QStringLiteral(u"类别文件："), [&dialog](const QString& start) {
+        return QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择类别文件"), start,
+                                            QStringLiteral(u"类别文件 (*.txt);;所有文件 (*)"));
+    });
+    classes->setPlaceholderText(question.plainFolder ? QStringLiteral(u"不选：用标注文件夹里的 classes.txt")
+                                                     : QStringLiteral(u"不选：用标注文件夹里的 classes.txt，没有就用项目的类别"));
+    const auto [mapping, browseMapping] = fileRow(QStringLiteral("importMapping"), QStringLiteral(u"颜色对照："), [&dialog](const QString& start) {
+        return QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择掩膜颜色对照文件"), start,
+                                            QStringLiteral(u"颜色对照文件 (*.json);;所有文件 (*)"));
+    });
+    mapping->setPlaceholderText(QStringLiteral(u"不选：用掩膜文件夹或上一级里的 mask_colors.json"));
+
+    auto* onlyNew = new QRadioButton(QStringLiteral(u"只导入还没有标注的图片"));
+    auto* append = new QRadioButton(QStringLiteral(u"已有标注的图片：追加在原有形状后面"));
+    auto* replace = new QRadioButton(QStringLiteral(u"已有标注的图片：替换原有形状"));
+    onlyNew->setChecked(true);
+    auto* modes = new QVBoxLayout;
+    modes->addWidget(onlyNew);
+    modes->addWidget(append);
+    modes->addWidget(replace);
+    form->addRow(QStringLiteral(u"已有标注："), modes);
+    layout->addLayout(form);
+
+    const auto update = [=] {
+        const formats::ImportFormat f = chosenFormat();
+        labelsLabel->setText(formats::importReadsOneFile(f) ? QStringLiteral(u"标注文件：") : QStringLiteral(u"标注文件夹："));
+        classes->setEnabled(formats::importNeedsClassNames(f));
+        browseClasses->setEnabled(formats::importNeedsClassNames(f));
+        mapping->setEnabled(f == formats::ImportFormat::Mask);
+        browseMapping->setEnabled(f == formats::ImportFormat::Mask);
+    };
+    QObject::connect(format, &QComboBox::currentIndexChanged, &dialog, update);
+    update();
+
+    auto* note = new QLabel(QStringLiteral(u"标注文件按图片的相对路径配对，找不到时按文件名在标注文件夹第一层找。"
+                                           u"导入的图片都是“待确认”，请逐张检查后确认。"));
+    note->setWordWrap(true);
+    layout->addWidget(note);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral(u"导入"));
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&dialog, labels, chosenFormat] {
+        if (labels->text().trimmed().isEmpty()) {
+            QMessageBox::warning(&dialog, QStringLiteral(u"导入"),
+                                 formats::importReadsOneFile(chosenFormat()) ? QStringLiteral(u"请选择 COCO 标注文件。")
+                                                                             : QStringLiteral(u"请选择标注文件夹。"));
+            return;
+        }
+        dialog.accept();
+    });
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted)
+        return std::nullopt;
+    ImportChoice choice;
+    choice.format = chosenFormat();
+    choice.wholeProject = project->isChecked();
+    choice.labels = labels->text().trimmed();
+    if (formats::importNeedsClassNames(choice.format))
+        choice.classesFile = classes->text().trimmed();
+    if (choice.format == formats::ImportFormat::Mask)
+        choice.mappingFile = mapping->text().trimmed();
+    choice.mode = append->isChecked()    ? application::ImportMode::Append
+                  : replace->isChecked() ? application::ImportMode::Replace
+                                         : application::ImportMode::OnlyNew;
+    return choice;
+}
+
 RecoveryChoice askRecovery(QWidget* parent, const application::RecoveryCandidate& candidate, const QByteArray& current)
 {
     using application::RecoveryState;
@@ -270,6 +387,7 @@ Prompts Prompts::dialogs(QWidget* parent)
         return box.clickedButton() != stay;
     };
     prompts.exportOptions = [parent](const ExportQuestion& question) { return askExportOptions(parent, question); };
+    prompts.importOptions = [parent](const ImportQuestion& question) { return askImportOptions(parent, question); };
     prompts.skipUnconvertible = [parent](const QString& text) {
         QMessageBox box(QMessageBox::Warning, QStringLiteral(u"有无法转换的对象"), text, QMessageBox::NoButton, parent);
         QPushButton* stop = box.addButton(QStringLiteral(u"不导出"), QMessageBox::RejectRole);

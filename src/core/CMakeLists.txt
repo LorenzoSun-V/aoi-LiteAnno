@@ -12,6 +12,7 @@ add_library(liteanno_core STATIC
     ImagePath.cpp
     ImagePath.h
     ProjectConfig.h
+    RgbImage.h
     ReviewState.h
     Shape.h
     ShapeType.cpp

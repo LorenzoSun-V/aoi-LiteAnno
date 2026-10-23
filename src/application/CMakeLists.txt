@@ -5,6 +5,8 @@ add_library(liteanno_application STATIC
     DocumentSession.h
     ExportService.cpp
     ExportService.h
+    ImportService.cpp
+    ImportService.h
     FileStatus.cpp
     FileStatus.h
     LocalDataPaths.cpp
