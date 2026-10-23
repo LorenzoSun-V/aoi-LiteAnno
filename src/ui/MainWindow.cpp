@@ -31,6 +31,7 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
@@ -40,6 +41,7 @@
 #include <QRadioButton>
 #include <QStatusBar>
 #include <QStyle>
+#include <QTableWidget>
 #include <QToolBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -334,7 +336,14 @@ void MainWindow::buildUi()
     m_confirmButton->setToolTip(QStringLiteral(u"确认这张图片 (Ctrl+Alt+K)"));
     connect(m_confirmButton, &QPushButton::clicked, this, [this] { confirmCurrent(); });
     layout->addWidget(m_confirmButton);
+    // The one-hand keys, on the panel: people at the line do not hover for tooltips.
+    auto* keysHint = new QLabel(QStringLiteral(u"F 确认并下一张　　E 跳过"));
+    keysHint->setObjectName(QStringLiteral("reviewKeys"));
+    keysHint->setProperty("role", QStringLiteral("secondary"));
+    keysHint->setAlignment(Qt::AlignCenter);
+    layout->addWidget(keysHint);
     m_skipButton = new QPushButton(QStringLiteral(u"跳过…"));
+    m_skipButton->setToolTip(QStringLiteral(u"跳过这张图片，需要写明原因 (E)"));
     connect(m_skipButton, &QPushButton::clicked, this, [this] { skipCurrent(); });
     layout->addWidget(m_skipButton);
     m_unskipButton = new QPushButton(QStringLiteral(u"取消跳过"));
@@ -400,6 +409,18 @@ void MainWindow::buildUi()
     QAction* checkAction = named(editMenu->addAction(QStringLiteral(u"确认当前图片"), this, [this] { confirmCurrent(); }),
                                  "toggle_annotation_checked");
     checkAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+K")));
+    // One-hand keys next to A/D (the user's choice). Upstream uses F and E only in its automatic
+    // labelling, which this program does not have; it has no skip, so Ctrl+Alt+S (next to its
+    // Ctrl+Alt+K) is taken by nothing there either.
+    QAction* confirmNext = named(editMenu->addAction(QStringLiteral(u"确认并下一张"), this, [this] { confirmAndNext(); }),
+                                 "confirm_and_next");
+    confirmNext->setShortcut(QKeySequence(QStringLiteral("F")));
+    // Held down, F would confirm images nobody looked at: each one needs its own press.
+    confirmNext->setAutoRepeat(false);
+    QAction* skipAction =
+        named(editMenu->addAction(QStringLiteral(u"跳过当前图片…"), this, [this] { skipCurrent(); }), "skip_image");
+    skipAction->setShortcuts({QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))});
+    skipAction->setAutoRepeat(false);
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral(u"视图(&V)"));
     QAction* zoomIn = named(viewMenu->addAction(QStringLiteral(u"放大"), this, [this] { m_canvas->zoomBy(1.1); }), "zoom_in");
@@ -449,6 +470,9 @@ void MainWindow::buildUi()
     previousUnchecked->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
 
     QMenu* helpMenu = menuBar()->addMenu(QStringLiteral(u"帮助(&H)"));
+    // F1: X-AnyLabeling leaves it free.
+    QAction* keys = named(helpMenu->addAction(QStringLiteral(u"快捷键一览"), this, &MainWindow::showShortcuts), "show_shortcuts");
+    keys->setShortcut(QKeySequence(QStringLiteral("F1")));
     named(helpMenu->addAction(QStringLiteral(u"关于 aoi-LiteAnno…"), this, &MainWindow::showAbout), "about");
 
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
@@ -724,6 +748,76 @@ void MainWindow::scanFinished(bool complete)
     showScanReports(reports.unsupported, reports.unreadable);
     if (m_current < 0 && !m_images.isEmpty())
         goToImage(startIndex());
+}
+
+QList<std::pair<QString, QString>> MainWindow::shortcutList() const
+{
+    QList<std::pair<QString, QString>> rows;
+    QSet<const QAction*> listed;
+    const auto add = [&](const QAction* action) {
+        QStringList keys;
+        for (const QKeySequence& sequence : action->shortcuts())
+            keys.append(sequence.toString(QKeySequence::NativeText));
+        if (!keys.isEmpty() && !listed.contains(action)) {
+            listed.insert(action);
+            rows.append({QString(action->text()).remove(QStringLiteral(u"…")), keys.join(QStringLiteral(u"、"))});
+        }
+    };
+    const auto addMenu = [&](const QMenu* menu, const auto& self) -> void {
+        for (const QAction* action : menu->actions()) {
+            if (action->menu()) {
+                self(action->menu(), self);
+                continue;
+            }
+            add(action);
+        }
+    };
+    for (const QAction* top : menuBar()->actions()) {
+        if (top->menu())
+            addMenu(top->menu(), addMenu);
+    }
+    for (const QAction* action : findChild<QToolBar*>(QStringLiteral("tools"))->actions())
+        add(action);
+    // Keys the canvas handles itself (Canvas::keyPressEvent and the mouse).
+    const std::pair<const char16_t*, const char16_t*> canvas[] = {
+        {u"拖动画面", u"按住空格 + 左键拖动，或右键拖动"},
+        {u"缩放画面", u"Ctrl + 滚轮"},
+        {u"选中形状移动 1 像素", u"方向键"},
+        {u"旋转框转 1° / 0.1°", u"Z、V / X、C"},
+        {u"多边形、折线：完成", u"Enter 或双击"},
+        {u"多边形、折线：删掉最后一个点", u"Backspace"},
+        {u"取消正在画的形状 / 取消选中", u"Esc"},
+    };
+    for (const auto& [text, keys] : canvas)
+        rows.append({QString::fromUtf16(text), QString::fromUtf16(keys)});
+    return rows;
+}
+
+void MainWindow::showShortcuts()
+{
+    const Busy busy(this);  // the dialog runs events; a close waits until it is closed
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("shortcutsDialog"));
+    dialog.setWindowTitle(QStringLiteral(u"快捷键一览"));
+    auto* layout = new QVBoxLayout(&dialog);
+    const QList<std::pair<QString, QString>> rows = shortcutList();
+    auto* table = new QTableWidget(int(rows.size()), 2);
+    table->setHorizontalHeaderLabels({QStringLiteral(u"操作"), QStringLiteral(u"按键")});
+    for (int row = 0; row < rows.size(); ++row) {
+        table->setItem(row, 0, new QTableWidgetItem(rows[row].first));
+        table->setItem(row, 1, new QTableWidgetItem(rows[row].second));
+    }
+    table->verticalHeader()->hide();
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->setSelectionMode(QAbstractItemView::NoSelection);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+    layout->addWidget(table);
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.resize(520, 600);
+    dialog.exec();
 }
 
 void MainWindow::showAbout()
@@ -2175,6 +2269,17 @@ bool MainWindow::confirmCurrent()
     if (!m_session || !m_session->confirm())
         return false;
     edited();
+    return true;
+}
+
+bool MainWindow::confirmAndNext()
+{
+    m_shapeForm->commitPending();
+    // Only a properly confirmed image just moves on. Anything else is confirmed first, with the
+    // confirm conditions (a checked file failing them stays; checked and skipped is cleared).
+    if (!m_session || (m_session->status() != AnnotationStatus::Confirmed && !confirmCurrent()))
+        return false;
+    nextImage();
     return true;
 }
 

@@ -1197,9 +1197,99 @@ private slots:
             {"create_rotation", "O"},         {"create_point", "Shift+P"},
             {"create_line", "Shift+L"},       {"create_linestrip", "Shift+S"},
             {"create_circle", "Shift+C"},
+            // Not in X-AnyLabeling: keys no upstream action uses.
+            {"confirm_and_next", "F"},        {"show_shortcuts", "F1"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
+    }
+
+    // F confirms the image and opens the next one; at the last image it only confirms.
+    void confirmAndNextWithF()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.imageCount(), 3);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // Confirmed already: F just moves on.
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.document().review().checked);
+    }
+
+    // F moves on without confirming only an image that is properly confirmed: one checked in
+    // its file but failing the confirm conditions stays, and a checked-and-skipped conflict
+    // is confirmed for real (the skip cleared) before moving on.
+    void confirmAndNextNeedsAProperConfirmation()
+    {
+        Project project;
+        writeFile(project.json(1),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [{"label": "unknown", )"
+                  R"("points": [[10, 10], [50, 10], [50, 50], [10, 50]], "group_id": null, "description": "", )"
+                  R"("shape_type": "rectangle", "flags": {}}], "imagePath": "0001.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200})");
+        writeFile(project.json(2),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], "imagePath": "0002.png", )"
+                  R"("imageData": null, "imageHeight": 100, "imageWidth": 200, )"
+                  R"("liteanno": {"formatVersion": "1.0", "status": "skipped", "skipReason": "blurred"}})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.currentIndex(), 0);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 0);  // the unknown class blocks it
+
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        QCOMPARE(w.document().review().skip, SkipState::None);
+    }
+
+    // Holding F does not confirm the images after it: an auto-repeated key does nothing, the
+    // key has to be pressed again.
+    void confirmAndNextDoesNotRepeat()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, false, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // E is not repeated either: one press, one question.
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(!skip->autoRepeat());
+    }
+
+    void skipKeys()
+    {
+        Project project;
+        Window w(project.options());
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(skip);
+        QCOMPARE(skip->shortcuts(),
+                 (QList<QKeySequence>{QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))}));
     }
 
     void shortcutsMatchXAnyLabeling()
@@ -1211,6 +1301,31 @@ private slots:
         const QAction* found = w.window.findChild<QAction*>(action);
         QVERIFY2(found, qPrintable(action));
         QCOMPARE(found->shortcuts(), QList<QKeySequence>{QKeySequence(keys)});
+    }
+
+    // Help > 快捷键一览 lists every key once, the canvas's own keys too.
+    void shortcutList()
+    {
+        Project project;
+        Window w(project.options());
+        const auto rows = w.window.shortcutList();
+        QStringList keys;
+        for (const auto& row : rows)
+            keys.append(row.second.split(QStringLiteral(u"、")));
+        for (const QAction* action : w.window.findChildren<QAction*>()) {
+            if (!action->shortcut().isEmpty())
+                QVERIFY2(keys.contains(action->shortcut().toString(QKeySequence::NativeText)), qPrintable(action->text()));
+        }
+        QSet<QString> names;
+        for (const auto& row : rows) {
+            QVERIFY2(!names.contains(row.first), qPrintable(row.first));
+            names.insert(row.first);
+        }
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+K")));
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+S")));
+        QVERIFY(keys.contains(QStringLiteral("F")));
+        QVERIFY(keys.contains(QStringLiteral("E")));
+        QVERIFY(keys.contains(QStringLiteral(u"Esc")));
     }
 
     // No shortcut of this program may take a key X-AnyLabeling uses for something else.
@@ -1535,6 +1650,15 @@ private slots:
         // Ctrl+Alt+K confirms the image.
         QTest::keyClick(canvas, Qt::Key_K, Qt::ControlModifier | Qt::AltModifier);
         QVERIFY(w.document().review().checked);
+        // E (and Ctrl+Alt+S) skips it, with the reason asked for.
+        w.answers.skipReason = QStringLiteral(u"图片模糊");
+        QTest::keyClick(canvas, Qt::Key_E);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
+        QCOMPARE(w.document().review().skipReason, QStringLiteral(u"图片模糊"));
+        QVERIFY(w.window.unskipCurrent());
+        QTest::keyClick(canvas, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
+        QVERIFY(w.window.unskipCurrent());
 
         // The wheel scrolls, Ctrl + wheel zooms; Ctrl+= is the original size, Ctrl+F fits.
         const double fitted = canvas->zoom();

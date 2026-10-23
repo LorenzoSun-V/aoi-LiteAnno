@@ -77,6 +77,9 @@ public:
     bool importAnnotations();
     // "帮助 > 关于": version, source, and the licences of what is built in.
     void showAbout();
+    // Help > 快捷键一览 (F1): every menu and tool key, then the canvas's own keys.
+    void showShortcuts();
+    QList<std::pair<QString, QString>> shortcutList() const;
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 
@@ -114,6 +117,8 @@ public:
 
     // The actions of the panel, as buttons and menu entries do them.
     bool confirmCurrent();
+    // F: confirms the image (unless it is already) and opens the next one.
+    bool confirmAndNext();
     bool skipCurrent();
     bool unskipCurrent();
     bool undo();
