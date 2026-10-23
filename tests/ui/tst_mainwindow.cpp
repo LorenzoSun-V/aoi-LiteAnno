@@ -570,6 +570,87 @@ private slots:
 
     // "选中形状": the class and a rectangle's position and size can be typed; the numbers not
     // typed keep their exact values, the rectangle stays in the image, and undo takes it back.
+    // Boxes need no held button: a click sets one corner and the next click the other, as in
+    // X-AnyLabeling. Dragging still draws them too.
+    void clickedCorners()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        canvas->setTool(Canvas::Tool::Rectangle);
+        click(canvas, QPointF(20, 10));
+        QCOMPARE(w.document().shapes().size(), 0);
+        // The mouse moves with no button held; nothing is drawn until the second click.
+        mouse(canvas, QEvent::MouseMove, canvas->imageToWidget(QPointF(50, 40)), Qt::NoButton, Qt::NoButton);
+        QCOMPARE(w.document().shapes().size(), 0);
+        click(canvas, QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+        const PointList& corners = w.document().shapes()[0].points;
+        QVERIFY(qAbs(corners[0].x() - 20) < 1 && qAbs(corners[0].y() - 10) < 1);
+        QVERIFY(qAbs(corners[2].x() - 80) < 1 && qAbs(corners[2].y() - 60) < 1);
+
+        // A quick second click comes as a double click: it still ends the box.
+        click(canvas, QPointF(100, 20));
+        const QPointF at = canvas->imageToWidget(QPointF(150, 70));
+        mouse(canvas, QEvent::MouseButtonDblClick, at, Qt::LeftButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(w.document().shapes().size(), 2);
+
+        // A second click on the first corner is too small: the box waits for a real one.
+        click(canvas, QPointF(30, 80));
+        click(canvas, QPointF(30, 80));
+        QCOMPARE(w.document().shapes().size(), 2);
+        // Esc gives it up.
+        QTest::keyClick(canvas, Qt::Key_Escape);
+        click(canvas, QPointF(60, 90));
+        QCOMPARE(w.document().shapes().size(), 2);
+        QTest::keyClick(canvas, Qt::Key_Escape);
+
+        // Dragging still works.
+        drag(canvas, QPointF(10, 70), QPointF(40, 95));
+        QCOMPARE(w.document().shapes().size(), 3);
+
+        // Lines and circles take two clicks as well.
+        canvas->setTool(Canvas::Tool::Line);
+        click(canvas, QPointF(10, 10));
+        click(canvas, QPointF(60, 10));
+        QCOMPARE(w.document().shapes().size(), 4);
+        QCOMPARE(w.document().shapes()[3].type, ShapeType::Line);
+    }
+
+    // Space shows an open hand, panning a closed one; afterwards the tool's cursor is back.
+    void handWhilePanning()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->setTool(Canvas::Tool::Rectangle);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        QTest::keyPress(canvas, Qt::Key_Space);
+        QCOMPARE(canvas->cursor().shape(), Qt::OpenHandCursor);
+        const QPointF middle(canvas->width() / 2.0, canvas->height() / 2.0);
+        mouse(canvas, QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::ClosedHandCursor);
+        mouse(canvas, QEvent::MouseMove, middle + QPointF(30, 20), Qt::NoButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, middle + QPointF(30, 20), Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::OpenHandCursor);
+        QTest::keyRelease(canvas, Qt::Key_Space);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        // Right-button panning too.
+        mouse(canvas, QEvent::MouseButtonPress, middle, Qt::RightButton, Qt::RightButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::ClosedHandCursor);
+        mouse(canvas, QEvent::MouseButtonRelease, middle, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        canvas->setTool(Canvas::Tool::Select);
+        QCOMPARE(canvas->cursor().shape(), Qt::ArrowCursor);
+        QCOMPARE(w.document().shapes().size(), 0);
+    }
+
     void selectedShapeForm()
     {
         Project project;
