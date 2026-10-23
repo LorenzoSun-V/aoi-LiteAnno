@@ -1,6 +1,6 @@
 // Export (architecture 11): only confirmed images, nothing written when an object cannot be
 // converted unless those images are skipped, the output folder rules, batches as the scope,
-// and liteanno-cli's init, status and confirm. Byte-for-byte comparison with upstream's
+// and liteanno-cli's init, status and export. Byte-for-byte comparison with upstream's
 // converter is in python/export_compat.py.
 
 #include "application/ExportService.h"
@@ -914,14 +914,12 @@ private slots:
         QVERIFY2(output.contains(QStringLiteral(u"待确认：2")), qPrintable(output));
         QVERIFY2(output.contains(QStringLiteral(u"未处理：1")), qPrintable(output));
 
+        // "checked" means a person looked at the image: there is no bulk confirm.
         const QByteArray before = readFile(data.filePath(QStringLiteral("a.json")));
-        output = cli({QStringLiteral("confirm"), data.path(), QStringLiteral("--dry-run")});
-        QVERIFY2(output.contains(QStringLiteral(u"可以确认 1 张")), qPrintable(output));
+        cli({QStringLiteral("confirm"), data.path()}, 2);
         QCOMPARE(readFile(data.filePath(QStringLiteral("a.json"))), before);
-        output = cli({QStringLiteral("confirm"), data.path()});
-        QVERIFY2(output.contains(QStringLiteral(u"已确认 1 张")), qPrintable(output));
-        QVERIFY(readFile(data.filePath(QStringLiteral("a.json"))).contains("\"checked\": true"));
-        QVERIFY(readFile(data.filePath(QStringLiteral("b.json"))).contains("\"checked\": false"));
+        // Confirmed in the window.
+        writeFile(data.filePath(QStringLiteral("a.json")), QByteArray(before).replace("\"checked\": false", "\"checked\": true"));
 
         const QTemporaryDir out;
         output = cli({QStringLiteral("export"), data.path(), QStringLiteral("--format"), QStringLiteral("coco-det"),
