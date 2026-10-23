@@ -16,8 +16,8 @@ $ErrorActionPreference = "Stop"
 # SHA-256 of the source archives, checked against the .sha256 files Qt publishes next to them.
 # A new Qt version needs new values here and in cmake/LiteAnnoToolchainPin.cmake.
 $sources = [ordered]@{
-    "qtbase"         = "PIN-ME"
-    "qtimageformats" = "PIN-ME"
+    "qtbase"         = "56001b905601bb9023d399f3ba780d7fa940f3e4861e496a7c490331f49e0b80"
+    "qtimageformats" = "049bfb99845e4801672aca07c3c4fc4c140f932a3a33faa899419579e33ef1c8"
 }
 
 function Invoke-Checked([string] $exe, [string[]] $arguments) {
