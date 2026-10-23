@@ -99,20 +99,40 @@ bool jsonPointsEqual(const Json& value, const PointList& points)
     return true;
 }
 
-// Field order of upstream Shape.to_dict() (shape.py).
+// Field order of upstream Shape.to_dict() (shape.py): fields it does not know first, then
+// its own. A pasted shape keeps the fields of the object it was copied from.
 Json newShapeObject(const Shape& shape)
 {
+    Json copied = Json::object();
+    if (!shape.copiedObject.isEmpty()) {
+        JsonParseResult parsed = parseJson(shape.copiedObject);
+        if (parsed.ok && parsed.value.is_object())
+            copied = std::move(parsed.value);
+    }
+    const auto keep = [&copied](const char* key, Json fallback) {
+        const auto it = copied.find(key);
+        return it != copied.end() ? *it : fallback;
+    };
+    static const char* const ownKeys[] = {"label", "score", "points", "group_id", "description", "difficult",
+                                          "shape_type", "flags", "attributes", "kie_linking", "direction", "locked"};
     Json object = Json::object();
+    for (auto it = copied.begin(); it != copied.end(); ++it) {
+        if (std::none_of(std::begin(ownKeys), std::end(ownKeys), [&it](const char* key) { return it.key() == key; }))
+            object[it.key()] = it.value();
+    }
     object["label"] = toJson(shape.label);
-    object["score"] = nullptr;
+    object["score"] = keep("score", nullptr);
     object["points"] = pointsToJson(shape.points);
-    object["group_id"] = nullptr;
+    object["group_id"] = keep("group_id", nullptr);
     object["description"] = toJson(shape.description);
-    object["difficult"] = false;
+    object["difficult"] = keep("difficult", false);
     object["shape_type"] = toJson(shapeTypeName(shape.type));
-    object["flags"] = Json::object();
-    object["attributes"] = Json::object();
-    object["kie_linking"] = Json::array();
+    object["flags"] = keep("flags", Json::object());
+    object["attributes"] = keep("attributes", Json::object());
+    object["kie_linking"] = keep("kie_linking", Json::array());
+    // Upstream's new boxes hold the integer 0 until they are turned.
+    if (shape.type == ShapeType::Rotation)
+        object["direction"] = shape.direction == 0 ? Json(0) : Json(shape.direction);
     if (shape.locked)
         object["locked"] = true;
     return object;
@@ -135,6 +155,10 @@ void applyShapeEdits(Json& object, const Shape& before, const Shape& after)
         object["points"] = pointsToJson(after.points);
     if (after.description != before.description)
         object["description"] = toJson(after.description);
+    // Upstream always writes the angle of a rotated box; an edit completes a missing one.
+    if (after.type == ShapeType::Rotation
+        && (after.direction != before.direction || (pointsEdited && !object.contains("direction"))))
+        object["direction"] = after.direction;
     if (after.locked != before.locked) {
         // Upstream writes "locked" only when it is true.
         if (after.locked)
@@ -192,6 +216,7 @@ struct AnnotationFile::Data {
     void readLiteanno(const Json& liteanno, ReviewState& review);
     bool imageDimensionMismatches(const char* key, int actual);
 
+    Json shapeOutput(const Shape& shape) const;
     Json buildOutput() const;
     void applyImageLabels(Json& out) const;
     void writeImageDimension(Json& out, const char* key, int actual) const;
@@ -372,6 +397,16 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
         else
             addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/description"));
     }
+    if (shape.type == ShapeType::Rotation) {
+        // Upstream reads a missing angle as 0.
+        const auto directionIt = item.find("direction");
+        if (directionIt != item.end()) {
+            if (directionIt->is_number())
+                shape.direction = directionIt->get<double>();
+            else
+                addDiagnostic(DiagnosticCode::InvalidShapeField, location + QLatin1String("/direction"));
+        }
+    }
     const auto lockedIt = item.find("locked");
     if (lockedIt != item.end()) {
         if (lockedIt->is_boolean())
@@ -447,22 +482,24 @@ bool AnnotationFile::Data::imageDimensionMismatches(const char* key, int actual)
     return false;
 }
 
+Json AnnotationFile::Data::shapeOutput(const Shape& shape) const
+{
+    const OriginalShape* original = findOriginal(shape.id);
+    if (!original)
+        return newShapeObject(shape);
+    Json object = original->object;
+    if (shape.kind == ShapeKind::Editable)
+        applyShapeEdits(object, original->typed, shape);
+    return object;
+}
+
 Json AnnotationFile::Data::buildOutput() const
 {
     Json out = base;
 
     Json shapes = Json::array();
-    for (const Shape& shape : document.shapes()) {
-        const OriginalShape* original = findOriginal(shape.id);
-        if (!original) {
-            shapes.push_back(newShapeObject(shape));
-            continue;
-        }
-        Json object = original->object;
-        if (shape.kind == ShapeKind::Editable)
-            applyShapeEdits(object, original->typed, shape);
-        shapes.push_back(std::move(object));
-    }
+    for (const Shape& shape : document.shapes())
+        shapes.push_back(shapeOutput(shape));
     out["shapes"] = std::move(shapes);
 
     // Format spec 4.5: the version of the program that saved the file.
@@ -672,6 +709,14 @@ bool AnnotationFile::needsWrite() const
 QByteArray AnnotationFile::toBytes() const
 {
     return serializeJson(d->buildOutput());
+}
+
+QByteArray AnnotationFile::shapeObject(qsizetype index) const
+{
+    const QList<Shape>& shapes = d->document.shapes();
+    if (index < 0 || index >= shapes.size())
+        return QByteArray();
+    return serializeJson(d->shapeOutput(shapes[index]));
 }
 
 void AnnotationFile::markSaved()

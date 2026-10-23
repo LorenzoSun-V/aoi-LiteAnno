@@ -67,6 +67,8 @@ public:
     bool needsWrite() const;
     // The complete file content to write.
     QByteArray toBytes() const;
+    // The JSON object the shape at `index` of document() is written as; for copy and paste.
+    QByteArray shapeObject(qsizetype index) const;
     // Call after the bytes from toBytes() were written: they become the new base for edits.
     void markSaved();
 

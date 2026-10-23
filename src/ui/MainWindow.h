@@ -109,6 +109,9 @@ public:
     bool undo();
     bool redo();
     bool deleteSelectedShape();
+    // Ctrl+C / Ctrl+V: the selected shape, also into another image.
+    bool copySelectedShape();
+    bool pasteShape();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
@@ -282,6 +285,8 @@ private:
     QAction* m_selectTool = nullptr;
     QAction* m_rectangleTool = nullptr;
     QAction* m_polygonTool = nullptr;
+    QAction* m_rotationTool = nullptr;
+    std::optional<Shape> m_copiedShape;
 };
 
 } // namespace liteanno::ui

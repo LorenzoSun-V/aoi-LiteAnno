@@ -44,6 +44,7 @@ public:
     // refuse all of them.
     qsizetype addShape(const Shape& shape);
     bool setShapePoints(qsizetype index, const PointList& points);
+    bool setShapeRotation(qsizetype index, const RotatedBox& box);
     bool setShapeLabel(qsizetype index, const QString& label);
     bool removeShape(qsizetype index);
     bool setImageLabel(const QString& name, bool value);

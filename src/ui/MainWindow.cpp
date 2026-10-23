@@ -108,6 +108,11 @@ void MainWindow::buildUi()
         else
             refresh();
     });
+    connect(m_canvas, &Canvas::shapeRotated, this, [this](qsizetype index, const RotatedBox& box) {
+        if (m_session && m_session->setShapeRotation(index, box))
+            edited();
+    });
+    connect(m_canvas, &Canvas::visibilityChanged, this, &MainWindow::refresh);
     connect(m_canvas, &Canvas::selectionChanged, this, [this](qsizetype index) {
         m_shapeList->setCurrentRow(int(index));
         refresh();
@@ -234,6 +239,12 @@ void MainWindow::buildUi()
                                                       [this] { deleteSelectedShape(); }),
                                   "delete_polygon");
     deleteAction->setShortcut(QKeySequence(QStringLiteral("Delete")));
+    QAction* copyAction =
+        named(editMenu->addAction(QStringLiteral(u"复制形状"), this, [this] { copySelectedShape(); }), "copy_polygon");
+    copyAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+C")));
+    QAction* pasteAction =
+        named(editMenu->addAction(QStringLiteral(u"粘贴形状"), this, [this] { pasteShape(); }), "paste_polygon");
+    pasteAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+V")));
     QAction* checkAction = named(editMenu->addAction(QStringLiteral(u"确认当前图片"), this, [this] { confirmCurrent(); }),
                                  "toggle_annotation_checked");
     checkAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+K")));
@@ -248,6 +259,23 @@ void MainWindow::buildUi()
     original->setShortcut(QKeySequence(QStringLiteral("Ctrl+=")));
     QAction* fit = named(viewMenu->addAction(QStringLiteral(u"适合窗口"), m_canvas, &Canvas::fitToWindow), "fit_window");
     fit->setShortcut(QKeySequence(QStringLiteral("Ctrl+F")));
+    viewMenu->addSeparator();
+    QAction* hide = named(viewMenu->addAction(QStringLiteral(u"隐藏选中形状"), m_canvas, &Canvas::hideSelected),
+                          "hide_selected_polygons");
+    hide->setShortcut(QKeySequence(QStringLiteral("S")));
+    QAction* showHidden = named(viewMenu->addAction(QStringLiteral(u"显示上一个隐藏的形状"), m_canvas, &Canvas::showLastHidden),
+                                "show_hidden_polygons");
+    showHidden->setShortcut(QKeySequence(QStringLiteral("W")));
+    QAction* allShapes = named(viewMenu->addAction(QStringLiteral(u"显示全部形状")), "toggle_visibility_shapes");
+    allShapes->setShortcut(QKeySequence(QStringLiteral("Ctrl+H")));
+    allShapes->setCheckable(true);
+    allShapes->setChecked(true);
+    connect(allShapes, &QAction::toggled, m_canvas, &Canvas::setShapesVisible);
+    QAction* labels = named(viewMenu->addAction(QStringLiteral(u"显示类别文字")), "show_labels");
+    labels->setShortcut(QKeySequence(QStringLiteral("Ctrl+L")));
+    labels->setCheckable(true);
+    labels->setChecked(true);
+    connect(labels, &QAction::toggled, m_canvas, &Canvas::setLabelsVisible);
 
     // Architecture 7: fixed batches, picked up where they were left.
     QMenu* batchMenu = menuBar()->addMenu(QStringLiteral(u"批次(&B)"));
@@ -274,7 +302,10 @@ void MainWindow::buildUi()
     m_rectangleTool->setShortcut(QKeySequence(QStringLiteral("R")));
     m_polygonTool = named(tools->addAction(QStringLiteral(u"多边形 (P)")), "create_polygon");
     m_polygonTool->setShortcut(QKeySequence(QStringLiteral("P")));
-    for (QAction* action : {m_selectTool, m_rectangleTool, m_polygonTool}) {
+    m_rotationTool = named(tools->addAction(QStringLiteral(u"旋转框 (O)")), "create_rotation");
+    m_rotationTool->setShortcut(QKeySequence(QStringLiteral("O")));
+    m_rotationTool->setToolTip(QStringLiteral(u"旋转框 (O)：拖出后选中，按 Z/V 转 1°，X/C 转 0.1°"));
+    for (QAction* action : {m_selectTool, m_rectangleTool, m_polygonTool, m_rotationTool}) {
         action->setCheckable(true);
         toolGroup->addAction(action);
     }
@@ -282,6 +313,7 @@ void MainWindow::buildUi()
     connect(m_selectTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Select); });
     connect(m_rectangleTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Rectangle); });
     connect(m_polygonTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Polygon); });
+    connect(m_rotationTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Rotation); });
     tools->addSeparator();
     QAction* previous = named(tools->addAction(QStringLiteral(u"上一张 (A)"), this, [this] { previousImage(); }), "open_prev");
     previous->setShortcut(QKeySequence(QStringLiteral("A")));
@@ -356,6 +388,7 @@ bool MainWindow::openProject(const QString& root)
     const QList<ShapeType>& types = m_project->config().shapeTypes;
     m_rectangleTool->setEnabled(types.contains(ShapeType::Rectangle));
     m_polygonTool->setEnabled(types.contains(ShapeType::Polygon));
+    m_rotationTool->setEnabled(types.contains(ShapeType::Rotation));
     m_selectTool->setChecked(true);
     m_canvas->setTool(Canvas::Tool::Select);
     buildImageLabelPanel();
@@ -1596,6 +1629,34 @@ void MainWindow::editLabel(qsizetype index)
     }
 }
 
+bool MainWindow::copySelectedShape()
+{
+    const qsizetype index = m_canvas->selectedShape();
+    if (!m_session || index < 0 || index >= m_session->document().shapes().size())
+        return false;
+    const Shape& shape = m_session->document().shapes()[index];
+    if (shape.kind != ShapeKind::Editable)
+        return false;
+    m_copiedShape = shape;
+    m_copiedShape->copiedObject = m_session->file().shapeObject(index);
+    return true;
+}
+
+bool MainWindow::pasteShape()
+{
+    if (!m_session || m_session->isReadOnly() || !m_copiedShape)
+        return false;
+    // As upstream: the copy lands where the original was, unlocked.
+    Shape shape = *m_copiedShape;
+    shape.locked = false;
+    const qsizetype index = m_session->addShape(shape);
+    if (index < 0)
+        return false;
+    m_canvas->setSelectedShape(index);
+    edited();
+    return true;
+}
+
 bool MainWindow::deleteSelectedShape()
 {
     if (!m_session)
@@ -1730,11 +1791,15 @@ void MainWindow::refresh()
     m_shapeList->blockSignals(true);
     m_shapeList->clear();
     if (hasSession) {
-        for (const Shape& shape : m_session->document().shapes()) {
+        const QList<Shape>& shapes = m_session->document().shapes();
+        for (qsizetype i = 0; i < shapes.size(); ++i) {
+            const Shape& shape = shapes[i];
             const QString type = shape.kind == ShapeKind::Unrecognized ? QStringLiteral(u"无法识别的对象")
                                                                        : shapeTypeText(shape.type);
-            m_shapeList->addItem(QStringLiteral("%1  (%2)").arg(shape.label.isEmpty() ? QStringLiteral("-") : shape.label,
-                                                               type));
+            QString text = QStringLiteral("%1  (%2)").arg(shape.label.isEmpty() ? QStringLiteral("-") : shape.label, type);
+            if (m_canvas->isHidden(i))
+                text += QStringLiteral(u"  [已隐藏]");
+            m_shapeList->addItem(text);
         }
         m_shapeList->setCurrentRow(int(m_canvas->selectedShape()));
     }

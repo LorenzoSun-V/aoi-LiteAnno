@@ -53,6 +53,11 @@ bool DocumentSession::setShapePoints(qsizetype index, const PointList& points)
     return edit([&](AnnotationDocument& document) { return document.setShapePoints(index, points); });
 }
 
+bool DocumentSession::setShapeRotation(qsizetype index, const RotatedBox& box)
+{
+    return edit([&](AnnotationDocument& document) { return document.setShapeRotation(index, box); });
+}
+
 bool DocumentSession::setShapeLabel(qsizetype index, const QString& label)
 {
     return edit([&](AnnotationDocument& document) { return document.setShapeLabel(index, label); });

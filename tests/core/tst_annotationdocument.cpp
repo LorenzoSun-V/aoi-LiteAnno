@@ -196,7 +196,6 @@ private slots:
         AnnotationDocument document;
         Shape preserved = editableShape(0, ShapeType::Quadrilateral, square());
         QCOMPARE(document.addShape(preserved), qsizetype(-1));
-        QCOMPARE(document.addShape(editableShape(0, ShapeType::Rotation, square())), qsizetype(-1));
         QCOMPARE(document.addShape(editableShape(0, ShapeType::Line, {QPointF(1, 1)})), qsizetype(-1));
         QVERIFY(!document.isModified());
     }
@@ -214,15 +213,22 @@ private slots:
         QVERIFY(exactlyEqual(document.shapes().at(0).points, square()));
     }
 
-    // Upstream keeps the angle of a rotated box in "direction"; until the rotation tool keeps
-    // it in step, the corners of existing rotated boxes stay as they are.
-    void rotatedBoxCornersAreNotEditable()
+    // Upstream keeps the angle of a rotated box in "direction"; turning sets corners and
+    // angle together, and it is a content edit.
+    void rotatedBoxesTurnWithTheirAngle()
     {
         AnnotationDocument document({editableShape(1, ShapeType::Rotation, square())}, {}, {});
-        const PointList turned = {QPointF(5, -2), QPointF(12, 5), QPointF(5, 12), QPointF(-2, 5)};
-        QVERIFY(!document.setShapePoints(0, turned));
-        QVERIFY(!document.isModified());
-        QVERIFY(document.setShapeLabel(0, QStringLiteral("dent")));
+        QVERIFY(document.confirm());
+        const RotatedBox turned = rotateBox({square(), 0}, radians(1.0));
+        QVERIFY(document.setShapeRotation(0, turned));
+        QVERIFY(exactlyEqual(document.shapes().at(0).points, turned.points));
+        QCOMPARE(document.shapes().at(0).direction, turned.direction);
+        QVERIFY(!document.review().checked);
+        QVERIFY(!document.setShapeRotation(0, turned));
+        // Only rotated boxes have an angle.
+        AnnotationDocument polygon({editableShape(1, ShapeType::Polygon, square())}, {}, {});
+        QVERIFY(!polygon.setShapeRotation(0, turned));
+        QVERIFY(document.addShape(editableShape(0, ShapeType::Rotation, square())) >= 0);
     }
 
     void markSavedResetsTracking()
