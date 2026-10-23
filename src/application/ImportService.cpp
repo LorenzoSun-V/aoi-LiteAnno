@@ -282,6 +282,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
     const RecoveryService recovery(m_project.paths(), m_project.location());
     for (const RecoveryCandidate& candidate : recovery.scan().candidates)
         recorded.insert(candidate.record.imagePath);
+    recorded.unite(request.heldImages);
 
     // Pair the label files: by the relative path first, then by the file name at the top of
     // the label folder. A file name several images would take pairs none of them.
@@ -295,9 +296,16 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             const ScopeImage& image = scope.images[i];
             const QString nested = labelDir.filePath(stemPath(image.path) + suffix);
             const QString top = labelDir.filePath(stemPath(fileNameOf(image.path)) + suffix);
-            if (QFileInfo(nested).isFile()) {
+            // A mask folder inside the data folder: its masks are listed as images too, and
+            // one is never its own mask.
+            const QFileInfo self(m_project.imageFilePath(image.path));
+            const auto isLabel = [&self](const QString& file) {
+                const QFileInfo info(file);
+                return info.isFile() && info != self;
+            };
+            if (isLabel(nested)) {
                 labelFiles.append(nested);
-            } else if (top != nested && QFileInfo(top).isFile()) {
+            } else if (top != nested && isLabel(top)) {
                 labelFiles.append(top);
                 ++byName[top];
             } else {

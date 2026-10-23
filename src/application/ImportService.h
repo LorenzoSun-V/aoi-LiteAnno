@@ -5,6 +5,7 @@
 #include "formats/Importers.h"
 
 #include <QList>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -39,6 +40,9 @@ struct ImportRequest {
     QString mappingFile;
     QStringList batches;  // list stems ("b000003"); empty: the whole project
     ImportMode mode = ImportMode::OnlyNew;
+    // Images whose edits the window holds in memory only (their save failed): left alone
+    // like images with a recovery record.
+    QSet<QString> heldImages;
     bool skipUnconvertible = false;  // "跳过这些图片继续导入"
 };
 

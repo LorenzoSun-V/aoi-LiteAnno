@@ -89,6 +89,9 @@ if(LITEANNO_BUILD_UI)
     target_compile_definitions(tst_export PRIVATE LITEANNO_CLI="$<TARGET_FILE:liteanno_cli>")
     add_dependencies(tst_export liteanno_cli)
 
+    liteanno_add_test(tst_import application/tst_import.cpp)
+    target_link_libraries(tst_import PRIVATE liteanno_imaging)
+
     # Format spec 11: round trips checked with X-AnyLabeling's own reader and writer.
     add_executable(liteanno_compat_roundtrip tools/compat_roundtrip.cpp)
     target_link_libraries(liteanno_compat_roundtrip PRIVATE liteanno_imaging liteanno_formats Qt6::Gui)
