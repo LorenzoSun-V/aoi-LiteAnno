@@ -739,7 +739,7 @@ private slots:
         QCOMPARE(w.window.imageCount(), 3);
         QCOMPARE(w.window.currentIndex(), 0);
         // No shapes yet: the button confirms an image without objects.
-        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认无目标"));
+        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认无目标  Ctrl+Alt+K"));
         QVERIFY(w.confirmButton()->isEnabled());
 
         w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
@@ -748,7 +748,7 @@ private slots:
         QCOMPARE(shape.label, QStringLiteral("scratch"));
         QCOMPARE(shape.type, ShapeType::Rectangle);
         QVERIFY(qAbs(shape.points[0].x() - 20) < 1 && qAbs(shape.points[2].y() - 60) < 1);
-        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认"));
+        QCOMPARE(w.confirmButton()->text(), QStringLiteral(u"确认  Ctrl+Alt+K"));
 
         // Moving it with the select tool.
         const PointList before = w.document().shapes()[0].points;
@@ -1191,6 +1191,8 @@ private slots:
             {"create_rotation", "O"},         {"create_point", "Shift+P"},
             {"create_line", "Shift+L"},       {"create_linestrip", "Shift+S"},
             {"create_circle", "Shift+C"},
+            // Not in X-AnyLabeling: keys no upstream action uses.
+            {"skip_image", "Ctrl+Alt+S"},     {"show_shortcuts", "F1"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
@@ -1205,6 +1207,29 @@ private slots:
         const QAction* found = w.window.findChild<QAction*>(action);
         QVERIFY2(found, qPrintable(action));
         QCOMPARE(found->shortcuts(), QList<QKeySequence>{QKeySequence(keys)});
+    }
+
+    // Help > 快捷键一览 lists every key once, the canvas's own keys too.
+    void shortcutList()
+    {
+        Project project;
+        Window w(project.options());
+        const auto rows = w.window.shortcutList();
+        QStringList keys;
+        for (const auto& row : rows)
+            keys.append(row.second);
+        for (const QAction* action : w.window.findChildren<QAction*>()) {
+            if (!action->shortcut().isEmpty())
+                QVERIFY2(keys.contains(action->shortcut().toString(QKeySequence::NativeText)), qPrintable(action->text()));
+        }
+        QSet<QString> names;
+        for (const auto& row : rows) {
+            QVERIFY2(!names.contains(row.first), qPrintable(row.first));
+            names.insert(row.first);
+        }
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+K")));
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+S")));
+        QVERIFY(keys.contains(QStringLiteral(u"Esc")));
     }
 
     // No shortcut of this program may take a key X-AnyLabeling uses for something else.
@@ -1529,6 +1554,12 @@ private slots:
         // Ctrl+Alt+K confirms the image.
         QTest::keyClick(canvas, Qt::Key_K, Qt::ControlModifier | Qt::AltModifier);
         QVERIFY(w.document().review().checked);
+        // Ctrl+Alt+S skips it, with the reason asked for.
+        w.answers.skipReason = QStringLiteral(u"图片模糊");
+        QTest::keyClick(canvas, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
+        QCOMPARE(w.document().review().skipReason, QStringLiteral(u"图片模糊"));
+        QVERIFY(w.window.unskipCurrent());
 
         // The wheel scrolls, Ctrl + wheel zooms; Ctrl+= is the original size, Ctrl+F fits.
         const double fitted = canvas->zoom();
