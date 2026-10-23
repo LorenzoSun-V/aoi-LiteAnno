@@ -1,5 +1,7 @@
 #include "core/AnnotationDocument.h"
 
+#include <QSet>
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -110,11 +112,19 @@ qsizetype AnnotationDocument::addKeypoint(Shape point)
 
     std::optional<qint64> group = m_shapes[rectangle].groupId;
     if (!group) {
-        qint64 next = 0;
+        // One past the largest; when that is taken by the largest number itself, the smallest
+        // free one.
+        QSet<qint64> used;
+        qint64 largest = -1;
         for (const Shape& shape : m_shapes) {
-            if (shape.groupId && *shape.groupId < std::numeric_limits<qint64>::max())
-                next = std::max(next, *shape.groupId + 1);
+            if (shape.groupId) {
+                used.insert(*shape.groupId);
+                largest = std::max(largest, *shape.groupId);
+            }
         }
+        qint64 next = largest < std::numeric_limits<qint64>::max() ? largest + 1 : 0;
+        while (used.contains(next))
+            ++next;
         group = next;
     }
     point.groupId = group;

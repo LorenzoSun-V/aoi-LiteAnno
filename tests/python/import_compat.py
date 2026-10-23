@@ -255,7 +255,8 @@ POSE_LABELS = list(POSE_CLASSES) + [k for names in POSE_CLASSES.values() for k i
 
 YOLO_POSE = {
     True: {
-        # visibility 1 marks a keypoint difficult; 0 or a point at 0, 0 is not labeled; a car
+        # visibility 1 marks a keypoint difficult; 0 is not labeled (upstream also drops a
+        # visible keypoint at 0, 0; we keep it, see check_yolo_pose); a car
         # line padded to three keypoints, as upstream writes them.
         "a01": "0 0.5 0.5 0.25 0.5 0.4 0.3 2 0.45 0.31 1 0 0 0\n"
                "1 0.123456789 0.987654321 0.0333333333 0.0101 0.1 0.9 2 0.11 0.95 0 0 0 0\n",
@@ -293,8 +294,24 @@ def check_yolo_pose(cli, work, has_visible):
         theirs_path = os.path.join(upstream, stem + ".json")
         os.makedirs(os.path.dirname(theirs_path), exist_ok=True)
         converter.yolo_pose_to_custom(os.path.join(label_dir, stem + ".txt"), theirs_path, os.path.join(root, image))
-        compare(f"{name} {stem}", load(os.path.join(root, stem + ".json")), load(theirs_path))
+        ours = load(os.path.join(root, stem + ".json"))
+        if has_visible:
+            # Deliberate difference: with visibility flags a keypoint at 0, 0 marked visible
+            # (as our own export writes one there) is kept; upstream drops it.
+            origin = [s for s in ours["shapes"] if s["shape_type"] == "point" and s["points"] == [[0.0, 0.0]]]
+            expected = sum(origin_visible_keypoints(line) for line in labels[stem].splitlines())
+            if len(origin) != expected:
+                sys.exit(f"{name} {stem}: {len(origin)} visible keypoints at 0, 0 kept, expected {expected}")
+            ours["shapes"] = [s for s in ours["shapes"] if not any(s is o for o in origin)]
+        compare(f"{name} {stem}", ours, load(theirs_path))
     print(f"{name}: {len(labels)} files match upstream")
+
+
+def origin_visible_keypoints(line):
+    """Keypoints "0 0 v" with v > 0 in a YOLO pose line with visibility flags."""
+    values = line.split()[5:]
+    return sum(1 for k in range(0, len(values) - 2, 3)
+               if float(values[k]) == 0 and float(values[k + 1]) == 0 and int(float(values[k + 2])) > 0)
 
 
 def check_coco_pose(cli, work, with_config):

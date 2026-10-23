@@ -2,10 +2,14 @@
 // file written back, and the pose checks of the export. The exported and imported files are
 // compared with upstream's in python/export_compat.py and python/import_compat.py.
 
+#include "core/AnnotationDocument.h"
 #include "formats/Exporters.h"
+#include "formats/Importers.h"
 #include "formats/PoseConfig.h"
 
 #include <QTest>
+
+#include <limits>
 
 using namespace liteanno;
 using namespace liteanno::formats;
@@ -29,6 +33,11 @@ QStringList reasons(const ExportImage& image, const PoseConfig& pose)
     for (const ExportIssue& issue : unconvertibleShapes(image, ExportFormat::YoloPose, {}, &pose))
         found.append(QString::number(issue.shape));
     return found;
+}
+
+bool difficult(const Shape& shape)
+{
+    return shape.copiedObject.contains("\"difficult\": true") || shape.copiedObject.contains("\"difficult\":true");
 }
 
 } // namespace
@@ -106,6 +115,71 @@ private slots:
         ExportImage twice = image;
         twice.shapes.append(shape("nose", "point", 0));
         QVERIFY(!reasons(twice, pose).isEmpty());
+    }
+    // A COCO image that cannot be imported leaves nothing behind for the next one: its
+    // visibility flags are its own.
+    void cocoFlagsStayWithTheirImage()
+    {
+        const PoseConfig pose = parsePoseConfig("classes:\n  person: [nose, eye]\n");
+        const QByteArray file = R"({"images": [{"id": 1, "file_name": "a.png", "width": 100, "height": 100},
+                                               {"id": 2, "file_name": "b.png", "width": 100, "height": 100}],
+            "annotations": [{"id": 1, "image_id": 1, "category_id": 1, "bbox": [1, 1, 50, 50], "keypoints": [5, 5, 1, 6, 6, 7]},
+                            {"id": 2, "image_id": 2, "category_id": 1, "bbox": [1, 1, 50, 50], "keypoints": [5, 5, 2, 6, 6, 2]}],
+            "categories": [{"id": 1, "name": "person", "keypoints": ["nose", "eye"]}]})";
+        const CocoLabels labels = parseCocoLabels(file, ImportFormat::CocoPose, &pose);
+        QVERIFY2(labels.error.isEmpty(), qPrintable(labels.error));
+        QVERIFY(!labels.images[0].labels.error.isEmpty());
+        const QList<Shape>& shapes = labels.images[1].labels.shapes;
+        QVERIFY2(labels.images[1].labels.error.isEmpty(), qPrintable(labels.images[1].labels.error));
+        QCOMPARE(shapes.size(), 3);
+        QVERIFY(!difficult(shapes[1]));
+        QVERIFY(!difficult(shapes[2]));
+    }
+
+    // With visibility flags, a keypoint at (0, 0) marked visible is a keypoint: only flag 0
+    // means missing. (Upstream also drops it; a deliberate difference, so that our own
+    // export reads back.)
+    void yoloKeypointAtTheOrigin()
+    {
+        const PoseConfig visible = parsePoseConfig("classes:\n  person: [nose, eye]\n");
+        ImportedLabels labels = parseYoloPoseLabels("0 0.5 0.5 0.2 0.2 0 0 2 0.3 0.3 1\n", visible, 100, 100);
+        QVERIFY2(labels.error.isEmpty(), qPrintable(labels.error));
+        QCOMPARE(labels.shapes.size(), 3);
+        QCOMPARE(labels.shapes[1].label, QStringLiteral("nose"));
+        QCOMPARE(labels.shapes[1].points[0], QPointF(0, 0));
+        labels = parseYoloPoseLabels("0 0.5 0.5 0.2 0.2 0 0 0 0.3 0.3 1\n", visible, 100, 100);
+        QCOMPARE(labels.shapes.size(), 2);
+
+        // Without flags (0, 0) is how a missing keypoint is written.
+        const PoseConfig plain = parsePoseConfig("has_visible: false\nclasses:\n  person: [nose, eye]\n");
+        labels = parseYoloPoseLabels("0 0.5 0.5 0.2 0.2 0 0 0.3 0.3\n", plain, 100, 100);
+        QCOMPARE(labels.shapes.size(), 2);
+    }
+
+    // The group a keypoint drawn in an ungrouped rectangle gets is one no shape uses, also
+    // next to the largest numbers.
+    void newGroupIsFree()
+    {
+        const auto shape = [](ShapeType type, PointList points, std::optional<qint64> group) {
+            Shape s;
+            s.type = type;
+            s.label = QStringLiteral("x");
+            s.points = std::move(points);
+            s.groupId = group;
+            return s;
+        };
+        const qint64 max = std::numeric_limits<qint64>::max();
+        const PointList box{QPointF(0, 0), QPointF(10, 0), QPointF(10, 10), QPointF(0, 10)};
+        const PointList far{QPointF(50, 50), QPointF(60, 50), QPointF(60, 60), QPointF(50, 60)};
+        AnnotationDocument document({shape(ShapeType::Rectangle, far, max), shape(ShapeType::Rectangle, far, max - 1),
+                                     shape(ShapeType::Rectangle, box, std::nullopt)},
+                                    {}, {});
+        const qsizetype index = document.addKeypoint(shape(ShapeType::Point, {QPointF(5, 5)}, std::nullopt));
+        QVERIFY(index >= 0);
+        const std::optional<qint64> group = document.shapes().at(index).groupId;
+        QVERIFY(group);
+        QVERIFY(*group != max && *group != max - 1);
+        QCOMPARE(document.shapes().at(2).groupId, group);
     }
 };
 

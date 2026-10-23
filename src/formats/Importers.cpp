@@ -308,7 +308,9 @@ ImportedLabels parseYoloPoseLabels(const QByteArray& bytes, const PoseConfig& po
             const double x = values[k] * width;
             const double y = values[k + 1] * height;
             const int flag = pose.hasVisible ? int(values[k + 2]) : 0;
-            if ((x == 0 && y == 0) || (flag == 0 && pose.hasVisible))
+            // With flags only flag 0 is a missing keypoint; upstream also drops a visible one at
+            // (0, 0), which our own export writes as "0 0 2" (a deliberate difference).
+            if (pose.hasVisible ? flag == 0 : (x == 0 && y == 0))
                 continue;
             if (n >= names.size()) {
                 // Upstream pads lines to the most keypoints a class has, with zeros only.
@@ -662,7 +664,6 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format, const P
     // group ids, from 1).
     QHash<qsizetype, qint64> groups;
     QHash<qsizetype, qint64> poseGroups;  // per image, from 0 (upstream's image_ids counter)
-    QList<bool> pointFlags;
     int annotationNumber = 0;
     for (const Json& annotation : *annotations) {
         ++annotationNumber;
@@ -735,6 +736,7 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format, const P
             }
             const size_t interval = count == 3 * n ? 3 : 2;
             QList<Shape> points;
+            QList<bool> pointFlags;  // this annotation's own, also when it fails half way
             for (size_t k = 0; k < count; k += interval) {
                 const std::optional<double> x = numberValue((*keypoints)[k]);
                 const std::optional<double> y = numberValue((*keypoints)[k + 1]);
@@ -758,7 +760,6 @@ CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format, const P
                 setUnedited(points[k], pointFlags[k], groupId);
                 labels.shapes.append(std::move(points[k]));
             }
-            pointFlags.clear();
             continue;
         }
 
