@@ -27,6 +27,8 @@ class QVBoxLayout;
 
 namespace liteanno::ui {
 
+class ShapeForm;
+
 struct MainWindowOptions {
     application::LocalDataPaths localData = application::LocalDataPaths::standard();
     application::BackgroundSaver::Limits saveLimits;
@@ -141,6 +143,8 @@ private:
     void refreshBatchState();
     // The save line of the status bar.
     void refreshSaveState();
+    // "选中形状" for the shape selected on the canvas.
+    void refreshShapeForm();
     void refreshImageItem(int index);
     QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
@@ -297,6 +301,7 @@ private:
     QPushButton* m_correctSizeButton = nullptr;
     QPushButton* m_deleteButton = nullptr;
     QPushButton* m_editLabelButton = nullptr;
+    ShapeForm* m_shapeForm = nullptr;
     QGroupBox* m_imageLabelPanel = nullptr;
     QVBoxLayout* m_imageLabelLayout = nullptr;
     QList<QAbstractButton*> m_imageLabelButtons;

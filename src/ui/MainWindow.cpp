@@ -8,6 +8,7 @@
 #include "imaging/ImageLoader.h"
 #include "ui/ElidedLabel.h"
 #include "ui/ListDelegates.h"
+#include "ui/ShapeForm.h"
 #include "ui/Texts.h"
 #include "ui/Theme.h"
 
@@ -43,6 +44,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace liteanno::ui {
 
@@ -277,6 +279,7 @@ void MainWindow::buildUi()
         const bool editable = m_session && !m_session->isReadOnly() && row >= 0;
         m_deleteButton->setEnabled(editable);
         m_editLabelButton->setEnabled(editable);
+        refreshShapeForm();
     });
     connect(m_shapeList, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem* item) { editLabel(m_shapeList->row(item)); });
@@ -295,6 +298,26 @@ void MainWindow::buildUi()
     connect(m_deleteButton, &QPushButton::clicked, this, [this] { deleteSelectedShape(); });
     shapeButtons->addWidget(m_deleteButton);
     layout->addLayout(shapeButtons);
+    m_shapeForm = new ShapeForm;
+    connect(m_shapeForm, &ShapeForm::labelChosen, this, [this](const QString& label) {
+        const qsizetype index = m_shapeForm->shown().index;
+        if (m_session && !m_session->isReadOnly() && m_session->setShapeLabel(index, label)) {
+            m_lastLabel = label;
+            addKnownLabel(label);
+            edited();
+        } else {
+            refresh();
+        }
+    });
+    connect(m_shapeForm, &ShapeForm::rectangleChanged, this, [this](const QRectF& box) {
+        const qsizetype index = m_shapeForm->shown().index;
+        const PointList points{box.topLeft(), box.topRight(), box.bottomRight(), box.bottomLeft()};
+        if (m_session && !m_session->isReadOnly() && m_session->setShapePoints(index, points))
+            edited();
+        else
+            refresh();
+    });
+    layout->addWidget(m_shapeForm);
 
     m_imageLabelPanel = new QGroupBox(QStringLiteral(u"图片级标签"));
     m_imageLabelLayout = new QVBoxLayout(m_imageLabelPanel);
@@ -755,6 +778,7 @@ bool MainWindow::exportAnnotations()
 {
     if (!m_project)
         return false;
+    m_shapeForm->commitPending();
     const Busy busy(this);
     // What is exported is what the files hold.
     m_idleTimer.stop();
@@ -1406,6 +1430,7 @@ bool MainWindow::closeProject(bool force)
 {
     if (!m_project)
         return true;
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     commitCurrent();
     flushSaves();
@@ -1598,6 +1623,8 @@ bool MainWindow::goToImage(int index)
         return true;
     }
     const QString path = m_images[index].path;
+    // A number typed in "选中形状" belongs to this image: take it before leaving.
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     commitCurrent();
     // Architecture 8.2: at the limit, wait for saves before showing the next image.
@@ -1726,6 +1753,7 @@ void MainWindow::commitCurrent(const formats::SaveOptions& options, bool force)
 
 void MainWindow::saveNow()
 {
+    m_shapeForm->commitPending();
     m_idleTimer.stop();
     // An explicit save asks again about an external change answered with "以后再说".
     const bool retry = std::exchange(m_externalChangeDeferred, false);
@@ -2030,6 +2058,7 @@ bool MainWindow::deleteSelectedShape()
 
 bool MainWindow::confirmCurrent()
 {
+    m_shapeForm->commitPending();
     if (!m_session || !m_session->confirm())
         return false;
     edited();
@@ -2038,6 +2067,7 @@ bool MainWindow::confirmCurrent()
 
 bool MainWindow::skipCurrent()
 {
+    m_shapeForm->commitPending();
     if (!m_session || m_session->isReadOnly())
         return false;
     const std::optional<QString> reason = m_prompts.skipReason();
@@ -2197,6 +2227,7 @@ void MainWindow::refresh()
         m_shapeList->setCurrentRow(int(m_canvas->selectedShape()));
     }
     m_shapeList->blockSignals(false);
+    refreshShapeForm();
     m_positionLabel->setText(m_current >= 0 && hasSession ? QStringLiteral("%1 / %2").arg(m_current + 1).arg(m_images.size())
                                                            : QString());
     m_shapeCount->setText(hasSession ? QStringLiteral(u"%1 个").arg(m_shapeList->count()) : QString());
@@ -2231,6 +2262,41 @@ void MainWindow::refresh()
     m_redoAction->setEnabled(editable && m_session->canRedo());
     refreshSaveState();
     refreshBatchState();
+}
+
+void MainWindow::refreshShapeForm()
+{
+    ShapeForm::Shown shown;
+    const qsizetype index = m_canvas->selectedShape();
+    if (m_session && index >= 0 && index < m_session->document().shapes().size()) {
+        const Shape& shape = m_session->document().shapes()[index];
+        shown.index = index;
+        shown.imagePath = m_session->imagePath();
+        shown.label = shape.label;
+        const bool recognized = shape.kind == ShapeKind::Editable;
+        shown.type = shape.kind == ShapeKind::Unrecognized ? QStringLiteral(u"无法识别的对象") : shapeTypeText(shape.type);
+        if (shape.type == ShapeType::Circle && shape.points.size() == 2) {
+            const QPointF centre = shape.points[0];
+            const double radius = std::hypot(shape.points[1].x() - centre.x(), shape.points[1].y() - centre.y());
+            shown.box = QRectF(centre - QPointF(radius, radius), QSizeF(2 * radius, 2 * radius));
+        } else if (!shape.points.isEmpty()) {
+            double left = shape.points[0].x(), right = left, top = shape.points[0].y(), bottom = top;
+            for (const QPointF& p : shape.points) {
+                left = std::min(left, p.x());
+                right = std::max(right, p.x());
+                top = std::min(top, p.y());
+                bottom = std::max(bottom, p.y());
+            }
+            shown.box = QRectF(QPointF(left, top), QPointF(right, bottom));
+        }
+        shown.editable = !m_session->isReadOnly() && recognized && !shape.locked;
+        shown.rectangle = recognized && shape.type == ShapeType::Rectangle;
+        shown.imageSize = m_canvas->imageSize();
+        const QStringList classes = classNames();
+        shown.freeText = classes.isEmpty();
+        shown.labels = classes.isEmpty() ? m_knownLabels : classes;
+    }
+    m_shapeForm->setShape(shown);
 }
 
 void MainWindow::refreshSaveState()
