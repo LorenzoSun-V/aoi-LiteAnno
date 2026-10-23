@@ -17,6 +17,8 @@ add_library(liteanno_application STATIC
     RecoveryService.h
     SaveCoordinator.cpp
     SaveCoordinator.h
+    WorksetStore.cpp
+    WorksetStore.h
 )
 find_package(Threads REQUIRED)
 target_link_libraries(liteanno_application

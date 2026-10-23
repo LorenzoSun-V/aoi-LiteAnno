@@ -49,6 +49,7 @@ liteanno_add_test(tst_documentsession application/tst_documentsession.cpp common
 liteanno_add_test(tst_directoryscanner dataset/tst_directoryscanner.cpp)
 liteanno_add_test(tst_catalog dataset/tst_catalog.cpp)
 liteanno_add_test(tst_projectcatalog application/tst_projectcatalog.cpp)
+liteanno_add_test(tst_worksetstore application/tst_worksetstore.cpp)
 
 # Architecture section 12: the pin check rejects any other Qt patch or MSVC compiler build.
 add_test(NAME toolchain_pin_rejects_other_versions

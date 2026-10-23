@@ -5,6 +5,7 @@
 #include "application/LocalDataPaths.h"
 #include "application/ProjectCatalog.h"
 #include "application/ProjectSession.h"
+#include "application/WorksetStore.h"
 #include "dataset/Catalog.h"
 #include "ui/Canvas.h"
 #include "ui/Prompts.h"
@@ -70,6 +71,26 @@ public:
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 
+    // Batches (format spec 7, architecture 7). The list shows the images of one batch, or
+    // all images when no batch is chosen.
+    // "开始下一批": gives out the next images not in any batch yet and shows them.
+    bool startNextBatch();
+    // "继续上次批次": the batch worked on last, at the image left last.
+    bool continueLastBatch();
+    // "选择批次…".
+    bool chooseBatch();
+    // "显示全部图片".
+    void showAllImages();
+    // "查看未完成项": goes to the first image that is not done; returns how many are not.
+    int showUnfinished();
+    // Ctrl+Shift+D / Ctrl+Shift+A: the next or previous image in the list that is not done.
+    bool nextUnfinished();
+    bool previousUnfinished();
+    // The list file's stem ("b000003") of the batch shown; empty when all images are.
+    QString currentBatch() const { return m_batchStem; }
+    QString batchStateText() const;
+    application::WorksetStore* worksets() const { return m_worksets.get(); }
+
     // For tests and status displays.
     int imageCount() const { return int(m_images.size()); }
     int currentIndex() const { return m_current; }
@@ -106,6 +127,8 @@ private:
     void dropSession();
     void edited();
     void refresh();
+    // The batch line of the status bar, and the completion event when the batch is done.
+    void refreshBatchState();
     void refreshImageItem(int index);
     QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
@@ -119,13 +142,39 @@ private:
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;
+    // Shows the batch `stem` (all images when empty), at `preferred` when it is listed.
+    void switchBatch(const QString& stem, const QString& preferred);
+    // The list for the batch shown, from all images the catalog has.
+    QList<dataset::CatalogEntry> batchEntries() const;
+    // The image the list starts at: where the batch was left, else the first.
+    int startIndex() const;
+    // Format spec 5.4: saved, verified and counted as done; not while edits wait.
+    bool isDone(const QString& imagePath) const;
+    bool isDoneAt(int index) const;
+    // The progress of the batch shown, started when its file is missing or damaged.
+    formats::WorksetProgress* batchProgress();
+    // Remembers the image shown as the batch's last position (written shortly after).
+    void rememberPosition();
+    // Format spec 7.2: notes once that every image of the batch is done.
+    void recordCompletion(int done);
+    void writeProgress();
+    void loadWorksets();
 
     Options m_options;
     Prompts m_prompts;
     std::unique_ptr<application::ProjectSession> m_project;
     std::unique_ptr<application::BackgroundSaver> m_saver;
     std::unique_ptr<application::ProjectCatalog> m_catalog;
-    QList<dataset::CatalogEntry> m_images;
+    QList<dataset::CatalogEntry> m_images;  // the list shown
+    QList<dataset::CatalogEntry> m_allImages;  // all images, also when a batch is shown
+    std::unique_ptr<application::WorksetStore> m_worksets;
+    QString m_batchStem;
+    QString m_lastBatchStem;  // the batch shown last in this session, for "继续上次批次"
+    std::optional<formats::WorksetProgress> m_batchProgress;
+    bool m_progressChanged = false;
+    QTimer m_progressTimer;
+    // The last scan of this session listed every folder: only its images may be given out.
+    bool m_scanComplete = false;
     QHash<QString, int> m_imageIndex;
     QHash<QString, AnnotationStatus> m_statuses;
     int m_current = -1;
@@ -199,6 +248,7 @@ private:
     QLabel* m_blockers = nullptr;
     QLabel* m_saveState = nullptr;
     QLabel* m_scanState = nullptr;
+    QLabel* m_batchState = nullptr;
     QPushButton* m_confirmButton = nullptr;
     QPushButton* m_skipButton = nullptr;
     QPushButton* m_unskipButton = nullptr;

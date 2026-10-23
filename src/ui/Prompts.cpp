@@ -150,6 +150,17 @@ Prompts Prompts::dialogs(QWidget* parent)
         box.exec();
         return box.clickedButton() != stay;
     };
+    prompts.chooseBatch = [parent](const QStringList& batches, int current) -> std::optional<int> {
+        bool ok = false;
+        const QString chosen = QInputDialog::getItem(parent, QStringLiteral(u"选择批次"), QStringLiteral(u"批次："), batches,
+                                                     std::max(0, current), false, &ok);
+        if (!ok)
+            return std::nullopt;
+        const qsizetype index = batches.indexOf(chosen);
+        if (index < 0)
+            return std::nullopt;
+        return int(index);
+    };
     return prompts;
 }
 

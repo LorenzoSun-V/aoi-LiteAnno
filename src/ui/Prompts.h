@@ -38,6 +38,8 @@ struct Prompts {
     // Closing would lose edits that are neither in the file nor in a recovery record. True
     // when the user gives them up; the default answer keeps the project open.
     std::function<bool(const QString& text)> confirmDiscard;
+    // One of `batches` ("第 3 批 …"), `current` preselected; nullopt when cancelled.
+    std::function<std::optional<int>(const QStringList& batches, int current)> chooseBatch;
 
     // Dialogs on `parent`.
     static Prompts dialogs(QWidget* parent);
