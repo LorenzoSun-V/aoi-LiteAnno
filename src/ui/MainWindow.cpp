@@ -6,7 +6,9 @@
 #include "core/BundledLicenses.h"
 #include "dataset/DirectoryScanner.h"
 #include "imaging/ImageLoader.h"
+#include "ui/ListDelegates.h"
 #include "ui/Texts.h"
+#include "ui/Theme.h"
 
 #include <QAction>
 #include <QActionGroup>
@@ -22,7 +24,10 @@
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
+#include <QFrame>
 #include <QGroupBox>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
@@ -31,6 +36,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QStatusBar>
+#include <QStyle>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -47,6 +53,16 @@ using application::RecoveryState;
 using formats::SaveStatus;
 
 namespace {
+
+// Sets the style sheet's "tone" of a widget (theme/light.qss) and restyles it.
+void setTone(QWidget* widget, const QString& tone)
+{
+    if (widget->property("tone").toString() == tone)
+        return;
+    widget->setProperty("tone", tone);
+    widget->style()->unpolish(widget);
+    widget->style()->polish(widget);
+}
 
 QByteArray readFile(const QString& path)
 {
@@ -133,28 +149,76 @@ void MainWindow::buildUi()
     // Every row is one line: without this the list measures each of its rows (seconds at
     // 200 000 images).
     m_imageList->setUniformItemSizes(true);
+    m_imageList->viewport()->setAttribute(Qt::WA_Hover);
+    m_imageList->setItemDelegate(new ImageListDelegate(
+        [this](int row) {
+            ImageListDelegate::Row shown;
+            if (row < 0 || row >= m_images.size())
+                return shown;
+            const QString& path = m_images[row].path;
+            shown.name = path;
+            const auto status = m_statuses.constFind(path);
+            if (status != m_statuses.cend())
+                shown.status = *status;
+            else if (m_images[row].missing)
+                shown.status = AnnotationStatus::Missing;
+            shown.unwritten = m_unwritten.contains(path);
+            return shown;
+        },
+        m_imageList));
     connect(m_imageList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0 && row != m_current)
             goToImage(row);
     });
+    const auto label = [](const QString& text, const char* role) {
+        auto* widget = new QLabel(text);
+        widget->setProperty("role", QLatin1String(role));
+        return widget;
+    };
+    auto* imagePanel = new QWidget;
+    imagePanel->setObjectName(QStringLiteral("imagePanel"));
+    auto* imageLayout = new QVBoxLayout(imagePanel);
+    imageLayout->setContentsMargins(0, 10, 0, 6);
+    imageLayout->setSpacing(6);
+    auto* imageHeader = new QHBoxLayout;
+    imageHeader->setContentsMargins(14, 0, 14, 0);
+    imageHeader->addWidget(label(QStringLiteral(u"图片"), "title"));
+    imageHeader->addStretch();
+    m_batchState = label(QString(), "secondary");
+    m_batchState->setObjectName(QStringLiteral("batchState"));
+    imageHeader->addWidget(m_batchState);
+    imageLayout->addLayout(imageHeader);
+    imageLayout->addWidget(m_imageList, 1);
     auto* imageDock = new QDockWidget(QStringLiteral(u"图片"), this);
     imageDock->setObjectName(QStringLiteral("imageDock"));
-    imageDock->setWidget(m_imageList);
-    imageDock->setFeatures(QDockWidget::DockWidgetMovable);
+    imageDock->setWidget(imagePanel);
+    imageDock->setTitleBarWidget(new QWidget);  // the panel names itself
+    imageDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     addDockWidget(Qt::LeftDockWidgetArea, imageDock);
 
     // Current image.
     auto* panel = new QWidget;
+    panel->setObjectName(QStringLiteral("currentPanel"));
     auto* layout = new QVBoxLayout(panel);
-    m_imageStatus = new QLabel;
+    layout->setContentsMargins(14, 14, 14, 14);
+    layout->setSpacing(8);
+    auto* titleRow = new QHBoxLayout;
+    m_imageStatus = label(QString(), "title");
     m_imageStatus->setObjectName(QStringLiteral("imageStatus"));
-    QFont bold = m_imageStatus->font();
-    bold.setBold(true);
-    m_imageStatus->setFont(bold);
-    layout->addWidget(m_imageStatus);
+    m_imageStatus->setMinimumWidth(80);
+    m_imageStatus->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+    titleRow->addWidget(m_imageStatus, 1);
+    m_statusChip = new QLabel;
+    m_statusChip->setObjectName(QStringLiteral("statusChip"));
+    titleRow->addWidget(m_statusChip);
+    layout->addLayout(titleRow);
+    m_imageInfo = label(QString(), "secondary");
+    m_imageInfo->setObjectName(QStringLiteral("imageInfo"));
+    m_imageInfo->setWordWrap(true);
+    layout->addWidget(m_imageInfo);
     m_readOnlyNote = new QLabel;
+    m_readOnlyNote->setObjectName(QStringLiteral("readOnlyNote"));
     m_readOnlyNote->setWordWrap(true);
-    m_readOnlyNote->setStyleSheet(QStringLiteral("color: #c0392b;"));
     layout->addWidget(m_readOnlyNote);
     m_correctSizeButton = new QPushButton(QStringLiteral(u"按当前图片尺寸更正"));
     connect(m_correctSizeButton, &QPushButton::clicked, this, [this] {
@@ -162,32 +226,73 @@ void MainWindow::buildUi()
             edited();
     });
     layout->addWidget(m_correctSizeButton);
+    auto* line = new QFrame;
+    line->setProperty("role", QStringLiteral("line"));
+    layout->addWidget(line);
 
-    layout->addWidget(new QLabel(QStringLiteral(u"形状")));
+    auto* shapeHeader = new QHBoxLayout;
+    shapeHeader->addWidget(label(QStringLiteral(u"形状"), "section"));
+    shapeHeader->addStretch();
+    m_shapeCount = label(QString(), "secondary");
+    shapeHeader->addWidget(m_shapeCount);
+    layout->addLayout(shapeHeader);
     m_shapeList = new QListWidget;
     m_shapeList->setObjectName(QStringLiteral("shapeList"));
+    m_shapeList->viewport()->setAttribute(Qt::WA_Hover);
+    m_shapeList->setItemDelegate(new ShapeListDelegate(
+        [this](int row) -> std::optional<ShapeListDelegate::Row> {
+            if (!m_session || row < 0 || row >= m_session->document().shapes().size())
+                return std::nullopt;
+            const Shape& shape = m_session->document().shapes()[row];
+            ShapeListDelegate::Row shown;
+            shown.label = shape.label;
+            if (shape.kind == ShapeKind::Unrecognized) {
+                shown.type = QStringLiteral(u"无法识别的对象");
+                shown.color = QColor(160, 160, 160);
+            } else {
+                shown.type = shapeTypeText(shape.type);
+                shown.color = m_canvas->colorFor(shape.label);
+            }
+            shown.hidden = m_canvas->isHidden(row);
+            return shown;
+        },
+        m_shapeList));
     connect(m_shapeList, &QListWidget::currentRowChanged, this, [this](int row) {
         m_canvas->setSelectedShape(row);
-        m_deleteButton->setEnabled(m_session && !m_session->isReadOnly() && row >= 0);
+        const bool editable = m_session && !m_session->isReadOnly() && row >= 0;
+        m_deleteButton->setEnabled(editable);
+        m_editLabelButton->setEnabled(editable);
     });
     connect(m_shapeList, &QListWidget::itemDoubleClicked, this,
             [this](QListWidgetItem* item) { editLabel(m_shapeList->row(item)); });
     layout->addWidget(m_shapeList, 1);
-    m_deleteButton = new QPushButton(QStringLiteral(u"删除形状"));
+    auto* shapeButtons = new QHBoxLayout;
+    m_editLabelButton = new QPushButton(themeIcon(QStringLiteral("edit")), QStringLiteral(u"修改类别"));
+    m_editLabelButton->setToolTip(QStringLiteral(u"修改选中形状的类别 (Ctrl+E)"));
+    connect(m_editLabelButton, &QPushButton::clicked, this, [this] {
+        if (m_canvas->selectedShape() >= 0)
+            editLabel(m_canvas->selectedShape());
+    });
+    shapeButtons->addWidget(m_editLabelButton);
+    m_deleteButton = new QPushButton(themeIconVariant(QStringLiteral("delete-red")), QStringLiteral(u"删除形状"));
+    m_deleteButton->setObjectName(QStringLiteral("deleteButton"));
+    m_deleteButton->setToolTip(QStringLiteral(u"删除选中形状 (Delete)"));
     connect(m_deleteButton, &QPushButton::clicked, this, [this] { deleteSelectedShape(); });
-    layout->addWidget(m_deleteButton);
+    shapeButtons->addWidget(m_deleteButton);
+    layout->addLayout(shapeButtons);
 
     m_imageLabelPanel = new QGroupBox(QStringLiteral(u"图片级标签"));
     m_imageLabelLayout = new QVBoxLayout(m_imageLabelPanel);
+    m_imageLabelLayout->setContentsMargins(0, 4, 0, 0);
     layout->addWidget(m_imageLabelPanel);
 
     m_blockers = new QLabel;
     m_blockers->setObjectName(QStringLiteral("blockers"));
     m_blockers->setWordWrap(true);
-    m_blockers->setStyleSheet(QStringLiteral("color: #b9770e;"));
     layout->addWidget(m_blockers);
-    m_confirmButton = new QPushButton(QStringLiteral(u"确认"));
+    m_confirmButton = new QPushButton(themeIconVariant(QStringLiteral("check-white")), QStringLiteral(u"确认"));
     m_confirmButton->setObjectName(QStringLiteral("confirmButton"));
+    m_confirmButton->setToolTip(QStringLiteral(u"确认这张图片 (Ctrl+Alt+K)"));
     connect(m_confirmButton, &QPushButton::clicked, this, [this] { confirmCurrent(); });
     layout->addWidget(m_confirmButton);
     m_skipButton = new QPushButton(QStringLiteral(u"跳过…"));
@@ -200,16 +305,16 @@ void MainWindow::buildUi()
     auto* panelDock = new QDockWidget(QStringLiteral(u"当前图片"), this);
     panelDock->setObjectName(QStringLiteral("panelDock"));
     panelDock->setWidget(panel);
-    panelDock->setFeatures(QDockWidget::DockWidgetMovable);
+    panelDock->setTitleBarWidget(new QWidget);
+    panelDock->setFeatures(QDockWidget::NoDockWidgetFeatures);
     addDockWidget(Qt::RightDockWidgetArea, panelDock);
+    resizeDocks({imageDock, panelDock}, {280, 300}, Qt::Horizontal);
 
     m_scanState = new QLabel;
     m_scanState->setObjectName(QStringLiteral("scanState"));
     statusBar()->addPermanentWidget(m_scanState);
-    m_batchState = new QLabel;
-    m_batchState->setObjectName(QStringLiteral("batchState"));
-    statusBar()->addPermanentWidget(m_batchState);
     m_saveState = new QLabel;
+    m_saveState->setObjectName(QStringLiteral("saveState"));
     statusBar()->addPermanentWidget(m_saveState);
 
     // Menus and tools. Shortcuts are X-AnyLabeling 4.2.0's defaults (its
@@ -308,35 +413,45 @@ void MainWindow::buildUi()
 
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
     tools->setObjectName(QStringLiteral("tools"));
+    tools->setMovable(false);
+    tools->setFloatable(false);
+    tools->setIconSize(QSize(20, 20));
+    tools->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    tools->toggleViewAction()->setEnabled(false);
+    setContextMenuPolicy(Qt::NoContextMenu);  // no menu to hide the tool bar or the panels
     auto* toolGroup = new QActionGroup(this);
-    m_selectTool = named(tools->addAction(QStringLiteral(u"选择 (Ctrl+J)")), "edit_polygon");
-    m_selectTool->setShortcut(QKeySequence(QStringLiteral("Ctrl+J")));
-    m_rectangleTool = named(tools->addAction(QStringLiteral(u"矩形 (R)")), "create_rectangle");
-    m_rectangleTool->setShortcut(QKeySequence(QStringLiteral("R")));
-    m_polygonTool = named(tools->addAction(QStringLiteral(u"多边形 (P)")), "create_polygon");
-    m_polygonTool->setShortcut(QKeySequence(QStringLiteral("P")));
-    m_rotationTool = named(tools->addAction(QStringLiteral(u"旋转框 (O)")), "create_rotation");
-    m_rotationTool->setShortcut(QKeySequence(QStringLiteral("O")));
-    m_rotationTool->setToolTip(QStringLiteral(u"旋转框 (O)：拖出后选中，按 Z/V 转 1°，X/C 转 0.1°"));
-    // Upstream's keys; the toolbar names them.
+    // The buttons show the name; the tooltip adds the keys (upstream's).
+    const auto tool = [&](const char16_t* text, const char* name, const char* icon, const char* keys,
+                          const char16_t* tip = nullptr) {
+        QAction* action = named(tools->addAction(themeIcon(QLatin1String(icon)), QString::fromUtf16(text)), name);
+        action->setShortcut(QKeySequence(QLatin1String(keys)));
+        action->setToolTip(tip ? QString::fromUtf16(tip)
+                               : QStringLiteral("%1 (%2)").arg(action->text(),
+                                                                action->shortcut().toString(QKeySequence::NativeText)));
+        return action;
+    };
+    m_selectTool = tool(u"选择", "edit_polygon", "select", "Ctrl+J");
+    m_rectangleTool = tool(u"矩形", "create_rectangle", "rectangle", "R");
+    m_polygonTool = tool(u"多边形", "create_polygon", "polygon", "P");
+    m_rotationTool = tool(u"旋转框", "create_rotation", "rotation", "O", u"旋转框 (O)：拖出后选中，按 Z/V 转 1°，X/C 转 0.1°");
     const struct {
-        const char* name;
         const char16_t* text;
+        const char* name;
+        const char* icon;
         const char* keys;
         Canvas::Tool tool;
         ShapeType type;
     } moreTools[] = {
-        {"create_point", u"点 (Shift+P)", "Shift+P", Canvas::Tool::Point, ShapeType::Point},
-        {"create_line", u"线段 (Shift+L)", "Shift+L", Canvas::Tool::Line, ShapeType::Line},
-        {"create_linestrip", u"折线 (Shift+S)", "Shift+S", Canvas::Tool::LineStrip, ShapeType::LineStrip},
-        {"create_circle", u"圆 (Shift+C)", "Shift+C", Canvas::Tool::Circle, ShapeType::Circle},
+        {u"点", "create_point", "point", "Shift+P", Canvas::Tool::Point, ShapeType::Point},
+        {u"线段", "create_line", "line", "Shift+L", Canvas::Tool::Line, ShapeType::Line},
+        {u"折线", "create_linestrip", "linestrip", "Shift+S", Canvas::Tool::LineStrip, ShapeType::LineStrip},
+        {u"圆", "create_circle", "circle", "Shift+C", Canvas::Tool::Circle, ShapeType::Circle},
     };
     QList<QAction*> toolActions = {m_selectTool, m_rectangleTool, m_polygonTool, m_rotationTool};
     for (const auto& more : moreTools) {
-        QAction* action = named(tools->addAction(QString::fromUtf16(more.text)), more.name);
-        action->setShortcut(QKeySequence(QLatin1String(more.keys)));
-        const Canvas::Tool tool = more.tool;
-        connect(action, &QAction::triggered, this, [this, tool] { m_canvas->setTool(tool); });
+        QAction* action = tool(more.text, more.name, more.icon, more.keys);
+        const Canvas::Tool kind = more.tool;
+        connect(action, &QAction::triggered, this, [this, kind] { m_canvas->setTool(kind); });
         toolActions.append(action);
         m_moreTools.append({more.type, action});
     }
@@ -350,10 +465,18 @@ void MainWindow::buildUi()
     connect(m_polygonTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Polygon); });
     connect(m_rotationTool, &QAction::triggered, this, [this] { m_canvas->setTool(Canvas::Tool::Rotation); });
     tools->addSeparator();
-    QAction* previous = named(tools->addAction(QStringLiteral(u"上一张 (A)"), this, [this] { previousImage(); }), "open_prev");
+    QAction* previous = named(tools->addAction(themeIcon(QStringLiteral("previous")), QStringLiteral(u"上一张"), this,
+                                               [this] { previousImage(); }),
+                              "open_prev");
     previous->setShortcut(QKeySequence(QStringLiteral("A")));
-    QAction* next = named(tools->addAction(QStringLiteral(u"下一张 (D)"), this, [this] { nextImage(); }), "open_next");
+    previous->setToolTip(QStringLiteral(u"上一张 (A)"));
+    QAction* next = named(tools->addAction(themeIcon(QStringLiteral("next")), QStringLiteral(u"下一张"), this,
+                                           [this] { nextImage(); }),
+                          "open_next");
     next->setShortcut(QKeySequence(QStringLiteral("D")));
+    next->setToolTip(QStringLiteral(u"下一张 (D)"));
+    fit->setIcon(themeIcon(QStringLiteral("fit")));
+    fit->setToolTip(QStringLiteral(u"适合窗口 (Ctrl+F)"));
     tools->addAction(fit);
 }
 
@@ -1546,7 +1669,8 @@ bool MainWindow::waitForSaver(const std::function<bool(int)>& wait)
     const ListHold hold(this);
     const Busy busy(this);
     ++m_savingWaits;
-    m_saveState->setText(QStringLiteral(u"正在保存…"));
+    m_saveState->setText(QStringLiteral(u"● 正在保存…"));
+    setTone(m_saveState, QStringLiteral("busy"));
     // Results are handled after the wait, not in the middle of switching images.
     const bool handling = std::exchange(m_handlingResults, true);
     while (!wait(50))
@@ -1932,10 +2056,26 @@ void MainWindow::refresh()
     // Status and read-only note.
     if (hasSession) {
         const ReviewState& review = m_session->document().review();
-        QString text = QStringLiteral(u"%1  —  %2").arg(m_session->imagePath(), statusText(m_session->status()));
+        const QString path = m_session->imagePath();
+        m_imageStatus->setText(path);
+        m_imageStatus->setToolTip(path);
+        setTone(m_statusChip, statusTone(m_session->status()));
+        m_statusChip->setText(statusText(m_session->status()));
+        m_statusChip->setVisible(true);
+        QStringList info;
+        const QSize size = m_canvas->imageSize();
+        if (!size.isEmpty())
+            info.append(QStringLiteral(u"%1 × %2").arg(size.width()).arg(size.height()));
+        const QString suffix = QFileInfo(path).suffix().toUpper();
+        if (!suffix.isEmpty())
+            info.append(suffix);
+        if (m_current >= 0)
+            info.append(QStringLiteral(u"第 %1 / %2 张").arg(m_current + 1).arg(m_images.size()));
+        QString infoText = info.join(QStringLiteral(u" · "));
         if (review.skip == SkipState::Skipped && !review.skipReason.isEmpty())
-            text += QStringLiteral(u"（%1）").arg(review.skipReason);
-        m_imageStatus->setText(text);
+            infoText += QStringLiteral(u"\n跳过原因：%1").arg(review.skipReason);
+        m_imageInfo->setText(infoText);
+        m_imageInfo->setVisible(true);
         QString note = readOnlyText(m_session->file().readOnlyReason());
         if (m_session->isBlocked())
             note = QStringLiteral(u"这张图片有上次没写入的修改，还没有处理。处理前不能编辑，以免覆盖它："
@@ -1949,7 +2089,10 @@ void MainWindow::refresh()
                                         == formats::ReadOnlyReason::ImageSizeMismatch
                                         && !m_images[m_current].nameCollision);
     } else {
-        m_imageStatus->setText(m_project ? QString() : QStringLiteral(u"请从“文件”菜单打开项目"));
+        m_imageStatus->setText(m_project ? QString() : QStringLiteral(u"请从“文件”菜单打开图片文件夹"));
+        m_imageStatus->setToolTip(QString());
+        m_statusChip->setVisible(false);
+        m_imageInfo->setVisible(false);
         m_readOnlyNote->setVisible(false);
         m_correctSizeButton->setVisible(false);
     }
@@ -1971,7 +2114,9 @@ void MainWindow::refresh()
         m_shapeList->setCurrentRow(int(m_canvas->selectedShape()));
     }
     m_shapeList->blockSignals(false);
+    m_shapeCount->setText(hasSession ? QStringLiteral(u"%1 个").arg(m_shapeList->count()) : QString());
     m_deleteButton->setEnabled(editable && m_canvas->selectedShape() >= 0);
+    m_editLabelButton->setEnabled(editable && m_canvas->selectedShape() >= 0);
 
     // Image-level labels.
     for (QAbstractButton* button : std::as_const(m_imageLabelButtons)) {
@@ -1999,8 +2144,26 @@ void MainWindow::refresh()
 
     m_undoAction->setEnabled(editable && m_session->canUndo());
     m_redoAction->setEnabled(editable && m_session->canRedo());
-    m_saveState->setText(saveStateText());
+    refreshSaveState();
     refreshBatchState();
+}
+
+void MainWindow::refreshSaveState()
+{
+    const QString text = saveStateText();
+    QString tone;
+    if (m_session) {
+        if (m_saver && m_saver->isPending(m_session->imagePath()))
+            tone = QStringLiteral("busy");
+        else if (!m_saveError.isEmpty())
+            tone = QStringLiteral("error");
+        else if (m_session->needsSave())
+            tone = QStringLiteral("dirty");
+        else
+            tone = QStringLiteral("ok");
+    }
+    m_saveState->setText(text.isEmpty() ? QString() : QStringLiteral(u"● ") + text);
+    setTone(m_saveState, tone);
 }
 
 void MainWindow::refreshBatchState()

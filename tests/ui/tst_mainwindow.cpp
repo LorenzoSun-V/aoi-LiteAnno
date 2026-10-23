@@ -8,6 +8,7 @@
 #include "platform/VolumeBinding.h"
 #include "ui/MainWindow.h"
 #include "ui/Prompts.h"
+#include "ui/Theme.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -422,6 +423,41 @@ private slots:
 
         w.window.closeProject();
         QVERIFY(!QDir(project.data.filePath(QStringLiteral("liteanno"))).exists());
+    }
+
+    // The theme (style sheet and icons) is built in, and the panel shows the status, the
+    // size and the shapes of the image.
+    void themedWindow()
+    {
+        const QString sheet = themeStyleSheet();
+        QVERIFY(sheet.contains(QStringLiteral("QPushButton#confirmButton")));
+        Project project;
+        Window w(project.options());
+        for (const char* name : {"edit_polygon", "create_rectangle", "create_polygon", "create_rotation", "create_point",
+                                 "create_line", "create_linestrip", "create_circle", "open_prev", "open_next", "fit_window"}) {
+            const QAction* action = w.window.findChild<QAction*>(QLatin1String(name));
+            QVERIFY2(action && !action->icon().pixmap(QSize(20, 20)).isNull(), name);
+            QVERIFY2(!action->text().contains(QLatin1Char('(')), name);  // the keys are in the tooltip
+            QVERIFY2(action->toolTip().contains(action->shortcut().toString(QKeySequence::NativeText)), name);
+        }
+
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* chip = w.window.findChild<QLabel*>(QStringLiteral("statusChip"));
+        QCOMPARE(chip->text(), QStringLiteral(u"未处理"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("new"));
+        QVERIFY2(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text().contains(QStringLiteral(u"第 1 / 3 张")),
+                 qPrintable(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(chip->text(), QStringLiteral(u"待确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("wait"));
+        QVERIFY(w.window.confirmCurrent());
+        QCOMPARE(chip->text(), QStringLiteral(u"已确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("ok"));
+
+        // The rows are drawn by the delegates, with the theme applied.
+        qApp->setStyleSheet(sheet);
+        QVERIFY(!w.window.grab().isNull());
+        qApp->setStyleSheet(QString());
     }
 
     void projectOpenElsewhereIsLocked()
