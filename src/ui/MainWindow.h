@@ -22,6 +22,7 @@ class QAction;
 class QGroupBox;
 class QLabel;
 class QListWidget;
+class QMenu;
 class QPushButton;
 class QVBoxLayout;
 
@@ -74,6 +75,7 @@ public:
     bool exportAnnotations();
     // "帮助 > 关于": version, source, and the licences of what is built in.
     void showAbout();
+    void showCanvasMenu(const QPoint& globalPosition);
     // Help > 快捷键一览 (F1): every menu and tool key, then the canvas's own keys.
     void showShortcuts();
     QList<std::pair<QString, QString>> shortcutList() const;
@@ -116,6 +118,8 @@ public:
     bool confirmCurrent();
     // F: confirms the image (unless it is already) and opens the next one.
     bool confirmAndNext();
+    // The canvas's right-click menu, for the shape selected (or none); see showCanvasMenu.
+    QMenu* canvasMenu();
     bool skipCurrent();
     bool unskipCurrent();
     bool undo();
