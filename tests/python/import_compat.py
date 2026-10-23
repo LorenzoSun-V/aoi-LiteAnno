@@ -4,8 +4,10 @@ Runs with a Python that has the pinned X-AnyLabeling release installed. Writes l
 with the cases that decide the numbers (many digits, exponents, values outside 0..1, boxes
 on the border, non-square images), imports them with liteanno-cli and converts the same files
 with upstream's LabelConverter (yolo_to_custom, yolo_obb_to_custom, voc_to_custom,
-dota_to_custom). Every shape must have the same label, type, points and, for rotated boxes,
-angle as upstream's, compared as exact floats; "difficult" must match as well. The files we
+dota_to_custom, coco_to_custom, mask_to_custom). Every shape must have the same label, type,
+points and, for rotated boxes, angle as upstream's, compared as exact floats; "difficult"
+and "group_id" must match as well. Masks are generated shapes of many kinds, so the
+contours follow OpenCV's own. The files we
 write must be waiting for confirmation and readable by upstream's json.load.
 
 Also checks the label files our own export writes: exported and imported again, the shapes
@@ -138,6 +140,8 @@ def compare(what, ours, theirs):
                 sys.exit(f"{where}: {key} {a[key]!r}, upstream {b[key]!r}")
         if bool(a.get("difficult", False)) != bool(b.get("difficult", False)):
             sys.exit(f"{where}: difficult {a.get('difficult')!r}, upstream {b.get('difficult')!r}")
+        if a.get("group_id") != b.get("group_id"):
+            sys.exit(f"{where}: group_id {a.get('group_id')!r}, upstream {b.get('group_id')!r}")
         if len(a["points"]) != len(b["points"]) or not all(
                 same_number(p, q) for pa, pb in zip(a["points"], b["points"]) for p, q in zip(pa, pb)):
             sys.exit(f"{where}: points {a['points']}, upstream {b['points']}")
@@ -196,6 +200,139 @@ def check_round_trip(cli, work):
     print("yolo-det: export and import give back the same rectangle")
 
 
+COCO_IMAGES = [
+    # file_name as written, the image it is
+    ("a01.png", "a01.png"),
+    ("images/a02.png", "a02.png"),  # found by its file name
+    ("sub/b01.png", "sub/b01.png"),
+]
+
+
+def coco_file(path):
+    sizes = {name: IMAGES[name] for _, name in COCO_IMAGES}
+    images = [{"id": i + 1, "file_name": written, "width": sizes[name][0], "height": sizes[name][1]}
+              for i, (written, name) in enumerate(COCO_IMAGES)]
+    images.append({"id": 9, "file_name": "elsewhere/z99.png", "width": 10, "height": 10})
+    categories = [{"id": i + 1, "name": name, "supercategory": ""} for i, name in enumerate(CLASSES)]
+    annotations = [
+        {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10.5, 20.25, 30, 40.125], "area": 1, "iscrowd": 0,
+         "segmentation": [[10.5, 20.25, 40.5, 20.25, 40.5, 60.375, 10.5, 60.375]]},
+        {"id": 2, "image_id": 1, "category_id": 3, "bbox": [0, 0, 200, 100], "area": 1, "iscrowd": 0, "ignore": 1,
+         # two parts, a repeated point
+         "segmentation": [[1, 1, 50, 1, 50, 1, 25, 40], [100.25, 10, 190, 10, 150, 90.5]]},
+        {"id": 3, "image_id": 2, "category_id": 2, "bbox": [1e-3, 2.5e2, 1.23456789, 3], "area": 1, "iscrowd": 0,
+         "ignore": "0", "segmentation": [[0.001, 250, 1.23456789, 250, 1.2, 253]]},
+        {"id": 4, "image_id": 1, "category_id": 2, "bbox": [5, 5, 5, 5], "area": 1, "iscrowd": 0,
+         "segmentation": [[5, 5, 10, 5, 10, 10], [20, 20, 30, 20, 30, 30, 20, 30]]},
+        {"id": 5, "image_id": 3, "category_id": 1, "bbox": [3, 4, 5, 6], "area": 1, "iscrowd": 0,
+         "segmentation": [[3, 4, 8, 4, 8, 10, 3, 10]]},
+    ]
+    data = {"info": {}, "licenses": [], "images": images, "annotations": annotations, "categories": categories}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def check_coco(cli, work, fmt, shape_types, mode):
+    root = os.path.join(work, fmt, "data")
+    make_project(cli, root, shape_types)
+    label_file = os.path.join(work, fmt, "instances.json")
+    coco_file(label_file)
+    result = run([cli, "import", root, "--format", fmt, "--labels", label_file])
+    if "z99.png" not in result.stderr:
+        sys.exit(f"{fmt}: the image record without an image was not reported:\n{result.stderr}")
+    upstream = os.path.join(work, fmt, "upstream")
+    os.makedirs(upstream)
+    LabelConverter().coco_to_custom(label_file, upstream, mode)
+    for _, name in COCO_IMAGES:
+        stem = os.path.splitext(name)[0]
+        compare(f"{fmt} {stem}", load(os.path.join(root, stem + ".json")),
+                load(os.path.join(upstream, os.path.basename(stem) + ".json")))
+    print(f"{fmt}: {len(COCO_IMAGES)} images match upstream")
+
+
+def mask_images(kind, seed):
+    """Masks with many kinds of regions: filled polygons, circles, holes, touching regions,
+    single pixels, regions on the border."""
+    rng = np.random.default_rng(seed)
+    masks = {}
+    for name, (width, height) in IMAGES.items():
+        mask = np.zeros((height, width, 3), dtype=np.uint8)
+        for value in range(1, len(CLASSES) + 1):
+            color = (value, value, value) if kind == "grayscale" else RGB_COLORS[value - 1][::-1]
+            for _ in range(4):
+                points = rng.integers(-10, max(width, height) + 10, size=(int(rng.integers(3, 8)), 2)).astype(np.int32)
+                cv2.fillPoly(mask, [points], color)
+            cv2.circle(mask, (int(rng.integers(0, width)), int(rng.integers(0, height))), int(rng.integers(3, 40)),
+                       color, -1)
+            cv2.circle(mask, (int(rng.integers(0, width)), int(rng.integers(0, height))), int(rng.integers(5, 30)),
+                       (0, 0, 0), -1)
+            mask[int(rng.integers(0, height)), int(rng.integers(0, width))] = color
+        if kind == "grayscale":
+            mask = mask[:, :, 0]
+            mask[0, 0] = 200  # a value the mapping does not name: passed over
+        masks[os.path.splitext(name)[0]] = mask
+    return masks
+
+
+RGB_COLORS = [(255, 0, 0), (0, 128, 255), (10, 200, 30)]
+
+
+def check_mask(cli, work, kind):
+    fmt = "mask"
+    root = os.path.join(work, f"mask-{kind}", "data")
+    make_project(cli, root, "polygon")
+    out = os.path.join(work, f"mask-{kind}", "export")
+    label_dir = os.path.join(out, "masks")
+    os.makedirs(label_dir)
+    if kind == "grayscale":
+        colors = {name: i + 1 for i, name in enumerate(CLASSES)}
+    else:
+        colors = {name: list(RGB_COLORS[i]) for i, name in enumerate(CLASSES)}
+    mapping = {"type": kind, "colors": colors}
+    with open(os.path.join(out, "mask_colors.json"), "w", encoding="utf-8") as f:
+        json.dump(mapping, f)
+    masks = mask_images(kind, 5 if kind == "grayscale" else 6)
+    for stem, mask in masks.items():
+        path = os.path.join(label_dir, stem + ".png")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        assert cv2.imwrite(path, mask)
+    run([cli, "import", root, "--format", fmt, "--labels", label_dir])
+    upstream = os.path.join(work, f"mask-{kind}", "upstream")
+    compared = shapes = 0
+    for stem in masks:
+        image = next(name for name in IMAGES if os.path.splitext(name)[0] == stem)
+        theirs_path = os.path.join(upstream, stem + ".json")
+        os.makedirs(os.path.dirname(theirs_path), exist_ok=True)
+        LabelConverter().mask_to_custom(os.path.join(label_dir, stem + ".png"), theirs_path,
+                                        os.path.join(root, image), mapping)
+        theirs = load(theirs_path)
+        compare(f"mask {kind} {stem}", load(os.path.join(root, stem + ".json")), theirs)
+        compared += 1
+        shapes += len(theirs["shapes"])
+    print(f"mask ({kind}): {compared} files, {shapes} polygons match upstream")
+
+
+def check_plain_folder(cli, work):
+    """A folder without a project file: the class names come from the classes.txt chosen."""
+    root = os.path.join(work, "plain", "data")
+    os.makedirs(root)
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+    assert cv2.imwrite(os.path.join(root, "a01.png"), image)
+    label_dir = os.path.join(work, "plain", "labels")
+    write_labels(label_dir, {"a01": "2 0.5 0.5 0.25 0.5\n"}, ".txt", classes=False)
+    classes = os.path.join(work, "plain", "names.txt")
+    with open(classes, "w", encoding="utf-8") as f:
+        f.write("\n".join(CLASSES) + "\n")
+    refused = run([cli, "import", root, "--format", "yolo-det", "--labels", label_dir], expect_ok=False)
+    if refused.returncode == 0 or os.path.exists(os.path.join(root, "a01.json")):
+        sys.exit("plain folder: imported YOLO labels without class names")
+    run([cli, "import", root, "--format", "yolo-det", "--labels", label_dir, "--classes-file", classes])
+    shapes = load(os.path.join(root, "a01.json"))["shapes"]
+    if [s["label"] for s in shapes] != ["stain"] or os.path.exists(os.path.join(root, "liteanno")):
+        sys.exit(f"plain folder: {shapes}")
+    print("plain folder: YOLO import takes the names of the classes file chosen")
+
+
 def main():
     cli, work = sys.argv[1], sys.argv[2]
     if os.path.exists(work):
@@ -220,7 +357,12 @@ def main():
           lambda label, out, image: converter.voc_to_custom(label, out, os.path.basename(image), "rectangle"))
     check(cli, work, "voc-polygon", VOC_POLYGON, ".xml", "rectangle,polygon",
           lambda label, out, image: converter.voc_to_custom(label, out, os.path.basename(image), "polygon"))
+    check_coco(cli, work, "coco-det", "rectangle", "rectangle")
+    check_coco(cli, work, "coco-seg", "polygon", "polygon")
+    check_mask(cli, work, "grayscale")
+    check_mask(cli, work, "rgb")
     check_round_trip(cli, work)
+    check_plain_folder(cli, work)
 
 
 def strip_header(label):

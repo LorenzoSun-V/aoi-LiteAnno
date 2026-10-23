@@ -1,10 +1,16 @@
 #include "formats/Importers.h"
 
 #include "core/ShapeType.h"
+#include "formats/JsonText.h"
+#include "formats/MaskContours.h"
 
 #include <QXmlStreamReader>
 
+#include <QHash>
+
+#include <algorithm>
 #include <charconv>
+#include <limits>
 #include <cmath>
 #include <map>
 #include <string>
@@ -27,6 +33,9 @@ constexpr FormatName kFormatNames[] = {
     {ImportFormat::VocRectangle, "voc"},
     {ImportFormat::VocPolygon, "voc-polygon"},
     {ImportFormat::Dota, "dota"},
+    {ImportFormat::CocoDetection, "coco-det"},
+    {ImportFormat::CocoSegmentation, "coco-seg"},
+    {ImportFormat::Mask, "mask"},
 };
 
 // Python's float(): correctly rounded, an optional sign, surrounding spaces allowed. Infinity
@@ -85,11 +94,22 @@ Shape newShape(ShapeType type, const QString& label, PointList points)
     return shape;
 }
 
-// "difficult" is not edited here; a new shape takes it from the object it was copied from.
+// "difficult" and "group_id" are not edited here; a new shape takes them from the object it
+// was copied from.
+void setUnedited(Shape& shape, bool difficult, std::optional<qint64> groupId = std::nullopt)
+{
+    Json object = Json::object();
+    if (groupId)
+        object["group_id"] = *groupId;
+    if (difficult)
+        object["difficult"] = true;
+    if (!object.empty())
+        shape.copiedObject = serializeJson(object);
+}
+
 void markDifficult(Shape& shape, bool difficult)
 {
-    if (difficult)
-        shape.copiedObject = QByteArrayLiteral("{\"difficult\": true}");
+    setUnedited(shape, difficult);
 }
 
 // Python's math.degrees.
@@ -128,8 +148,23 @@ QList<ImportFormat> importFormats()
 
 QString importLabelSuffix(ImportFormat format)
 {
-    return format == ImportFormat::VocRectangle || format == ImportFormat::VocPolygon ? QStringLiteral(".xml")
-                                                                                        : QStringLiteral(".txt");
+    switch (format) {
+    case ImportFormat::VocRectangle:
+    case ImportFormat::VocPolygon:
+        return QStringLiteral(".xml");
+    case ImportFormat::Mask:
+        return QStringLiteral(".png");
+    case ImportFormat::CocoDetection:
+    case ImportFormat::CocoSegmentation:
+        return {};
+    default:
+        return QStringLiteral(".txt");
+    }
+}
+
+bool importReadsOneFile(ImportFormat format)
+{
+    return format == ImportFormat::CocoDetection || format == ImportFormat::CocoSegmentation;
 }
 
 bool importNeedsClassNames(ImportFormat format)
@@ -411,6 +446,344 @@ ImportedLabels parseVocAnnotation(const QByteArray& bytes, ImportFormat format, 
         }
         markDifficult(shape, difficult);
         result.shapes.append(std::move(shape));
+    }
+    return result;
+}
+
+namespace {
+
+QString utf8(const std::string& text)
+{
+    return QString::fromStdString(text);
+}
+
+// A dict key in Python: 1 and 1.0 are the same key.
+QString keyOf(const Json& value)
+{
+    if (value.is_number())
+        return QString::number(value.get<double>(), 'g', 17);
+    return utf8(value.dump());
+}
+
+std::optional<int> integerValue(const Json& value)
+{
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        const auto number = value.get<qint64>();
+        if (number >= std::numeric_limits<int>::min() && number <= std::numeric_limits<int>::max())
+            return int(number);
+    }
+    return std::nullopt;
+}
+
+// bool(int(str(ignore))): an integer, or a string holding one.
+std::optional<bool> ignoreFlag(const Json& value)
+{
+    if (value.is_number_integer() || value.is_number_unsigned())
+        return value.get<qint64>() != 0;
+    if (value.is_string()) {
+        const std::optional<int> number = parseIndex(utf8(value.get<std::string>()));
+        if (number)
+            return *number != 0;
+        // A negative number is still an int to Python.
+        QString text = utf8(value.get<std::string>()).trimmed();
+        if (text.startsWith(QLatin1Char('-'))) {
+            const std::optional<int> negative = parseIndex(text.mid(1));
+            if (negative)
+                return *negative != 0;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<double> numberValue(const Json& value)
+{
+    if (value.is_number())
+        return value.get<double>();
+    return std::nullopt;
+}
+
+} // namespace
+
+CocoLabels parseCocoLabels(const QByteArray& bytes, ImportFormat format)
+{
+    CocoLabels result;
+    const JsonParseResult parsed = parseJson(bytes);
+    if (!parsed.ok) {
+        result.error = QStringLiteral(u"不是有效的 JSON：%1").arg(parsed.error);
+        return result;
+    }
+    const Json& root = parsed.value;
+    const auto array = [&root](const char* key) -> const Json* {
+        if (!root.is_object())
+            return nullptr;
+        const auto it = root.find(key);
+        return it != root.end() && it->is_array() ? &*it : nullptr;
+    };
+    const Json* images = array("images");
+    const Json* annotations = array("annotations");
+    const Json* categories = array("categories");
+    if (!images || !annotations || !categories) {
+        result.error = QStringLiteral(u"不是 COCO 标注文件：缺少 images、annotations 或 categories 数组");
+        return result;
+    }
+
+    QHash<QString, QString> categoryNames;
+    for (const Json& category : *categories) {
+        if (!category.is_object() || !category.contains("id") || !category.contains("name") || !category["name"].is_string()) {
+            result.error = QStringLiteral(u"categories 里有缺少 id 或 name 的类别");
+            return result;
+        }
+        categoryNames.insert(keyOf(category["id"]), utf8(category["name"].get<std::string>()));
+    }
+
+    QHash<QString, qsizetype> imageIndex;
+    for (const Json& image : *images) {
+        if (!image.is_object() || !image.contains("id") || !image.contains("file_name")
+            || !image["file_name"].is_string()) {
+            result.error = QStringLiteral(u"images 里有缺少 id 或 file_name 的图片");
+            return result;
+        }
+        const QString key = keyOf(image["id"]);
+        CocoImageLabels entry;
+        entry.fileName = utf8(image["file_name"].get<std::string>());
+        if (imageIndex.contains(key)) {
+            result.error = QStringLiteral(u"图片 id %1 出现了两次（%2）").arg(utf8(image["id"].dump()), entry.fileName);
+            return result;
+        }
+        const std::optional<int> width = image.contains("width") ? integerValue(image["width"]) : std::nullopt;
+        const std::optional<int> height = image.contains("height") ? integerValue(image["height"]) : std::nullopt;
+        if (!width || !height || *width <= 0 || *height <= 0) {
+            result.error = QStringLiteral(u"图片 %1 缺少有效的 width、height").arg(entry.fileName);
+            return result;
+        }
+        entry.width = *width;
+        entry.height = *height;
+        imageIndex.insert(key, result.images.size());
+        result.images.append(std::move(entry));
+    }
+
+    // Per image, the number of annotations made of several polygons so far (upstream's
+    // group ids, from 1).
+    QHash<qsizetype, qint64> groups;
+    int annotationNumber = 0;
+    for (const Json& annotation : *annotations) {
+        ++annotationNumber;
+        if (!annotation.is_object() || !annotation.contains("image_id")) {
+            result.error = QStringLiteral(u"第 %1 个标注没有 image_id").arg(annotationNumber);
+            return result;
+        }
+        const auto imageIt = imageIndex.constFind(keyOf(annotation["image_id"]));
+        if (imageIt == imageIndex.cend()) {
+            result.error = QStringLiteral(u"第 %1 个标注的 image_id %2 不在 images 里")
+                               .arg(annotationNumber)
+                               .arg(utf8(annotation["image_id"].dump()));
+            return result;
+        }
+        const qsizetype index = *imageIt;
+        ImportedLabels& labels = result.images[index].labels;
+        if (!labels.error.isEmpty())
+            continue;
+        const auto fail = [&labels, annotationNumber](const QString& message) {
+            labels.error = QStringLiteral(u"第 %1 个标注：%2").arg(annotationNumber).arg(message);
+        };
+        const auto categoryIt =
+            annotation.contains("category_id") ? categoryNames.constFind(keyOf(annotation["category_id"])) : categoryNames.cend();
+        if (categoryIt == categoryNames.cend()) {
+            fail(QStringLiteral(u"category_id 不在 categories 里"));
+            continue;
+        }
+        const QString& label = *categoryIt;
+        bool difficult = false;
+        if (annotation.contains("ignore")) {
+            const std::optional<bool> flag = ignoreFlag(annotation["ignore"]);
+            if (!flag) {
+                fail(QStringLiteral(u"ignore 的值 %1 不是整数").arg(utf8(annotation["ignore"].dump())));
+                continue;
+            }
+            difficult = *flag;
+        }
+        if (format == ImportFormat::CocoDetection) {
+            const auto bbox = annotation.find("bbox");
+            std::optional<double> values[4];
+            bool ok = bbox != annotation.end() && bbox->is_array() && bbox->size() == 4;
+            for (size_t k = 0; ok && k < 4; ++k) {
+                values[k] = numberValue((*bbox)[k]);
+                ok = values[k].has_value();
+            }
+            if (!ok) {
+                fail(QStringLiteral(u"bbox 应是 4 个数"));
+                continue;
+            }
+            const double xmin = *values[0], ymin = *values[1];
+            const double xmax = xmin + *values[2], ymax = ymin + *values[3];
+            Shape shape = newShape(ShapeType::Rectangle, label, {{xmin, ymin}, {xmax, ymin}, {xmax, ymax}, {xmin, ymax}});
+            setUnedited(shape, difficult);
+            labels.shapes.append(std::move(shape));
+            continue;
+        }
+
+        const auto segmentation = annotation.find("segmentation");
+        if (segmentation == annotation.end() || segmentation->is_object()) {
+            fail(segmentation == annotation.end() ? QStringLiteral(u"没有 segmentation（只有检测框请用 coco-det 导入）")
+                                                  : QStringLiteral(u"RLE 格式的分割不能导入，只能导入多边形"));
+            continue;
+        }
+        if (!segmentation->is_array() || segmentation->empty()) {
+            fail(QStringLiteral(u"segmentation 里没有多边形（只有检测框请用 coco-det 导入）"));
+            continue;
+        }
+        QList<PointList> polygons;
+        for (const Json& polygon : *segmentation) {
+            if (polygon.is_object()) {
+                fail(QStringLiteral(u"RLE 格式的分割不能导入，只能导入多边形"));
+                break;
+            }
+            if (!polygon.is_array() || polygon.size() < 6 || polygon.size() % 2 != 0) {
+                fail(QStringLiteral(u"多边形应有至少 3 个点的成对坐标"));
+                break;
+            }
+            PointList points;
+            for (size_t k = 0; k < polygon.size(); k += 2) {
+                const std::optional<double> x = numberValue(polygon[k]);
+                const std::optional<double> y = numberValue(polygon[k + 1]);
+                if (!x || !y) {
+                    fail(QStringLiteral(u"多边形的坐标不是数字"));
+                    break;
+                }
+                // Repeated points are left out, as upstream does (exact comparison).
+                const bool seen = std::any_of(points.cbegin(), points.cend(), [&](const QPointF& point) {
+                    return point.x() == *x && point.y() == *y;
+                });
+                if (!seen)
+                    points.append(QPointF(*x, *y));
+            }
+            if (!labels.error.isEmpty())
+                break;
+            if (points.size() < 3) {
+                fail(QStringLiteral(u"多边形去掉重复的点后少于 3 个点"));
+                break;
+            }
+            polygons.append(std::move(points));
+        }
+        if (!labels.error.isEmpty())
+            continue;
+        std::optional<qint64> groupId;
+        if (polygons.size() > 1)
+            groupId = ++groups[index];
+        for (PointList& points : polygons) {
+            Shape shape = newShape(ShapeType::Polygon, label, std::move(points));
+            setUnedited(shape, difficult, groupId);
+            labels.shapes.append(std::move(shape));
+        }
+    }
+    return result;
+}
+
+MaskMapping parseMaskMapping(const QByteArray& bytes)
+{
+    MaskMapping mapping;
+    const JsonParseResult parsed = parseJson(bytes);
+    if (!parsed.ok) {
+        mapping.error = QStringLiteral(u"不是有效的 JSON：%1").arg(parsed.error);
+        return mapping;
+    }
+    const Json& root = parsed.value;
+    const auto type = root.is_object() ? root.find("type") : root.end();
+    const auto colors = root.is_object() ? root.find("colors") : root.end();
+    if (type == root.end() || !type->is_string() || colors == root.end() || !colors->is_object()) {
+        mapping.error = QStringLiteral(u"映射文件应有 \"type\" 和 \"colors\"");
+        return mapping;
+    }
+    const std::string typeName = type->get<std::string>();
+    if (typeName != "grayscale" && typeName != "rgb") {
+        mapping.error = QStringLiteral(u"\"type\" 应是 grayscale 或 rgb");
+        return mapping;
+    }
+    mapping.grayscale = typeName == "grayscale";
+    const auto byte = [](const Json& value) -> std::optional<int> {
+        const std::optional<double> number = numberValue(value);
+        if (!number || *number != std::floor(*number) || *number < 0 || *number > 255)
+            return std::nullopt;
+        return int(*number);
+    };
+    for (auto it = colors->begin(); it != colors->end(); ++it) {
+        const QString name = utf8(it.key());
+        if (mapping.grayscale) {
+            const std::optional<int> value = byte(it.value());
+            if (!value) {
+                mapping.error = QStringLiteral(u"类别“%1”的灰度值应是 0～255 的整数").arg(name);
+                return mapping;
+            }
+            mapping.values.append({name, *value});
+        } else {
+            std::array<int, 3> color{};
+            bool ok = it.value().is_array() && it.value().size() == 3;
+            for (size_t k = 0; ok && k < 3; ++k) {
+                const std::optional<int> value = byte(it.value()[k]);
+                ok = value.has_value();
+                if (ok)
+                    color[k] = *value;
+            }
+            if (!ok) {
+                mapping.error = QStringLiteral(u"类别“%1”的颜色应是 [R, G, B]，每个 0～255").arg(name);
+                return mapping;
+            }
+            mapping.colors.append({name, color});
+        }
+    }
+    return mapping;
+}
+
+ImportedLabels maskLabels(const RgbImage& mask, const MaskMapping& mapping)
+{
+    ImportedLabels result;
+    const std::size_t count = std::size_t(mask.width) * std::size_t(mask.height);
+    std::vector<std::uint8_t> binary(count);
+    const auto addPolygons = [&result, &binary, &mask](const QString& label) {
+        for (const IntPolygon& polygon : maskPolygons(binary, mask.width, mask.height)) {
+            PointList points;
+            for (const QPoint& point : polygon)
+                points.append(QPointF(point.x(), point.y()));
+            result.shapes.append(newShape(ShapeType::Polygon, label, std::move(points)));
+        }
+    };
+    if (mapping.grayscale) {
+        std::vector<std::uint8_t> gray(count);
+        bool present[256] = {};
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::uint8_t* pixel = &mask.rgb[i * 3];
+            if (pixel[0] != pixel[1] || pixel[1] != pixel[2]) {
+                result.error = QStringLiteral(u"灰度掩膜里有彩色像素（第 %1 行第 %2 列）")
+                                   .arg(i / std::size_t(mask.width) + 1)
+                                   .arg(i % std::size_t(mask.width) + 1);
+                return result;
+            }
+            gray[i] = pixel[0];
+            present[pixel[0]] = true;
+        }
+        // color_to_label = {v: k}: a value named twice belongs to the later class.
+        QString names[256];
+        for (const auto& entry : mapping.values)
+            names[entry.second] = entry.first;
+        bool mapped[256] = {};
+        for (const auto& entry : mapping.values)
+            mapped[entry.second] = true;
+        for (int value = 0; value < 256; ++value) {
+            if (!present[value] || !mapped[value])
+                continue;
+            for (std::size_t i = 0; i < count; ++i)
+                binary[i] = gray[i] == value ? 1 : 0;
+            addPolygons(names[value]);
+        }
+    } else {
+        for (const auto& entry : mapping.colors) {
+            const std::array<int, 3>& color = entry.second;
+            for (std::size_t i = 0; i < count; ++i) {
+                const std::uint8_t* pixel = &mask.rgb[i * 3];
+                binary[i] = pixel[0] == color[0] && pixel[1] == color[1] && pixel[2] == color[2] ? 1 : 0;
+            }
+            addPolygons(entry.first);
+        }
     }
     return result;
 }

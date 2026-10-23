@@ -1,6 +1,7 @@
 #pragma once
 
 #include "application/ExportService.h"
+#include "core/RgbImage.h"
 #include "formats/Importers.h"
 
 #include <QList>
@@ -10,6 +11,10 @@
 #include <functional>
 
 namespace liteanno::application {
+
+// Reads a mask image pixel for pixel (imaging::readMaskImage); the application layer does not
+// decode images itself.
+using MaskImageReader = std::function<RgbImage(const QString& absolutePath)>;
 
 // What happens to an image that already has an annotation file (architecture 11.2).
 enum class ImportMode {
@@ -22,7 +27,16 @@ std::optional<ImportMode> importModeFromName(const QString& name);
 
 struct ImportRequest {
     formats::ImportFormat format = formats::ImportFormat::YoloDetection;
+    // The folder of the label files, one per image (paired by relative path, then by file
+    // name at the top of the folder); for COCO the one JSON file.
     QString labelDir;
+    QString labelFile;
+    // YOLO: the classes.txt that names the class numbers; empty: classes.txt in the label
+    // folder, else the project's classes.
+    QString classesFile;
+    // Masks: the mapping of values or colours to classes; empty: mask_colors.json in the
+    // label folder or the folder above it.
+    QString mappingFile;
     QStringList batches;  // list stems ("b000003"); empty: the whole project
     ImportMode mode = ImportMode::OnlyNew;
     bool skipUnconvertible = false;  // "跳过这些图片继续导入"
@@ -34,6 +48,12 @@ enum class ImportResult {
     HasAnnotation,  // has an annotation file and the mode leaves it alone
     NotWritten,     // missing, read-only, name collision, unsaved window edits, write failed
     Unconvertible,  // the label file cannot be imported
+};
+
+// A COCO image record that names no image of the scope.
+struct UnmatchedLabel {
+    QString fileName;
+    QString reason;
 };
 const char* importResultName(ImportResult result);
 
@@ -51,6 +71,7 @@ struct ImportReport {
     QString error;
     bool cancelled = false;
     QList<ImportItem> items;
+    QList<UnmatchedLabel> unmatched;  // COCO only
 
     int count(ImportResult result) const;
     QList<ImportItem> unconvertible() const;
@@ -67,13 +88,14 @@ public:
     // keeps the files written so far.
     using Progress = std::function<bool(int done, int total)>;
 
-    ImportService(const ProjectSession& project, ImageInfoReader readImageInfo);
+    ImportService(const ProjectSession& project, ImageInfoReader readImageInfo, MaskImageReader readMask = {});
 
     ImportReport run(const ImportRequest& request, const Progress& progress = {}) const;
 
 private:
     const ProjectSession& m_project;
     ImageInfoReader m_readImageInfo;
+    MaskImageReader m_readMask;
 };
 
 } // namespace liteanno::application

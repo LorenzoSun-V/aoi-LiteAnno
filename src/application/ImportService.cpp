@@ -3,6 +3,7 @@
 #include "application/RecoveryService.h"
 #include "core/ShapeType.h"
 #include "dataset/DirectoryScanner.h"
+#include "formats/Exporters.h"
 
 #include <QDir>
 #include <QFile>
@@ -41,28 +42,28 @@ std::optional<QByteArray> readFile(const QString& path, QString& error)
     return file.readAll();
 }
 
-// The names of the YOLO class numbers: classes.txt in the label folder, as upstream asks for
-// one, or else the ids of the project file.
-std::optional<QStringList> yoloClassNames(const QString& labelDir, const ProjectConfig& config, QString& error)
+// The names of the YOLO class numbers: the classes.txt chosen, else classes.txt in the label
+// folder, as upstream asks for one, else the ids of the project file. The file follows the
+// rules of the export's classes.txt (formats::parseClassesFile).
+std::optional<QStringList> yoloClassNames(const QString& chosen, const QString& labelDir, const ProjectConfig& config,
+                                          QString& error)
 {
-    const QString classesFile = QDir(labelDir).filePath(QStringLiteral("classes.txt"));
-    if (QFileInfo(classesFile).isFile()) {
-        const std::optional<QByteArray> bytes = readFile(classesFile, error);
-        if (!bytes) {
-            error = QStringLiteral(u"无法读取 %1：%2").arg(QDir::toNativeSeparators(classesFile), error);
+    QString classesFile = chosen;
+    if (classesFile.isEmpty()) {
+        const QString inFolder = QDir(labelDir).filePath(QStringLiteral("classes.txt"));
+        if (QFileInfo(inFolder).isFile())
+            classesFile = inFolder;
+    }
+    if (!classesFile.isEmpty()) {
+        const formats::ClassesFile read = formats::readClassesFile(classesFile);
+        if (!read.error.isEmpty()) {
+            error = QStringLiteral(u"类别文件 %1：%2").arg(QDir::toNativeSeparators(classesFile), read.error);
             return std::nullopt;
         }
-        QString text = QString::fromUtf8(*bytes);
-        if (text.startsWith(QChar(0xFEFF)))
-            text.remove(0, 1);
-        text.replace(QLatin1String("\r\n"), QLatin1String("\n"));
-        QStringList names = text.split(QLatin1Char('\n'));
-        if (!names.isEmpty() && names.last().isEmpty())
-            names.removeLast();
-        return names;
+        return read.names;
     }
     if (config.classes.isEmpty()) {
-        error = QStringLiteral(u"标注文件夹里没有 classes.txt，项目文件也没有类别列表，无法把类别编号换成名称。");
+        error = QStringLiteral(u"请选择类别文件 classes.txt：标注文件夹里没有，项目文件也没有类别列表，无法把类别编号换成名称。");
         return std::nullopt;
     }
     QStringList names;
@@ -74,6 +75,48 @@ std::optional<QStringList> yoloClassNames(const QString& labelDir, const Project
         names[c.id] = c.name;
     }
     return names;
+}
+
+// The mask mapping: the file chosen, else mask_colors.json (what our mask export writes) in
+// the label folder or the folder above it.
+formats::MaskMapping maskMapping(const QString& chosen, const QString& labelDir)
+{
+    QString file = chosen;
+    if (file.isEmpty()) {
+        const QDir dir(labelDir);
+        for (const QString& candidate : {dir.filePath(QStringLiteral("mask_colors.json")),
+                                         dir.filePath(QStringLiteral("../mask_colors.json"))}) {
+            if (QFileInfo(candidate).isFile()) {
+                file = QDir::cleanPath(candidate);
+                break;
+            }
+        }
+    }
+    formats::MaskMapping mapping;
+    if (file.isEmpty()) {
+        mapping.error = QStringLiteral(u"请选择掩膜的映射文件（如 mask_colors.json）：标注文件夹和上一级都没有 mask_colors.json。");
+        return mapping;
+    }
+    QString error;
+    const std::optional<QByteArray> bytes = readFile(file, error);
+    if (!bytes) {
+        mapping.error = QStringLiteral(u"无法读取映射文件 %1：%2").arg(QDir::toNativeSeparators(file), error);
+        return mapping;
+    }
+    mapping = formats::parseMaskMapping(*bytes);
+    if (!mapping.error.isEmpty())
+        mapping.error = QStringLiteral(u"映射文件 %1：%2").arg(QDir::toNativeSeparators(file), mapping.error);
+    return mapping;
+}
+
+// A path as the file system compares it: without case on Windows.
+QString pathKey(const QString& path)
+{
+#ifdef Q_OS_WIN
+    return path.toCaseFolded();
+#else
+    return path;
+#endif
 }
 
 // Why the project cannot take the imported shapes, or nothing.
@@ -167,9 +210,10 @@ QList<ImportItem> ImportReport::unconvertible() const
     return found;
 }
 
-ImportService::ImportService(const ProjectSession& project, ImageInfoReader readImageInfo)
+ImportService::ImportService(const ProjectSession& project, ImageInfoReader readImageInfo, MaskImageReader readMask)
     : m_project(project)
     , m_readImageInfo(std::move(readImageInfo))
+    , m_readMask(std::move(readMask))
 {
 }
 
@@ -182,17 +226,48 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
         report.error = QStringLiteral(u"这个项目不标形状，不能导入 %1。").arg(formats::importFormatName(format));
         return report;
     }
-    if (request.labelDir.trimmed().isEmpty() || !QFileInfo(request.labelDir).isDir()) {
+    const bool oneFile = formats::importReadsOneFile(format);
+    if (oneFile && (request.labelFile.trimmed().isEmpty() || !QFileInfo(request.labelFile).isFile())) {
+        report.error = QStringLiteral(u"请选择 COCO 标注文件（.json）。");
+        return report;
+    }
+    if (!oneFile && (request.labelDir.trimmed().isEmpty() || !QFileInfo(request.labelDir).isDir())) {
         report.error = QStringLiteral(u"请选择标注文件夹。");
         return report;
     }
     const QDir labelDir(request.labelDir);
     QStringList classNames;
     if (formats::importNeedsClassNames(format)) {
-        std::optional<QStringList> names = yoloClassNames(request.labelDir, config, report.error);
+        std::optional<QStringList> names = yoloClassNames(request.classesFile, request.labelDir, config, report.error);
         if (!names)
             return report;
         classNames = std::move(*names);
+    }
+    formats::MaskMapping mapping;
+    if (format == ImportFormat::Mask) {
+        if (!m_readMask) {
+            report.error = QStringLiteral(u"这里不能读取掩膜图片。");
+            return report;
+        }
+        mapping = maskMapping(request.mappingFile, request.labelDir);
+        if (!mapping.error.isEmpty()) {
+            report.error = mapping.error;
+            return report;
+        }
+    }
+    formats::CocoLabels coco;
+    if (oneFile) {
+        QString error;
+        const std::optional<QByteArray> bytes = readFile(request.labelFile, error);
+        if (!bytes) {
+            report.error = QStringLiteral(u"无法读取 %1：%2").arg(QDir::toNativeSeparators(request.labelFile), error);
+            return report;
+        }
+        coco = formats::parseCocoLabels(*bytes, format);
+        if (!coco.error.isEmpty()) {
+            report.error = QStringLiteral(u"%1：%2").arg(QDir::toNativeSeparators(request.labelFile), coco.error);
+            return report;
+        }
     }
 
     const ExportScope scope = scopeOf(m_project, request.batches, [&progress] { return progress && !progress(0, 0); });
@@ -214,19 +289,71 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
     QList<QString> labelFiles;
     labelFiles.reserve(scope.images.size());
     QHash<QString, int> byName;
-    for (const ScopeImage& image : scope.images) {
-        const QString nested = labelDir.filePath(stemPath(image.path) + suffix);
-        if (QFileInfo(nested).isFile()) {
-            labelFiles.append(nested);
-            continue;
+    QList<QString> pairingProblems(scope.images.size());
+    if (!oneFile) {
+        for (qsizetype i = 0; i < scope.images.size(); ++i) {
+            const ScopeImage& image = scope.images[i];
+            const QString nested = labelDir.filePath(stemPath(image.path) + suffix);
+            const QString top = labelDir.filePath(stemPath(fileNameOf(image.path)) + suffix);
+            if (QFileInfo(nested).isFile()) {
+                labelFiles.append(nested);
+            } else if (top != nested && QFileInfo(top).isFile()) {
+                labelFiles.append(top);
+                ++byName[top];
+            } else {
+                labelFiles.append(QString());
+                // A mask saved as JPEG: said, not passed over.
+                if (format == ImportFormat::Mask) {
+                    for (const QString& stem : {stemPath(image.path), stemPath(fileNameOf(image.path))}) {
+                        for (const char* jpeg : {".jpg", ".jpeg"}) {
+                            const QString file = labelDir.filePath(stem + QLatin1String(jpeg));
+                            if (labelFiles.last().isEmpty() && QFileInfo(file).isFile()) {
+                                labelFiles.last() = file;
+                                pairingProblems[i] = QStringLiteral(u"掩膜必须是 PNG 图片（JPEG 有损压缩会改变类别值）");
+                            }
+                        }
+                    }
+                }
+            }
         }
-        const QString top = labelDir.filePath(stemPath(fileNameOf(image.path)) + suffix);
-        if (top != nested && QFileInfo(top).isFile()) {
-            labelFiles.append(top);
-            ++byName[top];
-        } else {
-            labelFiles.append(QString());
+    }
+    // COCO: the image records by the relative path in "file_name", then by the file name
+    // alone when one image of the scope has it.
+    QList<qsizetype> cocoEntry(scope.images.size(), -1);
+    if (oneFile) {
+        QHash<QString, QList<qsizetype>> byFileName;
+        QHash<QString, qsizetype> byPath;
+        for (qsizetype i = 0; i < scope.images.size(); ++i) {
+            byFileName[pathKey(fileNameOf(scope.images[i].path))].append(i);
+            byPath.insert(pathKey(scope.images[i].path), i);
         }
+        for (qsizetype k = 0; k < coco.images.size(); ++k) {
+            QString name = coco.images[k].fileName;
+            name.replace(QLatin1Char('\\'), QLatin1Char('/'));
+            while (name.startsWith(QLatin1String("./")))
+                name.remove(0, 2);
+            qsizetype found = byPath.value(pathKey(name), -1);
+            if (found < 0) {
+                const QList<qsizetype> candidates = byFileName.value(pathKey(fileNameOf(name)));
+                if (candidates.size() > 1) {
+                    report.unmatched.append({coco.images[k].fileName,
+                                             QStringLiteral(u"文件夹里有 %1 张图片叫这个名字，无法确定是哪一张").arg(candidates.size())});
+                    continue;
+                }
+                found = candidates.isEmpty() ? -1 : candidates.first();
+            }
+            if (found < 0) {
+                report.unmatched.append({coco.images[k].fileName, QStringLiteral(u"文件夹里没有这张图片")});
+                continue;
+            }
+            if (cocoEntry[found] >= 0) {
+                pairingProblems[found] = QStringLiteral(u"COCO 文件里有多条图片记录对应这张图片");
+                continue;
+            }
+            cocoEntry[found] = k;
+        }
+        for (qsizetype i = 0; i < scope.images.size(); ++i)
+            labelFiles.append(cocoEntry[i] >= 0 || !pairingProblems[i].isEmpty() ? request.labelFile : QString());
     }
 
     const int total = int(scope.images.size()) * 2;
@@ -250,6 +377,10 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             done(ImportResult::NoLabelFile);
             continue;
         }
+        if (!pairingProblems[i].isEmpty()) {
+            done(ImportResult::Unconvertible, pairingProblems[i]);
+            continue;
+        }
         if (byName.value(item.labelFile) > 1) {
             done(ImportResult::Unconvertible, QStringLiteral(u"%1 张图片都按文件名配对到 %2，无法确定是哪一张的")
                                                   .arg(byName.value(item.labelFile))
@@ -271,26 +402,55 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             done(ImportResult::Unconvertible, QStringLiteral(u"读不出图片尺寸"));
             continue;
         }
-        QString error;
-        const std::optional<QByteArray> bytes = readFile(item.labelFile, error);
-        if (!bytes) {
-            done(ImportResult::Unconvertible, QStringLiteral(u"无法读取标注文件：%1").arg(error));
-            continue;
-        }
         formats::ImportedLabels labels;
-        switch (format) {
-        case ImportFormat::YoloDetection:
-        case ImportFormat::YoloSegmentation:
-        case ImportFormat::YoloObb:
-            labels = formats::parseYoloLabels(*bytes, format, classNames, info.width, info.height);
-            break;
-        case ImportFormat::VocRectangle:
-        case ImportFormat::VocPolygon:
-            labels = formats::parseVocAnnotation(*bytes, format, info.width, info.height);
-            break;
-        case ImportFormat::Dota:
-            labels = formats::parseDotaLabels(*bytes);
-            break;
+        if (oneFile) {
+            const formats::CocoImageLabels& entry = coco.images[cocoEntry[i]];
+            labels = entry.labels;
+            if (labels.error.isEmpty() && (entry.width != info.width || entry.height != info.height)) {
+                labels.error = QStringLiteral(u"COCO 里的尺寸 %1×%2 和图片的 %3×%4 不一致")
+                                   .arg(entry.width)
+                                   .arg(entry.height)
+                                   .arg(info.width)
+                                   .arg(info.height);
+            }
+        } else if (format == ImportFormat::Mask) {
+            const RgbImage mask = m_readMask(item.labelFile);
+            if (!mask.error.isEmpty()) {
+                labels.error = mask.error;
+            } else if (mask.width != info.width || mask.height != info.height) {
+                labels.error = QStringLiteral(u"掩膜的尺寸 %1×%2 和图片的 %3×%4 不一致")
+                                   .arg(mask.width)
+                                   .arg(mask.height)
+                                   .arg(info.width)
+                                   .arg(info.height);
+            } else {
+                labels = formats::maskLabels(mask, mapping);
+            }
+        } else {
+            QString error;
+            const std::optional<QByteArray> bytes = readFile(item.labelFile, error);
+            if (!bytes) {
+                done(ImportResult::Unconvertible, QStringLiteral(u"无法读取标注文件：%1").arg(error));
+                continue;
+            }
+            switch (format) {
+            case ImportFormat::YoloDetection:
+            case ImportFormat::YoloSegmentation:
+            case ImportFormat::YoloObb:
+                labels = formats::parseYoloLabels(*bytes, format, classNames, info.width, info.height);
+                break;
+            case ImportFormat::VocRectangle:
+            case ImportFormat::VocPolygon:
+                labels = formats::parseVocAnnotation(*bytes, format, info.width, info.height);
+                break;
+            case ImportFormat::Dota:
+                labels = formats::parseDotaLabels(*bytes);
+                break;
+            case ImportFormat::CocoDetection:
+            case ImportFormat::CocoSegmentation:
+            case ImportFormat::Mask:
+                break;
+            }
         }
         if (labels.error.isEmpty())
             labels.error = projectRefuses(labels.shapes, config);
