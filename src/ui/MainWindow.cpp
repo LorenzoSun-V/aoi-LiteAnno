@@ -415,9 +415,12 @@ void MainWindow::buildUi()
     QAction* confirmNext = named(editMenu->addAction(QStringLiteral(u"确认并下一张"), this, [this] { confirmAndNext(); }),
                                  "confirm_and_next");
     confirmNext->setShortcut(QKeySequence(QStringLiteral("F")));
+    // Held down, F would confirm images nobody looked at: each one needs its own press.
+    confirmNext->setAutoRepeat(false);
     QAction* skipAction =
         named(editMenu->addAction(QStringLiteral(u"跳过当前图片…"), this, [this] { skipCurrent(); }), "skip_image");
     skipAction->setShortcuts({QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))});
+    skipAction->setAutoRepeat(false);
 
     QMenu* viewMenu = menuBar()->addMenu(QStringLiteral(u"视图(&V)"));
     QAction* zoomIn = named(viewMenu->addAction(QStringLiteral(u"放大"), this, [this] { m_canvas->zoomBy(1.1); }), "zoom_in");
@@ -2211,8 +2214,9 @@ void MainWindow::showCanvasMenu(const QPoint& globalPosition)
 bool MainWindow::confirmAndNext()
 {
     m_shapeForm->commitPending();
-    // An image confirmed before just moves on; one that cannot be confirmed stays.
-    if (!m_session || (!m_session->document().review().checked && !confirmCurrent()))
+    // Only a properly confirmed image just moves on. Anything else is confirmed first, with the
+    // confirm conditions (a checked file failing them stays; checked and skipped is cleared).
+    if (!m_session || (m_session->status() != AnnotationStatus::Confirmed && !confirmCurrent()))
         return false;
     nextImage();
     return true;
