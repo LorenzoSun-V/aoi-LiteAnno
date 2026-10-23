@@ -7,6 +7,8 @@
 #include <QStyle>
 #include <QStyleFactory>
 
+#include <cmath>
+
 namespace liteanno::ui {
 
 namespace {
@@ -65,6 +67,28 @@ QIcon themeIconVariant(const QString& file)
     QIcon icon;
     addPng(icon, file, QIcon::Off);
     return icon;
+}
+
+QIcon appIcon()
+{
+    QIcon icon;
+    for (int size : {16, 24, 32, 48, 64, 128, 256})
+        icon.addFile(QStringLiteral(":/liteanno/icons/logo-%1.png").arg(size), QSize(size, size));
+    return icon;
+}
+
+QColor readableTextOn(const QColor& background)
+{
+    const auto linear = [](double channel) {
+        return channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
+    };
+    const QColor rgb = background.toRgb();
+    const double luminance =
+        0.2126 * linear(rgb.redF()) + 0.7152 * linear(rgb.greenF()) + 0.0722 * linear(rgb.blueF());
+    // Contrast with white (luminance 1) and with near-black #111111 (about 0.0056).
+    const double withWhite = 1.05 / (luminance + 0.05);
+    const double withBlack = (luminance + 0.05) / 0.0556;
+    return withBlack >= withWhite ? QColor(0x11, 0x11, 0x11) : QColor(Qt::white);
 }
 
 } // namespace liteanno::ui

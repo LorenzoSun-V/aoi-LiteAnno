@@ -1,5 +1,7 @@
 #include "ui/Canvas.h"
 
+#include "ui/Theme.h"
+
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -713,7 +715,7 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
 
     if (m_labelsVisible && !shape.label.isEmpty()) {
         // The label on a tag of the class colour above the shape's top left corner, in dark
-        // or white text, whichever reads better on the colour.
+        // or white text, whichever contrasts more with the colour.
         const QFontMetricsF metrics(painter.font());
         const QPointF corner = polygon.boundingRect().topLeft();
         const QRectF tag(corner.x() - pen.widthF() / 2, corner.y() - metrics.height() - 4,
@@ -721,7 +723,7 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
         painter.drawRoundedRect(tag, 2, 2);
-        painter.setPen(color.lightnessF() > 0.55 ? QColor(0x11, 0x11, 0x11) : Qt::white);
+        painter.setPen(readableTextOn(color));
         painter.drawText(tag, Qt::AlignCenter, shape.label);
     }
     if (selected) {

@@ -119,7 +119,10 @@ MainWindow::~MainWindow()
 
 void MainWindow::buildUi()
 {
+    // The logo and the program's name only: no project, folder or file (as approved with the
+    // new look).
     setWindowTitle(QStringLiteral("aoi-LiteAnno"));
+    setWindowIcon(appIcon());
     resize(1280, 800);
 
     m_canvas = new Canvas(this);
@@ -156,14 +159,9 @@ void MainWindow::buildUi()
             ImageListDelegate::Row shown;
             if (row < 0 || row >= m_images.size())
                 return shown;
-            const QString& path = m_images[row].path;
-            shown.name = path;
-            const auto status = m_statuses.constFind(path);
-            if (status != m_statuses.cend())
-                shown.status = *status;
-            else if (m_images[row].missing)
-                shown.status = AnnotationStatus::Missing;
-            shown.unwritten = m_unwritten.contains(path);
+            shown.name = m_images[row].path;
+            shown.status = imageStatusAt(row);
+            shown.unwritten = m_unwritten.contains(shown.name);
             return shown;
         },
         m_imageList));
@@ -561,9 +559,6 @@ bool MainWindow::openProject(const QString& root)
     if (!m_project->isPlainFolder())
         loadWorksets();
 
-    const QString name = m_project->config().name.isEmpty() ? QDir::toNativeSeparators(m_project->rootPath())
-                                                            : m_project->config().name;
-    setWindowTitle(QStringLiteral("%1 - aoi-LiteAnno").arg(name));
 
     // Architecture 6: the list the catalog has is shown at once; the scan brings it up to date.
     m_catalog = std::make_unique<application::ProjectCatalog>(*m_project, imaging::readImageInfo);
@@ -1381,7 +1376,6 @@ bool MainWindow::closeProject(bool force)
     m_current = -1;
     m_imageList->clear();
     m_canvas->setImage(QImage());
-    setWindowTitle(QStringLiteral("aoi-LiteAnno"));
     refresh();
     return true;
 }
@@ -2029,6 +2023,20 @@ void MainWindow::refreshImageItem(int index)
     m_imageList->item(index)->setText(imageItemText(m_images[index].path));
 }
 
+std::optional<AnnotationStatus> MainWindow::imageStatusAt(int index) const
+{
+    if (index < 0 || index >= m_images.size())
+        return std::nullopt;
+    // Format spec 5.4: a missing image is missing whatever its annotation file said; the
+    // status of the open document or the catalog must not hide it.
+    if (m_images[index].missing)
+        return AnnotationStatus::Missing;
+    const auto status = m_statuses.constFind(m_images[index].path);
+    if (status != m_statuses.cend())
+        return *status;
+    return std::nullopt;
+}
+
 QString MainWindow::imageItemText(const QString& path) const
 {
     QString text = path;
@@ -2060,8 +2068,9 @@ void MainWindow::refresh()
         const QString path = m_session->imagePath();
         m_imageStatus->setText(path);
         m_imageStatus->setToolTip(path);
-        setTone(m_statusChip, statusTone(m_session->status()));
-        m_statusChip->setText(statusText(m_session->status()));
+        const AnnotationStatus status = imageStatusAt(m_current).value_or(m_session->status());
+        setTone(m_statusChip, statusTone(status));
+        m_statusChip->setText(statusText(status));
         m_statusChip->setVisible(true);
         QStringList info;
         const QSize size = m_canvas->imageSize();

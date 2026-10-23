@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QIcon>
 #include <QString>
 
@@ -17,5 +18,9 @@ QString themeStyleSheet();
 QIcon themeIcon(const QString& name);
 // One colour variant only, e.g. "check-white".
 QIcon themeIconVariant(const QString& file);
+// The program's logo (icons/logo.svg), for the window and the task bar.
+QIcon appIcon();
+// Black or white, whichever contrasts more with `background` (WCAG relative luminance).
+QColor readableTextOn(const QColor& background);
 
 } // namespace liteanno::ui

@@ -101,6 +101,9 @@ public:
     application::DocumentSession* session() const { return m_session.get(); }
     Canvas* canvas() const { return m_canvas; }
     QString saveStateText() const;
+    // The status the image list and the panel show for row `index`: "missing" before what the
+    // annotation file says; empty when not known yet.
+    std::optional<AnnotationStatus> imageStatusAt(int index) const;
     int savingWaits() const { return m_savingWaits; }
     bool hasProject() const { return m_project != nullptr; }
 

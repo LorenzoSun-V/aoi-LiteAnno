@@ -18,6 +18,7 @@ int main(int argc, char* argv[])
     QApplication::setApplicationName(QStringLiteral("aoi-LiteAnno"));
     QApplication::setApplicationVersion(QString::fromLatin1(liteanno::kAppVersion));
     liteanno::ui::applyTheme(app);
+    QApplication::setWindowIcon(liteanno::ui::appIcon());
     // The interface is Chinese; so are Qt's own dialogs and buttons (file dialogs, OK/Cancel).
     // The single-file build carries them inside (":/i18n", cmake/LiteAnnoBundledFiles.cmake);
     // the folder build has them in Qt's translations folder.
