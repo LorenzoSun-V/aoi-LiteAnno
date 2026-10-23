@@ -511,7 +511,7 @@ void MainWindow::buildUi()
     m_cursorLabel = new QLabel;
     m_cursorLabel->setObjectName(QStringLiteral("cursorLabel"));
     m_cursorLabel->setProperty("role", QStringLiteral("secondary"));
-    m_cursorLabel->setMinimumWidth(150);
+    m_cursorLabel->setMinimumWidth(110);
     bar->addWidget(m_cursorLabel);
     bar->addStretch(1);
     auto* pager = new QWidget;
@@ -550,7 +550,6 @@ void MainWindow::buildUi()
     zoomLayout->addWidget(inButton);
     zoomLayout->addWidget(button(fit, zoom));
     bar->addWidget(zoom);
-    m_cursorLabel->setMinimumWidth(zoom->sizeHint().width());  // keeps the pager in the middle
 }
 
 void MainWindow::buildImageLabelPanel()
