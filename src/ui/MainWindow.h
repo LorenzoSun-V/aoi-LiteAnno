@@ -286,6 +286,7 @@ private:
     QAction* m_rectangleTool = nullptr;
     QAction* m_polygonTool = nullptr;
     QAction* m_rotationTool = nullptr;
+    QList<std::pair<ShapeType, QAction*>> m_moreTools;  // point, line, line strip, circle
     std::optional<Shape> m_copiedShape;
 };
 

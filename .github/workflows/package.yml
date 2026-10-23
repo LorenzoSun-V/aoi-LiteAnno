@@ -1,0 +1,159 @@
+name: Package
+
+# The Windows test build (architecture 12): a portable folder that runs from any directory,
+# a USB drive included. Every run keeps it as a workflow artifact; a "v*" tag also publishes
+# it as a pre-release.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Must equal LITEANNO_PINNED_QT_VERSION in cmake/LiteAnnoToolchainPin.cmake.
+  QT_VERSION: "6.8.3"
+
+jobs:
+  windows:
+    name: Windows x64 package
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtimageformats
+          aqtversion: "==3.3.0"
+          cache: true
+
+      - name: Configure
+        run: cmake --preset windows-msvc -DLITEANNO_BUILD_TESTS=OFF
+
+      - name: Build
+        run: cmake --build --preset windows-msvc --parallel
+
+      - name: Assemble the folder
+        run: |
+          $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { git rev-parse --short HEAD }
+          $name = "aoi-LiteAnno-$version-win64"
+          $dir = "dist/$name"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item build/windows-msvc/Release/LiteAnno.exe $dir
+          Copy-Item build/windows-msvc/Release/liteanno-cli.exe $dir
+          # Qt, the image format plugins and the Chinese translation of Qt's dialogs only.
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-opengl-sw --no-system-d3d-compiler `
+              --no-compiler-runtime --translations zh_CN "$dir\LiteAnno.exe" "$dir\liteanno-cli.exe"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          # The MSVC runtime next to the program, so nothing has to be installed.
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT" | Sort-Object FullName | Select-Object -Last 1
+          Copy-Item "$($crt.FullName)\*.dll" $dir
+          # Licences of the code built in: nlohmann/json (MIT), the OpenCV port (Apache-2.0).
+          New-Item -ItemType Directory -Force "$dir/licenses" | Out-Null
+          Copy-Item third_party/nlohmann/LICENSE.MIT "$dir/licenses/nlohmann-json-LICENSE.MIT"
+          Copy-Item third_party/opencv/LICENSE "$dir/licenses/opencv-LICENSE"
+          "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem -Recurse $dir | Select-Object -ExpandProperty FullName
+
+      - name: Dependency check
+        # Every DLL the packaged files load is in the folder or comes with Windows.
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
+          $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
+          $local = Get-ChildItem -Recurse $dir -Include *.dll | ForEach-Object { $_.Name.ToLowerInvariant() }
+          $missing = @()
+          foreach ($file in Get-ChildItem -Recurse $dir -Include *.exe, *.dll) {
+            $deps = & $dumpbin.FullName /nologo /dependents $file.FullName |
+                ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[\w.\-]+\.dll$' }
+            foreach ($dep in $deps) {
+              $name = $dep.ToLowerInvariant()
+              if ($name -like 'api-ms-*' -or $name -like 'ext-ms-*') { continue }
+              if ($local -contains $name) { continue }
+              if (Test-Path "C:\Windows\System32\$name") { continue }
+              $missing += "$($file.Name) -> $dep"
+            }
+          }
+          if ($missing) { $missing | ForEach-Object { Write-Host "missing: $_" }; exit 1 }
+          Write-Host "All dependencies found."
+
+      - name: Start-up check
+        # The packaged programs start and quit on a machine without Qt on the PATH. A hang
+        # fails within a minute and leaves Qt's log and a screenshot of the desktop behind.
+        timeout-minutes: 5
+        run: |
+          $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
+          $env:PATH = "C:\Windows\System32;C:\Windows"
+          Remove-Item Env:QT_PLUGIN_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
+          $env:QT_FORCE_STDERR_LOGGING = "1"
+          $env:QT_DEBUG_PLUGINS = "1"
+          New-Item -ItemType Directory -Force startup-check | Out-Null
+          function Test-Start($exe, $arguments) {
+            Write-Host "== $exe $arguments"
+            $p = Start-Process -FilePath "$dir\$exe" -ArgumentList $arguments -PassThru `
+                -RedirectStandardError "startup-check/$exe.stderr.txt" -RedirectStandardOutput "startup-check/$exe.stdout.txt"
+            $null = $p.Handle  # keeps the exit code readable after the process ends
+            $finished = $p.WaitForExit(60000)
+            if (-not $finished) {
+              Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+              $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+              [System.Drawing.Graphics]::FromImage($bitmap).CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+              $bitmap.Save("$PWD\startup-check\$exe.png")
+              Get-Process | Where-Object { $_.MainWindowTitle } | ForEach-Object { Write-Host "window: $($_.ProcessName): $($_.MainWindowTitle)" }
+              Stop-Process -Id $p.Id -Force
+            }
+            Get-Content "startup-check/$exe.stdout.txt", "startup-check/$exe.stderr.txt" -ErrorAction SilentlyContinue |
+                Select-Object -Last 80
+            if (-not $finished) { Write-Error "$exe did not quit within 60 s"; exit 1 }
+            if ($p.ExitCode -ne 0) { Write-Error "$exe exited with $($p.ExitCode)"; exit 1 }
+          }
+          Test-Start "liteanno-cli.exe" "--version"
+          Test-Start "LiteAnno.exe" "--smoke-test"
+
+      - name: Keep the start-up check output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-check
+          path: startup-check
+          if-no-files-found: ignore
+
+      - name: Zip
+        run: Compress-Archive -Path "dist/$env:PACKAGE_NAME" -DestinationPath "dist/$env:PACKAGE_NAME.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}
+          path: dist/${{ env.PACKAGE_NAME }}.zip
+
+  publish:
+    name: Publish pre-release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "$GITHUB_REF_NAME" --notes "测试版：解压后运行 LiteAnno.exe。命令行工具是 liteanno-cli.exe。"

@@ -1,15 +1,18 @@
 """Architecture 11.1: every export compared with X-AnyLabeling 4.2.0's own converter.
 
 Runs with a Python that has the pinned X-AnyLabeling release installed. Builds two small
-projects (rectangles, polygons) with the cases that decide the output: coordinates outside
+projects (rectangles, polygons, rotated boxes) with the cases that decide the output: coordinates outside
 the image and exactly on 0, two-point rectangles, rounding ties, difficult objects, polygons
 joined by group_id, negative samples, skipped and unconfirmed images. Exports them with
 liteanno-cli and converts the same files with upstream's LabelConverter
-(custom_to_yolo, custom_to_voc, custom_to_coco), then compares:
+(custom_to_yolo, custom_to_voc, custom_to_coco, custom_to_dota, custom_to_mask), then compares:
 
-- YOLO and VOC files byte for byte (VOC apart from <folder>, which names each output folder);
+- YOLO (also OBB), DOTA and VOC files byte for byte (VOC apart from <folder>, which names each output folder);
 - COCO files after setting "info" and "licenses" equal, through json.dumps so that 1 and
-  1.0 differ, and our file must be exactly json.dumps(indent=4) of itself.
+  1.0 differ, and our file must be exactly json.dumps(indent=4) of itself;
+- masks pixel for pixel (PNG compression may differ).
+
+LabelMe has no upstream converter: its files are checked against the source shapes.
 
 Only confirmed images are exported; the manifest lists the others.
 """
@@ -70,6 +73,18 @@ POLYGONS = {
                 True, None),
     "p03.png": (320, 240, [], True, None),
     "p04.png": (320, 240, [shape("dent", "polygon", [[1.5, 2.5], [3.5, 2.5], [2.5, 4.5]])], True, None),
+}
+
+
+ROTATIONS = {
+    "r01.png": (200, 100, [dict(shape("scratch", "rotation", [[20.5, 10.0], [80.0, 12.25], [78.0, 40.0], [18.5, 37.75]]),
+                                direction=0.0349),
+                           dict(shape("dent", "rotation", [[100, 20], [150, 20], [150, 60], [100, 60]], difficult=True),
+                                direction=0)],
+                True, None),
+    "r02.png": (320, 240, [], True, None),
+    "r03.png": (320, 240, [dict(shape("stain", "rotation", [[0.0, 0.0], [320.0, 0.0], [320.0, 240.0], [0.0, 240.0]]),
+                                direction=0.0)], True, None),
 }
 
 
@@ -208,6 +223,92 @@ def check_coco(cli, root, work, images, fmt, mode, file_name):
     print(f"{fmt}: {len(ours['images'])} images, {len(ours['annotations'])} annotations identical")
 
 
+def check_obb_and_dota(cli, root, work, images):
+    out = os.path.join(work, "yolo-obb")
+    run([cli, "export", root, "--format", "yolo-obb", "--out", out])
+    names, manifest = exported(os.path.join(out, "liteanno-export.json"))
+    check_manifest(manifest, images)
+    converter = LabelConverter(classes_file=os.path.join(out, "classes.txt"))
+    upstream = os.path.join(work, "yolo-obb-upstream")
+    os.makedirs(upstream)
+    for name in names:
+        stem = os.path.splitext(name)[0]
+        converter.custom_to_yolo(os.path.join(root, stem + ".json"), os.path.join(upstream, stem + ".txt"), "obb")
+        compare_bytes(f"yolo-obb {stem}.txt", read(os.path.join(out, stem + ".txt")),
+                      read(os.path.join(upstream, stem + ".txt")))
+    print(f"yolo-obb: {len(names)} files identical")
+
+    out = os.path.join(work, "dota")
+    run([cli, "export", root, "--format", "dota", "--out", out])
+    names, manifest = exported(os.path.join(out, "liteanno-export.json"))
+    check_manifest(manifest, images)
+    upstream = os.path.join(work, "dota-upstream")
+    os.makedirs(upstream)
+    for name in names:
+        stem = os.path.splitext(name)[0]
+        LabelConverter().custom_to_dota(os.path.join(root, stem + ".json"), os.path.join(upstream, stem + ".txt"))
+        compare_bytes(f"dota {stem}.txt", read(os.path.join(out, stem + ".txt")), read(os.path.join(upstream, stem + ".txt")))
+    print(f"dota: {len(names)} files identical")
+
+
+def check_mask(cli, root, work, images):
+    out = os.path.join(work, "mask")
+    run([cli, "export", root, "--format", "mask", "--out", out])
+    names, manifest = exported(os.path.join(out, "liteanno-export.json"))
+    check_manifest(manifest, images)
+    with open(os.path.join(out, "mask_colors.json"), encoding="utf-8") as f:
+        mapping = json.load(f)
+    if mapping != {"type": "grayscale", "colors": {name: i + 1 for i, name in enumerate(CLASSES)}}:
+        sys.exit(f"mask_colors.json is {mapping}")
+    upstream = os.path.join(work, "mask-upstream")
+    os.makedirs(upstream)
+    converter = LabelConverter()
+    for name in names:
+        stem = os.path.splitext(name)[0]
+        theirs_path = os.path.join(upstream, stem + ".png")
+        width, height = images[name][0], images[name][1]
+        if images[name][2]:
+            converter.custom_to_mask(os.path.join(root, stem + ".json"), theirs_path, mapping)
+        else:
+            converter.write_empty_mask(theirs_path, mapping, width, height)
+        # Ours are in masks/, so copied images (in images/) never meet them.
+        ours = cv2.imread(os.path.join(out, "masks", stem + ".png"), cv2.IMREAD_UNCHANGED)
+        theirs = cv2.imread(theirs_path, cv2.IMREAD_UNCHANGED)
+        if ours is None or ours.dtype != np.uint8 or ours.shape != theirs.shape or not np.array_equal(ours, theirs):
+            sys.exit(f"mask {stem}.png differs: {None if ours is None else (ours.shape, ours.dtype)} "
+                     f"vs {theirs.shape}, {0 if ours is None or ours.shape != theirs.shape else int((ours != theirs).sum())} pixels")
+    print(f"mask: {len(names)} masks pixel for pixel identical")
+
+
+def check_labelme(cli, root, work, images, name):
+    out = os.path.join(work, name)
+    run([cli, "export", root, "--format", "labelme", "--out", out])
+    names, manifest = exported(os.path.join(out, "liteanno-export.json"))
+    for name in names:
+        stem = os.path.splitext(name)[0]
+        with open(os.path.join(out, stem + ".json"), encoding="utf-8") as f:
+            data = json.load(f)
+        if data["imagePath"] != name or not os.path.exists(os.path.join(out, name)):
+            sys.exit(f"labelme {stem}.json: image {data['imagePath']} not next to it")
+        if (data["imageWidth"], data["imageHeight"]) != images[name][:2]:
+            sys.exit(f"labelme {stem}.json: size")
+        expected_keys = ["label", "points", "group_id", "description", "shape_type", "flags", "mask"]
+        for ours, source in zip(data["shapes"], images[name][2]):
+            if list(ours) != expected_keys:
+                sys.exit(f"labelme {stem}.json: keys {list(ours)}")
+            if source["shape_type"] == "rectangle":
+                xs = [p[0] for p in source["points"]]
+                ys = [p[1] for p in source["points"]]
+                if ours["shape_type"] != "rectangle" or ours["points"] != [[min(xs), min(ys)], [max(xs), max(ys)]]:
+                    sys.exit(f"labelme {stem}.json: rectangle {ours}")
+            elif source["shape_type"] == "rotation":
+                if ours["shape_type"] != "polygon" or ours["points"] != source["points"]:
+                    sys.exit(f"labelme {stem}.json: rotated box {ours}")
+            elif ours["points"] != source["points"] or ours["shape_type"] != source["shape_type"]:
+                sys.exit(f"labelme {stem}.json: {ours}")
+    print(f"{name}: {len(names)} files as expected")
+
+
 def main():
     cli, work = sys.argv[1], sys.argv[2]
     shutil.rmtree(work, ignore_errors=True)
@@ -223,6 +324,13 @@ def main():
     check_voc(cli, polygons, work, POLYGONS, "voc-polygon", "polygon")
     check_coco(cli, rectangles, work, RECTANGLES, "coco-det", "rectangle", "coco_detection.json")
     check_coco(cli, polygons, work, POLYGONS, "coco-seg", "polygon", "coco_instance_segmentation.json")
+
+    rotations = os.path.join(work, "rotations")
+    make_project(cli, rotations, ROTATIONS, "rotation")
+    check_obb_and_dota(cli, rotations, work, ROTATIONS)
+    check_mask(cli, polygons, work, POLYGONS)
+    check_labelme(cli, rectangles, work, RECTANGLES, "labelme-rectangles")
+    check_labelme(cli, rotations, work, ROTATIONS, "labelme-rotations")
 
     # Polygons cannot go into a detection export: nothing is written unless asked to skip.
     out = os.path.join(work, "refused")

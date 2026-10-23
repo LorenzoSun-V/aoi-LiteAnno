@@ -89,6 +89,16 @@ QString exportFormatText(formats::ExportFormat format)
         return QStringLiteral(u"COCO 检测（矩形）");
     case formats::ExportFormat::CocoSegmentation:
         return QStringLiteral(u"COCO 实例分割（多边形）");
+    case formats::ExportFormat::YoloObb:
+        return QStringLiteral(u"YOLO 旋转框（OBB）");
+    case formats::ExportFormat::Dota:
+        return QStringLiteral(u"DOTA（旋转框）");
+    case formats::ExportFormat::Mask:
+        return QStringLiteral(u"掩膜 PNG（多边形，灰度）");
+    case formats::ExportFormat::LabelMe:
+        return QStringLiteral(u"LabelMe（全部形状，附图片）");
+    case formats::ExportFormat::Classification:
+        return QStringLiteral(u"图片分类（按图片级标签）");
     }
     return QString();
 }

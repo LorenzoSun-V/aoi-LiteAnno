@@ -2,13 +2,21 @@
 #include "ui/MainWindow.h"
 
 #include <QApplication>
+#include <QLibraryInfo>
+#include <QLocale>
 #include <QTimer>
+#include <QTranslator>
 
 int main(int argc, char* argv[])
 {
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("aoi-LiteAnno"));
     QApplication::setApplicationVersion(QString::fromLatin1(liteanno::kAppVersion));
+    // The interface is Chinese; so are Qt's own dialogs and buttons (file dialogs, OK/Cancel).
+    QTranslator qtTranslator;
+    if (qtTranslator.load(QLocale(QLocale::Chinese, QLocale::China), QStringLiteral("qtbase"), QStringLiteral("_"),
+                          QLibraryInfo::path(QLibraryInfo::TranslationsPath)))
+        QApplication::installTranslator(&qtTranslator);
 
     liteanno::ui::MainWindow window;
     window.show();

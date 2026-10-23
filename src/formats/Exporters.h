@@ -2,7 +2,8 @@
 
 // Writing the per-image annotations into training formats (architecture 11, 11.1), as
 // X-AnyLabeling 4.2.0's LabelConverter writes them (custom_to_yolo, custom_to_voc,
-// custom_to_coco), so the files are the same for the same input.
+// custom_to_coco, custom_to_dota, custom_to_mask), so the files are the same for the same
+// input. LabelMe and image classification have no upstream converter; see their functions.
 
 #include "formats/AnnotationFile.h"
 
@@ -14,7 +15,9 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
+#include <vector>
 
 class QIODevice;
 
@@ -27,10 +30,15 @@ enum class ExportFormat {
     VocPolygon,        // rectangles and polygons, polygons with their points
     CocoDetection,     // rectangles
     CocoSegmentation,  // polygons, instances joined by group_id
+    YoloObb,           // rotated boxes as YOLO OBB corners
+    Dota,              // rotated boxes as DOTA lines
+    Mask,              // polygons filled into a grayscale PNG
+    LabelMe,           // every editable shape as a LabelMe file
+    Classification,    // image-level labels: a folder per label, or a CSV list
 };
 
 // As the command line names them: "yolo-det", "yolo-seg", "voc", "voc-polygon", "coco-det",
-// "coco-seg".
+// "coco-seg", "yolo-obb", "dota", "mask", "labelme", "classify".
 QString exportFormatName(ExportFormat format);
 std::optional<ExportFormat> exportFormatFromName(const QString& name);
 QList<ExportFormat> exportFormats();
@@ -42,6 +50,9 @@ bool exportNeedsClassIds(ExportFormat format);
 struct PyNumber {
     double value = 0;
     bool isInteger = false;
+    // An integer as the file has it, digits only, when it came from the file: a double does
+    // not hold every 64-bit integer (2^63 - 1 rounds to 2^63).
+    std::string digits;
 };
 
 struct ExportShape {
@@ -76,8 +87,19 @@ QList<ExportIssue> unconvertibleShapes(const ExportImage& image, ExportFormat fo
 // Objects with a point outside the image; the export moves it to the border, as upstream does.
 int clampedShapes(const ExportImage& image, ExportFormat format);
 
-// The YOLO label file of one image; empty for a negative sample.
+// The YOLO label file of one image; empty for a negative sample. Also YOLO OBB.
 QByteArray yoloLabels(const ExportImage& image, ExportFormat format, const QHash<QString, int>& classIds);
+// The DOTA label file of one image: "x0 y0 ... x3 y3 label difficult" per rotated box.
+QByteArray dotaLabels(const ExportImage& image);
+// The mask of one image, row by row, `image.width` x `image.height` bytes: each polygon in
+// file order filled with its class's value, as cv2.fillPoly does; 0 elsewhere.
+std::vector<unsigned char> maskPixels(const ExportImage& image, const QHash<QString, int>& values);
+// The class values of masks in upstream's mapping format: {"type": "grayscale", "colors":
+// {name: value}}, in class id order, so the masks can be imported again.
+QByteArray maskColorsFile(const QHash<QString, int>& values, const QList<std::pair<int, QString>>& categories);
+// The LabelMe file of one image, made from its annotation `bytes`: LabelMe's fields only,
+// rectangles as two corners, rotated boxes as polygons; `imagePath` is written as given.
+QByteArray labelMeFile(const ExportImage& image, const QByteArray& bytes, const QString& imagePath);
 // The VOC XML of one image, as xml.dom.minidom's toprettyxml(indent="  ") writes it.
 // `folder` is the folder of the XML file, written into <folder> as upstream does.
 QByteArray vocAnnotation(const ExportImage& image, ExportFormat format, const QString& folder);
