@@ -41,6 +41,7 @@ public:
     bool setShapeLabel(qsizetype index, const QString& label);
     // "group_id": which pose (rectangle and keypoints) or instance the shape belongs to.
     bool setShapeGroupId(qsizetype index, std::optional<qint64> groupId);
+    bool setShapeDifficult(qsizetype index, bool difficult);
     // Returns the index of the new shape, or -1 when it is not an editable shape this
     // build can create.
     qsizetype addShape(Shape shape);

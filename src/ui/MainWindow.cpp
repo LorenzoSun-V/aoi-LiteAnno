@@ -329,6 +329,13 @@ void MainWindow::buildUi()
         else
             refresh();
     });
+    connect(m_shapeForm, &ShapeForm::occludedChosen, this, [this](bool occluded) {
+        const qsizetype index = m_shapeForm->shown().index;
+        if (m_session && !m_session->isReadOnly() && m_session->setShapeDifficult(index, occluded))
+            edited();
+        else
+            refresh();
+    });
     layout->addWidget(m_shapeForm);
 
     m_imageLabelPanel = new QGroupBox(QStringLiteral(u"图片级标签"));
@@ -2577,6 +2584,8 @@ void MainWindow::refreshShapeForm()
         }
         shown.editable = !m_session->isReadOnly() && recognized && !shape.locked;
         shown.rectangle = recognized && shape.type == ShapeType::Rectangle;
+        shown.keypoint = recognized && shape.type == ShapeType::Point;
+        shown.difficult = shape.difficult;
         shown.imageSize = m_canvas->imageSize();
         const QStringList classes = classNames();
         shown.freeText = classes.isEmpty();

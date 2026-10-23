@@ -34,6 +34,9 @@ struct Shape {
     // pose, or the polygons of one instance. Another value reads as none and stays in the
     // file as it is until the group is edited.
     std::optional<qint64> groupId;
+    // "difficult" is true: an occluded keypoint (exported as v=1 instead of 2), or a hard
+    // object. Any other value reads as false and stays in the file until it is edited.
+    bool difficult = false;
     // String values of the "attributes" object, for the confirm conditions (format spec 5.3).
     // Not written back: the object on disk stays as it is.
     QHash<QString, QString> attributes;

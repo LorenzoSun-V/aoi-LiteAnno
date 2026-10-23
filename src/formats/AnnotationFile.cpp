@@ -131,7 +131,9 @@ Json newShapeObject(const Shape& shape)
                          : copiedGroup.is_number_integer() ? Json(nullptr)
                                                            : copiedGroup;
     object["description"] = toJson(shape.description);
-    object["difficult"] = keep("difficult", false);
+    // A copied value stays unless the shape was marked difficult or the mark was taken away.
+    const Json copiedDifficult = keep("difficult", false);
+    object["difficult"] = shape.difficult ? Json(true) : copiedDifficult == Json(true) ? Json(false) : copiedDifficult;
     object["shape_type"] = toJson(shapeTypeName(shape.type));
     object["flags"] = keep("flags", Json::object());
     object["attributes"] = keep("attributes", Json::object());
@@ -163,6 +165,8 @@ void applyShapeEdits(Json& object, const Shape& before, const Shape& after)
         object["description"] = toJson(after.description);
     if (after.groupId != before.groupId)
         object["group_id"] = after.groupId ? Json(*after.groupId) : Json(nullptr);
+    if (after.difficult != before.difficult)
+        object["difficult"] = after.difficult;
     // Upstream always writes the angle of a rotated box; an edit completes a missing one.
     if (after.type == ShapeType::Rotation
         && (after.direction != before.direction || (pointsEdited && !object.contains("direction"))))
@@ -389,6 +393,8 @@ Shape AnnotationFile::Data::readShape(const Json& item, std::size_t index)
     if (const auto groupIt = item.find("group_id"); groupIt != item.end() && groupIt->is_number_integer()
                                                      && !(groupIt->is_number_unsigned() && groupIt->get<quint64>() > quint64(std::numeric_limits<qint64>::max())))
         shape.groupId = groupIt->get<qint64>();
+    if (const auto difficultIt = item.find("difficult"); difficultIt != item.end())
+        shape.difficult = *difficultIt == Json(true);
     if (!problem.isEmpty()) {
         shape.kind = ShapeKind::Unrecognized;
         addDiagnostic(DiagnosticCode::ShapeUnrecognized, location, problem);

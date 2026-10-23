@@ -5,6 +5,7 @@
 
 #include <optional>
 
+class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
@@ -28,6 +29,8 @@ public:
         QRectF box;  // in image pixels
         bool editable = false;  // editable at all (label)
         bool rectangle = false;  // the numbers can be changed
+        bool keypoint = false;  // a point: "遮挡" is shown
+        bool difficult = false;
         QSize imageSize;
         QStringList labels;  // offered in the list
         bool freeText = false;  // any name may be typed (no class list)
@@ -49,6 +52,8 @@ signals:
     void rectangleChanged(const QRectF& box);
     // "组号" (group_id): joins a pose's rectangle and keypoints. Empty is no group.
     void groupChosen(std::optional<qint64> groupId);
+    // "遮挡" on a keypoint ("difficult"): pose export writes v=1 instead of 2.
+    void occludedChosen(bool occluded);
 
 private:
     void numberEdited(QDoubleSpinBox* field);
@@ -64,6 +69,7 @@ private:
     QDoubleSpinBox* m_y = nullptr;
     QDoubleSpinBox* m_width = nullptr;
     QDoubleSpinBox* m_height = nullptr;
+    QCheckBox* m_occluded = nullptr;
     QLabel* m_note = nullptr;
 };
 

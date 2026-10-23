@@ -80,6 +80,15 @@ bool AnnotationDocument::setShapeGroupId(qsizetype index, std::optional<qint64> 
     return true;
 }
 
+bool AnnotationDocument::setShapeDifficult(qsizetype index, bool difficult)
+{
+    if (!isEditable(index) || m_shapes[index].difficult == difficult)
+        return false;
+    m_shapes[index].difficult = difficult;
+    contentEdited();
+    return true;
+}
+
 qsizetype AnnotationDocument::addKeypoint(Shape point)
 {
     qsizetype rectangle = -1;
