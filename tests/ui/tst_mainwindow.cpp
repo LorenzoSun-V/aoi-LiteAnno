@@ -1341,9 +1341,12 @@ private slots:
         QTest::keyClick(canvas, Qt::Key_Down);
         QCOMPARE(w.document().shapes()[0].points[0], drawn[0] + QPointF(1, 1));
         // Not out of the image: the shape stays where it is.
+        // (The point was clicked at a screen pixel, so it need not be on a whole image pixel:
+        // it stops at less than one pixel from the edge.)
         for (int i = 0; i < 20; ++i)
             QTest::keyClick(canvas, Qt::Key_Up);
-        QCOMPARE(w.document().shapes()[0].points[0].y(), 0.0);
+        const double start = drawn[0].y() + 1;
+        QCOMPARE(w.document().shapes()[0].points[0].y(), start - std::floor(start));
 
         // Ctrl+E changes the class.
         w.answers.label = QStringLiteral("dent");
