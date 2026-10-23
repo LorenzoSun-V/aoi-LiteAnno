@@ -78,7 +78,7 @@ cmake --preset linux-gcc -DLITEANNO_UPSTREAM_PYTHON=$HOME/xal/bin/python
 
 ## 单文件版与 Qt 许可
 
-测试版是两个独立的 exe：`LiteAnno.exe`（标注窗口）和 `liteanno-cli.exe`（命令行），各自把 Qt 6.8.3 和 MSVC 运行库静态链接在内，旁边不需要任何文件，可以放在任意文件夹或 U 盘里直接运行。打包流程见 `.github/workflows/package.yml`，静态 Qt 由 `.github/scripts/build-static-qt.ps1` 从 Qt 官方源码编译（只含 qtbase 和 qtimageformats，源码包校验 SHA-256）。
+测试版只发 `LiteAnno.exe`（标注窗口）一个文件，Qt 6.8.3 和 MSVC 运行库都静态链接在内，旁边不需要任何文件，可以放在任意文件夹或 U 盘里直接运行。命令行工具 `liteanno-cli.exe` 也这样编译和检查，但不随测试版发出，需要时按下面的步骤自己编译。打包流程见 `.github/workflows/package.yml`，静态 Qt 由 `.github/scripts/build-static-qt.ps1` 从 Qt 官方源码编译（只含 qtbase 和 qtimageformats，源码包校验 SHA-256）。
 
 Qt 按 GNU LGPL 3.0 授权使用。窗口程序的“帮助 > 关于”、命令行的 `liteanno-cli --licenses` 和 `--license <名称>` 列出所用的第三方库和它们的许可证全文。LGPL 允许你换用自己修改过的 Qt 重新链接：本仓库就是程序的全部源码，在装有 Visual Studio 2022 的 Windows 上，用 PowerShell 按下面的步骤做，得到的就是同样的两个单文件程序（静态 Qt 不含 Qt Test，所以要关掉测试）：
 

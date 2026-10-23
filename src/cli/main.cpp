@@ -1,7 +1,7 @@
-// liteanno-cli (architecture 13): init, status, confirm, export and import for engineers. It takes
-// the same project lock as the window, so it never changes a project open there.
+// liteanno-cli (architecture 13): init, status, export and import for engineers. It takes the
+// same project lock as the window, so it never changes a project open there. There is no bulk
+// confirm: "checked" means a person looked at the image (architecture 4).
 
-#include "application/DocumentSession.h"
 #include "application/ExportService.h"
 #include "application/ImportService.h"
 #include "application/LocalDataPaths.h"
@@ -22,7 +22,6 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QSet>
 #include <QUuid>
 
 #include <cstdio>
@@ -200,79 +199,6 @@ int status(const Common& common)
     return Ok;
 }
 
-int confirm(const QCommandLineParser& parser, const Common& common)
-{
-    const std::unique_ptr<ProjectSession> project = openProject(common);
-    if (!project)
-        return Failed;
-    const bool dryRun = parser.isSet(QStringLiteral("dry-run"));
-    const application::ExportScope scope = application::scopeOf(*project, common.batches);
-    if (!scope.error.isEmpty()) {
-        printError(scope.error);
-        return Failed;
-    }
-    // Images with unsaved edits of the window in a recovery record are left alone: writing
-    // them here would make the record look outdated.
-    QSet<QString> recorded;
-    const application::RecoveryService recovery(project->paths(), project->location());
-    for (const application::RecoveryCandidate& candidate : recovery.scan().candidates)
-        recorded.insert(candidate.record.imagePath);
-
-    int confirmed = 0;
-    int blocked = 0;
-    int failed = 0;
-    for (const application::ScopeImage& scoped : scope.images) {
-        application::ImageOnDisk image = application::readImageOnDisk(*project, scoped.path, scoped.missing,
-                                                                      scoped.nameCollision, imaging::readImageInfo);
-        if (image.status != AnnotationStatus::PendingConfirmation)
-            continue;
-        if (recorded.contains(scoped.path)) {
-            print(QStringLiteral(u"跳过 %1：窗口里有未写入的修改").arg(scoped.path));
-            ++blocked;
-            continue;
-        }
-        application::DocumentSession session(scoped.path, std::move(*image.annotation), project->config(),
-                                             scoped.nameCollision);
-        if (!session.confirm()) {
-            ++blocked;
-            continue;
-        }
-        if (dryRun) {
-            ++confirmed;
-            continue;
-        }
-        formats::LoadedAnnotation edited = session.copy();
-        const QString imageFile = project->imageFilePath(scoped.path);
-        formats::SaveOptions options;
-        options.mayWrite = [imageFile] {
-            formats::SaveResult result;
-            if (dataset::hasNameCollision(imageFile)) {
-                result.status = formats::SaveStatus::ReadOnly;
-                result.error = QStringLiteral(u"同一目录下有同名图片");
-            } else {
-                result.status = formats::SaveStatus::Saved;
-            }
-            return result;
-        };
-        const formats::SaveResult saved =
-            formats::saveAnnotationFile(project->annotationFilePath(scoped.path), edited, options);
-        if (saved.status == formats::SaveStatus::Saved) {
-            ++confirmed;
-        } else {
-            ++failed;
-            printError(QStringLiteral(u"没有写入 %1：%2").arg(scoped.path, saved.error.isEmpty()
-                                                                             ? QString::fromLatin1(formats::saveStatusName(saved.status))
-                                                                             : saved.error));
-        }
-    }
-    print(QStringLiteral(u"%1 %2 张；不满足确认条件或不能写入的 %3 张；失败 %4 张。")
-              .arg(dryRun ? QStringLiteral(u"可以确认") : QStringLiteral(u"已确认"))
-              .arg(confirmed)
-              .arg(blocked)
-              .arg(failed));
-    return failed > 0 ? Failed : Ok;
-}
-
 int exportProject(const QCommandLineParser& parser, const Common& common)
 {
     const std::optional<formats::ExportFormat> format = formats::exportFormatFromName(parser.value(QStringLiteral("format")));
@@ -414,12 +340,11 @@ int main(int argc, char* argv[])
         u"aoi-LiteAnno 命令行工具\n\n"
         u"  init <数据文件夹>      创建项目文件 liteanno/project.json\n"
         u"  status <数据文件夹>    统计各状态的图片数量\n"
-        u"  confirm <数据文件夹>   把满足确认条件的待确认图片标为已确认\n"
         u"  export <数据文件夹>    导出已确认的图片（没有项目文件的文件夹：导出有标注的图片）\n"
         u"  import <数据文件夹>    把 --labels 文件夹里的标注导入为每张图片的 JSON"));
     parser.addHelpOption();
     parser.addVersionOption();
-    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("init | status | confirm | export | import"));
+    parser.addPositionalArgument(QStringLiteral("command"), QStringLiteral("init | status | export | import"));
     parser.addPositionalArgument(QStringLiteral("root"), QStringLiteral(u"数据文件夹（项目根目录）"));
     parser.addOptions({
         {QStringLiteral("batch"), QStringLiteral(u"只处理这个批次（如 b000003），可以写多次"), QStringLiteral("batch")},
@@ -427,7 +352,6 @@ int main(int argc, char* argv[])
         {QStringLiteral("classes"), QStringLiteral(u"init：类别，用逗号分隔，编号从 0 开始"), QStringLiteral("names")},
         {QStringLiteral("shape-types"), QStringLiteral(u"init：形状类型，如 rectangle,polygon"), QStringLiteral("types")},
         {QStringLiteral("batch-size"), QStringLiteral(u"init：每批图片数，默认 1000"), QStringLiteral("count")},
-        {QStringLiteral("dry-run"), QStringLiteral(u"confirm：只统计，不写入")},
         {QStringLiteral("format"), QStringLiteral(u"export：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask | labelme | classify；"
                         u"import：yolo-det | yolo-seg | yolo-obb | voc | voc-polygon | coco-det | coco-seg | dota | mask"),
          QStringLiteral("format")},
@@ -496,8 +420,6 @@ int main(int argc, char* argv[])
         return init(parser, common);
     if (command == QLatin1String("status"))
         return status(common);
-    if (command == QLatin1String("confirm"))
-        return confirm(parser, common);
     if (command == QLatin1String("export"))
         return exportProject(parser, common);
     if (command == QLatin1String("import"))
