@@ -70,6 +70,8 @@ public:
     void rescan();
     // "导出…" (architecture 11): writes the edits first, then exports the files.
     bool exportAnnotations();
+    // "帮助 > 关于": version, source, and the licences of what is built in.
+    void showAbout();
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 

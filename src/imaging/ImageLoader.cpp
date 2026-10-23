@@ -101,4 +101,15 @@ std::optional<ImageInfo> readImageInfo(const QString& path)
     return info;
 }
 
+QStringList missingImageFormats()
+{
+    const QList<QByteArray> supported = QImageReader::supportedImageFormats();
+    QStringList missing;
+    for (const char* format : {"jpeg", "png", "bmp", "tiff", "webp", "gif", "pbm", "pgm", "ppm"}) {
+        if (!supported.contains(QByteArray(format)))
+            missing.append(QString::fromLatin1(format));
+    }
+    return missing;
+}
+
 } // namespace liteanno::imaging

@@ -1,8 +1,9 @@
 name: Package
 
-# The Windows test build (architecture 12): a portable folder that runs from any directory,
-# a USB drive included. Every run keeps it as a workflow artifact; a "v*" tag also publishes
-# it as a pre-release.
+# The Windows test build (architecture 12): LiteAnno.exe and liteanno-cli.exe, each one file
+# with Qt and the MSVC runtime linked in, so they run from any folder, a USB drive included,
+# with nothing next to them. Every run keeps them as a workflow artifact; a "v*" tag also
+# publishes them as a pre-release.
 on:
   push:
     tags: ["v*"]
@@ -19,6 +20,7 @@ concurrency:
 env:
   # Must equal LITEANNO_PINNED_QT_VERSION in cmake/LiteAnnoToolchainPin.cmake.
   QT_VERSION: "6.8.3"
+  QT_STATIC_PREFIX: C:\qt-static
 
 jobs:
   windows:
@@ -27,24 +29,67 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Qt
+      - name: Developer shell
+        # cl.exe, the Windows SDK and Ninja for the static Qt build, for every later step.
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          & "$vs\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in "PATH", "INCLUDE", "LIB", "LIBPATH", "WindowsSdkDir", "WindowsSDKVersion", "VCToolsInstallDir", "VCINSTALLDIR") {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { "$name=$value" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+          }
+          (Get-Command cl.exe).Source
+
+      - name: Static Qt from the cache
+        id: qt-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.QT_STATIC_PREFIX }}
+          key: qt-static-${{ env.QT_VERSION }}-${{ hashFiles('.github/scripts/build-static-qt.ps1', 'cmake/LiteAnnoToolchainPin.cmake') }}
+
+      - name: Build static Qt
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 150
+        run: .github/scripts/build-static-qt.ps1 -Version $env:QT_VERSION -Prefix $env:QT_STATIC_PREFIX -WorkDir "$env:RUNNER_TEMP\qt-src"
+
+      - name: Qt's Chinese translation
+        # qtbase_zh_CN.qm from the official build of the same version; the program carries it.
         uses: jurplel/install-qt-action@v4
         with:
           version: ${{ env.QT_VERSION }}
           host: windows
           target: desktop
           arch: win64_msvc2022_64
-          modules: qtimageformats
+          archives: qttranslations
+          dir: ${{ runner.temp }}\qt-translations
+          set-env: false
           aqtversion: "==3.3.0"
           cache: true
 
+      - name: Licence texts
+        # Everything linked into the programs: Qt and its bundled libraries, nlohmann/json
+        # (MIT), the OpenCV port (Apache-2.0); SQLite is in the public domain.
+        run: |
+          $dir = "$env:RUNNER_TEMP\licenses"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item "$env:QT_STATIC_PREFIX\licenses\*" $dir
+          Copy-Item third_party/nlohmann/LICENSE.MIT "$dir/nlohmann-json-LICENSE.MIT"
+          Copy-Item third_party/opencv/LICENSE "$dir/opencv-LICENSE"
+          Get-ChildItem $dir | Select-Object -ExpandProperty Name
+
       - name: Configure
-        run: cmake --preset windows-msvc -DLITEANNO_BUILD_TESTS=OFF
+        run: |
+          $qm = Get-ChildItem -Recurse "$env:RUNNER_TEMP\qt-translations" -Filter qtbase_zh_CN.qm | Select-Object -First 1
+          if (-not $qm) { Write-Error "qtbase_zh_CN.qm not found"; exit 1 }
+          cmake --preset windows-msvc -DLITEANNO_BUILD_TESTS=OFF "-DCMAKE_PREFIX_PATH=$env:QT_STATIC_PREFIX" `
+              -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded "-DLITEANNO_QT_TRANSLATION=$($qm.FullName)" `
+              "-DLITEANNO_BUNDLED_LICENSES_DIR=$env:RUNNER_TEMP\licenses"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       - name: Build
         run: cmake --build --preset windows-msvc --parallel
 
-      - name: Assemble the folder
+      - name: Collect the programs
         run: |
           $version = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { git rev-parse --short HEAD }
           $name = "aoi-LiteAnno-$version-win64"
@@ -52,28 +97,15 @@ jobs:
           New-Item -ItemType Directory -Force $dir | Out-Null
           Copy-Item build/windows-msvc/Release/LiteAnno.exe $dir
           Copy-Item build/windows-msvc/Release/liteanno-cli.exe $dir
-          # Qt, the image format plugins and the Chinese translation of Qt's dialogs only.
-          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-opengl-sw --no-system-d3d-compiler `
-              --no-compiler-runtime --translations zh_CN "$dir\LiteAnno.exe" "$dir\liteanno-cli.exe"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          # The MSVC runtime next to the program, so nothing has to be installed.
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT" | Sort-Object FullName | Select-Object -Last 1
-          Copy-Item "$($crt.FullName)\*.dll" $dir
-          # Licences of the code built in: nlohmann/json (MIT), the OpenCV port (Apache-2.0).
-          New-Item -ItemType Directory -Force "$dir/licenses" | Out-Null
-          Copy-Item third_party/nlohmann/LICENSE.MIT "$dir/licenses/nlohmann-json-LICENSE.MIT"
-          Copy-Item third_party/opencv/LICENSE "$dir/licenses/opencv-LICENSE"
           "PACKAGE_NAME=$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Get-ChildItem -Recurse $dir | Select-Object -ExpandProperty FullName
+          Get-ChildItem $dir | ForEach-Object { "{0}  {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }
 
       - name: Dependency check
-        # Every DLL the packaged files load is in the folder or comes with Windows.
+        # Each program loads only DLLs that come with Windows: no Qt, no MSVC runtime.
         run: |
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -Last 1
           $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
-          $local = Get-ChildItem -Recurse $dir -Include *.dll | ForEach-Object { $_.Name.ToLowerInvariant() }
           $missing = @()
           foreach ($file in Get-ChildItem -Recurse $dir -Include *.exe, *.dll) {
             $deps = & $dumpbin.FullName /nologo /dependents $file.FullName |
@@ -81,7 +113,6 @@ jobs:
             foreach ($dep in $deps) {
               $name = $dep.ToLowerInvariant()
               if ($name -like 'api-ms-*' -or $name -like 'ext-ms-*') { continue }
-              if ($local -contains $name) { continue }
               if (Test-Path "C:\Windows\System32\$name") { continue }
               $missing += "$($file.Name) -> $dep"
             }
@@ -90,11 +121,11 @@ jobs:
           Write-Host "All dependencies found."
 
       - name: Start-up check
-        # The packaged programs start and quit on a machine without Qt on the PATH. A hang
+        # Each program, alone in a folder, starts and quits on a machine without Qt on the
+        # PATH and finds its image readers, translation and licence texts inside. A hang
         # fails within a minute and leaves Qt's log and a screenshot of the desktop behind.
         timeout-minutes: 5
         run: |
-          $dir = (Resolve-Path "dist/$env:PACKAGE_NAME").Path
           $env:PATH = "C:\Windows\System32;C:\Windows"
           Remove-Item Env:QT_PLUGIN_PATH, Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
           $env:QT_FORCE_STDERR_LOGGING = "1"
@@ -102,6 +133,9 @@ jobs:
           New-Item -ItemType Directory -Force startup-check | Out-Null
           function Test-Start($exe, $arguments) {
             Write-Host "== $exe $arguments"
+            $dir = Join-Path $env:RUNNER_TEMP "alone-$([guid]::NewGuid())"
+            New-Item -ItemType Directory $dir | Out-Null
+            Copy-Item "dist/$env:PACKAGE_NAME/$exe" $dir
             $p = Start-Process -FilePath "$dir\$exe" -ArgumentList $arguments -PassThru `
                 -RedirectStandardError "startup-check/$exe.stderr.txt" -RedirectStandardOutput "startup-check/$exe.stdout.txt"
             $null = $p.Handle  # keeps the exit code readable after the process ends
@@ -121,6 +155,8 @@ jobs:
             if ($p.ExitCode -ne 0) { Write-Error "$exe exited with $($p.ExitCode)"; exit 1 }
           }
           Test-Start "liteanno-cli.exe" "--version"
+          Test-Start "liteanno-cli.exe" "--check-single-file"
+          Test-Start "LiteAnno.exe" "--check-single-file"
           Test-Start "LiteAnno.exe" "--smoke-test"
 
       - name: Keep the start-up check output
@@ -131,13 +167,10 @@ jobs:
           path: startup-check
           if-no-files-found: ignore
 
-      - name: Zip
-        run: Compress-Archive -Path "dist/$env:PACKAGE_NAME" -DestinationPath "dist/$env:PACKAGE_NAME.zip"
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.PACKAGE_NAME }}
-          path: dist/${{ env.PACKAGE_NAME }}.zip
+          path: dist/${{ env.PACKAGE_NAME }}
 
   publish:
     name: Publish pre-release
@@ -155,5 +188,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.zip --repo "$GITHUB_REPOSITORY" --prerelease \
-            --title "$GITHUB_REF_NAME" --notes "测试版：解压后运行 LiteAnno.exe。命令行工具是 liteanno-cli.exe。"
+          gh release create "$GITHUB_REF_NAME" dist/LiteAnno.exe dist/liteanno-cli.exe --repo "$GITHUB_REPOSITORY" \
+            --prerelease --title "$GITHUB_REF_NAME" \
+            --notes "测试版：下载 LiteAnno.exe 直接运行，不用安装。命令行工具是 liteanno-cli.exe。"

@@ -13,8 +13,12 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
+#include <QDirIterator>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -22,6 +26,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenuBar>
+#include <QPlainTextEdit>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRadioButton>
@@ -47,6 +52,18 @@ QByteArray readFile(const QString& path)
 {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+// The licence texts built into the program (":/licenses", see src/ui/CMakeLists.txt), by
+// their path below that folder.
+QStringList bundledLicenses()
+{
+    QStringList files;
+    QDirIterator it(QStringLiteral(":/licenses"), QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext())
+        files.append(it.next().mid(int(QStringLiteral(":/licenses/").size())));
+    files.sort();
+    return files;
 }
 
 QString openErrorText(const ProjectSession::OpenResult& result)
@@ -298,6 +315,9 @@ void MainWindow::buildUi()
         batchMenu->addAction(QStringLiteral(u"上一张未完成"), this, [this] { previousUnfinished(); }), "open_prev_unchecked");
     previousUnchecked->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
 
+    QMenu* helpMenu = menuBar()->addMenu(QStringLiteral(u"帮助(&H)"));
+    named(helpMenu->addAction(QStringLiteral(u"关于 aoi-LiteAnno…"), this, &MainWindow::showAbout), "about");
+
     QToolBar* tools = addToolBar(QStringLiteral(u"工具"));
     tools->setObjectName(QStringLiteral("tools"));
     auto* toolGroup = new QActionGroup(this);
@@ -499,6 +519,59 @@ void MainWindow::scanFinished(bool complete)
     showScanReports(reports.unsupported, reports.unreadable);
     if (m_current < 0 && !m_images.isEmpty())
         goToImage(startIndex());
+}
+
+void MainWindow::showAbout()
+{
+    const Busy busy(this);  // the dialog runs events; a close waits until it is closed
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral(u"关于 aoi-LiteAnno"));
+    auto* layout = new QVBoxLayout(&dialog);
+    const QString qtVersion = QString::fromLatin1(qVersion());
+    // LGPL 3.0, section 4: the notice, the licence texts, and (Qt linked in statically) what
+    // is needed to link the program again with another Qt.
+    QString text = QStringLiteral(u"<p><b>aoi-LiteAnno %1</b></p>"
+                                  u"<p>源码：<a href=\"https://github.com/LorenzoSun-V/aoi-LiteAnno\">"
+                                  u"https://github.com/LorenzoSun-V/aoi-LiteAnno</a></p>"
+                                  u"<p>本程序使用 Qt %2（<a href=\"https://www.qt.io\">qt.io</a>），按 GNU LGPL 3.0 授权使用。")
+                       .arg(QCoreApplication::applicationVersion(), qtVersion);
+#ifdef QT_STATIC
+    text += QStringLiteral(u"Qt 静态编译进了本程序。本程序的源码和构建脚本在上面的地址，可以用修改过的 Qt 重新编译、链接，"
+                           u"做法见源码中 README 的“单文件版与 Qt 许可”。Qt 的源码："
+                           u"<a href=\"https://download.qt.io/archive/qt/\">download.qt.io/archive/qt</a>。");
+#endif
+    text += QStringLiteral(u"</p><p>另含 nlohmann/json（MIT）、OpenCV 的多边形填充代码（Apache-2.0）、SQLite（公有领域）"
+                           u"以及 Qt 自带的第三方库。</p>");
+    auto* notice = new QLabel(text);
+    notice->setWordWrap(true);
+    notice->setOpenExternalLinks(true);
+    notice->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    layout->addWidget(notice);
+    const QStringList licenses = bundledLicenses();
+    if (licenses.isEmpty()) {
+        layout->addWidget(new QLabel(QStringLiteral(u"这个版本没有附带许可证全文，请见源码仓库。")));
+    } else {
+        auto* chooser = new QComboBox;
+        chooser->setObjectName(QStringLiteral("licenseFile"));
+        chooser->addItems(licenses);
+        auto* view = new QPlainTextEdit;
+        view->setObjectName(QStringLiteral("licenseText"));
+        view->setReadOnly(true);
+        view->setMinimumSize(640, 360);
+        const auto show = [view, chooser] {
+            QFile file(QStringLiteral(":/licenses/") + chooser->currentText());
+            view->setPlainText(file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString());
+        };
+        connect(chooser, &QComboBox::currentIndexChanged, &dialog, show);
+        show();
+        layout->addWidget(new QLabel(QStringLiteral(u"许可证全文：")));
+        layout->addWidget(chooser);
+        layout->addWidget(view, 1);
+    }
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
 }
 
 bool MainWindow::exportAnnotations()

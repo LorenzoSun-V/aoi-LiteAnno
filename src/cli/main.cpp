@@ -351,8 +351,18 @@ int main(int argc, char* argv[])
         {QStringLiteral("copy-images"), QStringLiteral(u"export：同时复制图片")},
         {QStringLiteral("classes-file"), QStringLiteral(u"export：类别文件 classes.txt，每行一个类别，第一行编号 0"), QStringLiteral("file")},
         {QStringLiteral("local-data"), QStringLiteral(u"本机数据文件夹（测试用）"), QStringLiteral("folder")},
+        {QStringLiteral("check-single-file"), QStringLiteral(u"检查单文件版带齐了读图格式（打包检查用）")},
     });
     parser.process(app);
+    if (parser.isSet(QStringLiteral("check-single-file"))) {
+        const QStringList missing = imaging::missingImageFormats();
+        if (!missing.isEmpty()) {
+            printError(QStringLiteral(u"缺少读图格式：%1").arg(missing.join(QLatin1Char(' '))));
+            return Failed;
+        }
+        print(QStringLiteral(u"读图格式齐全。"));
+        return Ok;
+    }
     const QStringList args = parser.positionalArguments();
     if (args.size() != 2) {
         printError(parser.helpText());

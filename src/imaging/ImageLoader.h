@@ -4,6 +4,7 @@
 
 #include <QImage>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
@@ -25,5 +26,9 @@ LoadedImage loadImage(const QString& path);
 // format allows it (the second scan stage checks sizes without decoding). Empty when the
 // file is not a readable image.
 std::optional<ImageInfo> readImageInfo(const QString& path);
+
+// The decoders the folder scan counts on (dataset/DirectoryScanner.cpp) that Qt does not
+// have here; empty when all are there. A single-file build must have them linked in.
+QStringList missingImageFormats();
 
 } // namespace liteanno::imaging
