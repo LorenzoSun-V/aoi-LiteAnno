@@ -76,6 +76,40 @@ cmake --preset linux-gcc -DLITEANNO_UPSTREAM_PYTHON=$HOME/xal/bin/python
 
 样本包括：X-AnyLabeling 4.2.0 自己保存的各类形状文件、上游仓库里 2.4.0 写的示例（按固定版本下载并校验摘要）、仓库里的上游格式样本。每份样本先由 X-AnyLabeling 读取，再由本程序读入（不编辑时不写盘）、改类别、加矩形、加图片级标签、确认后写出，然后用 X-AnyLabeling 读回逐项比对，最后让 X-AnyLabeling 再存一次，本程序读回。现场标注文件不放进仓库，可以用 `tests/python/upstream_compat.py ... --field-dir <目录>` 在本地跑。
 
+## 单文件版与 Qt 许可
+
+测试版是两个独立的 exe：`LiteAnno.exe`（标注窗口）和 `liteanno-cli.exe`（命令行），各自把 Qt 6.8.3 和 MSVC 运行库静态链接在内，旁边不需要任何文件，可以放在任意文件夹或 U 盘里直接运行。打包流程见 `.github/workflows/package.yml`，静态 Qt 由 `.github/scripts/build-static-qt.ps1` 从 Qt 官方源码编译（只含 qtbase 和 qtimageformats，源码包校验 SHA-256）。
+
+Qt 按 GNU LGPL 3.0 授权使用。窗口程序的“帮助 > 关于”、命令行的 `liteanno-cli --licenses` 和 `--license <名称>` 列出所用的第三方库和它们的许可证全文。LGPL 允许你换用自己修改过的 Qt 重新链接：本仓库就是程序的全部源码，在装有 Visual Studio 2022 的 Windows 上，用 PowerShell 按下面的步骤做，得到的就是同样的两个单文件程序（静态 Qt 不含 Qt Test，所以要关掉测试）：
+
+```
+# 1. VS 开发者环境（cl.exe、Ninja）
+& "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+# 2. 静态 Qt：下载并校验 qtbase、qtimageformats 6.8.3 源码，编译安装到 C:\qt-static，
+#    许可证全文收集到 C:\qt-static\licenses。用改过的 Qt：把源码放在 C:\qt-src\qtbase-everywhere-src-6.8.3
+#    和 C:\qt-src\qtimageformats-everywhere-src-6.8.3，再加 -UseUnpackedSources
+.github/scripts/build-static-qt.ps1 -Version 6.8.3 -Prefix C:\qt-static -WorkDir C:\qt-src
+# 3. 程序附带的许可证：Qt 的，加上本仓库第三方代码的
+New-Item -ItemType Directory -Force C:\liteanno-licenses
+Copy-Item C:\qt-static\licenses\* C:\liteanno-licenses
+Copy-Item third_party/nlohmann/LICENSE.MIT C:\liteanno-licenses\nlohmann-json-LICENSE.MIT
+Copy-Item third_party/opencv/LICENSE C:\liteanno-licenses\opencv-LICENSE
+# 4. Qt 对话框的中文翻译 qtbase_zh_CN.qm 取自官方同版本 Qt（安装器装的 Qt 6.8.3 的 translations 文件夹里也有）
+python -m pip install "aqtinstall==3.3.0"
+python -m aqt install-qt windows desktop 6.8.3 win64_msvc2022_64 --archives qttranslations --outputdir C:\qt-translations
+# 5. 配置、编译
+cmake --preset windows-msvc -DLITEANNO_BUILD_TESTS=OFF -DCMAKE_PREFIX_PATH=C:/qt-static `
+    -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+    -DLITEANNO_QT_TRANSLATION=C:/qt-translations/6.8.3/msvc2022_64/translations/qtbase_zh_CN.qm `
+    -DLITEANNO_BUNDLED_LICENSES_DIR=C:/liteanno-licenses
+cmake --build --preset windows-msvc
+# 6. 检查：两个程序都应返回 0
+build/windows-msvc/Release/liteanno-cli.exe --check-single-file
+Start-Process -Wait -PassThru build/windows-msvc/Release/LiteAnno.exe --check-single-file
+```
+
+这些步骤和 CI 打包（`.github/workflows/package.yml`）做的一样。
+
 ## 设计文档
 
 架构说明和标注文件格式规范 1.0 目前放在项目的共享文档中。代码注释里的 “format spec section N” 指格式规范的第 N 节，“architecture section N” 指架构说明的第 N 节。

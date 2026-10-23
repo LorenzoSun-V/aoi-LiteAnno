@@ -3,20 +3,28 @@
 // Runs offscreen; the prompts are replaced so nothing modal blocks.
 
 #include "application/LocalDataPaths.h"
+#include "application/ProjectSession.h"
+#include "application/RecoveryService.h"
+#include "platform/VolumeBinding.h"
 #include "ui/MainWindow.h"
 #include "ui/Prompts.h"
+#include "ui/Theme.h"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QDialog>
 #include <QDir>
 #include <QDirIterator>
+#include <QDoubleSpinBox>
 #include <QFile>
 #include <QImage>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLineEdit>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -29,6 +37,7 @@
 #include <QTimer>
 #include <QTest>
 #include <QThread>
+#include <QToolButton>
 #include <QWheelEvent>
 
 #include <atomic>
@@ -129,6 +138,11 @@ struct Answers {
     std::function<void()> duringExternalChange;
     std::function<void()> duringLabel;
 
+    QStringList unusableTexts;
+    bool setAsideUnusable = false;
+    QStringList labelsOffered;
+    bool labelFreeText = false;
+    ExportQuestion exportQuestion;
     int externalChangeAsked = 0;
     QList<application::RecoveryState> recoveryAsked;
     QStringList messages;
@@ -137,7 +151,9 @@ struct Answers {
     Prompts prompts()
     {
         Prompts p;
-        p.chooseLabel = [this](const QStringList&, const QString&) -> std::optional<QString> {
+        p.chooseLabel = [this](const QStringList& classes, const QString&, bool freeText) -> std::optional<QString> {
+            labelsOffered = classes;
+            labelFreeText = freeText;
             if (duringLabel)
                 duringLabel();
             if (label.isEmpty())
@@ -167,13 +183,18 @@ struct Answers {
                 return std::nullopt;
             return batch;
         };
-        p.exportOptions = [this](int batchNumber) {
-            exportBatchOffered = batchNumber;
+        p.exportOptions = [this](const ExportQuestion& question) {
+            exportBatchOffered = question.batchNumber;
+            exportQuestion = question;
             return exportChoice;
         };
         p.skipUnconvertible = [this](const QString& text) {
             unconvertibleTexts.append(text);
             return skipUnconvertible;
+        };
+        p.setAsideUnusable = [this](const QString& text) {
+            unusableTexts.append(text);
+            return setAsideUnusable;
         };
         p.message = [this](const QString& title, const QString& text) {
             messages.append(title + QLatin1Char('\n') + text);
@@ -268,11 +289,432 @@ private slots:
         QVERIFY(!w.window.hasProject());
         QCOMPARE(w.answers.messages.size(), 1);
         QVERIFY2(w.answers.messages[0].contains(QStringLiteral("/batchSize")), qPrintable(w.answers.messages[0]));
+    }
 
-        // A folder without a project file.
-        QTemporaryDir empty;
-        QVERIFY(!w.window.openProject(empty.path()));
-        QVERIFY(w.answers.messages[1].contains(QStringLiteral("project.json")));
+    // "帮助 > 关于": the source and the Qt licence notice (LGPL 3.0, section 4).
+    void aboutNamesTheSourceAndTheLicences()
+    {
+        Window w(Project().options());
+        QStringList shown;
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            for (const QLabel* label : dialog->findChildren<QLabel*>())
+                shown.append(label->text());
+            dialog->reject();
+        });
+        answer.start(20);
+        w.window.showAbout();
+        const QString text = shown.join(QLatin1Char('\n'));
+        QVERIFY2(text.contains(QStringLiteral("https://github.com/LorenzoSun-V/aoi-LiteAnno")), qPrintable(text));
+        QVERIFY2(text.contains(QStringLiteral("LGPL 3.0")), qPrintable(text));
+    }
+
+    // Review of #11, round 2: "处理未写入的编辑" also deals with records the program cannot
+    // use, which liteanno-cli init otherwise waits for forever.
+    void unusableRecordsCanBeMovedAside()
+    {
+        Project project;
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        const application::LocalDataPaths paths(project.local.path());
+        const QString root = QDir::cleanPath(QFileInfo(project.data.path()).absoluteFilePath());
+        const QString bindingId = platform::bindingIdForDirectory(root);
+        const application::ProjectLocation location{application::plainFolderConfig(bindingId).projectId, bindingId, root};
+        const QString dir = paths.recoveryDir(location.projectId, location.bindingId);
+        QVERIFY(QDir().mkpath(dir));
+        writeFile(dir + QStringLiteral("/0001.json"), "{\"formatVersion\": \"1.0\", \"proj");
+
+        w.answers.setAsideUnusable = false;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 1);
+        QVERIFY2(w.answers.unusableTexts[0].contains(QStringLiteral("0001.json")), qPrintable(w.answers.unusableTexts[0]));
+        QVERIFY(QFile::exists(dir + QStringLiteral("/0001.json")));
+
+        w.answers.setAsideUnusable = true;
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
+        QVERIFY(!QFile::exists(dir + QStringLiteral("/0001.json")));
+        QCOMPARE(QDir(dir + QStringLiteral("/unusable")).entryList(QDir::Files).size(), 1);
+        const application::RecoveryScan scan = application::RecoveryService(paths, location).scan();
+        QVERIFY(scan.candidates.isEmpty() && scan.unusable.isEmpty());
+
+        // Nothing left: not asked again.
+        w.window.resolveRecoveryRecords();
+        QCOMPARE(w.answers.unusableTexts.size(), 2);
+    }
+
+    // Review of #11, 5: a name chosen in the program's own class dialog stays as the
+    // classes.txt has it; only a typed name loses the spaces around it.
+    void classChosenInTheDialogKeepsItsSpaces()
+    {
+        QWidget parent;
+        const Prompts prompts = Prompts::dialogs(&parent);
+        QString typed;  // empty: take the item shown
+        QTimer answer;
+        connect(&answer, &QTimer::timeout, this, [&] {
+            auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget());
+            if (!dialog)
+                return;
+            if (!typed.isEmpty())
+                dialog->setTextValue(typed);
+            dialog->accept();
+        });
+        answer.start(20);
+        const QStringList classes{QStringLiteral(" scratch "), QStringLiteral("dent")};
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral(" scratch ")));
+        typed = QStringLiteral("  hole ");
+        QCOMPARE(prompts.chooseLabel(classes, QString(), true), std::optional<QString>(QStringLiteral("hole")));
+        typed.clear();
+        QCOMPARE(prompts.chooseLabel(classes, QStringLiteral(" scratch "), false),
+                 std::optional<QString>(QStringLiteral(" scratch ")));
+    }
+
+    // A folder of images without a project file opens as in X-AnyLabeling: any label, every
+    // shape tool, no batches, and nothing in the folder but the annotation files.
+    void plainFolderOpensWithoutAProjectFile()
+    {
+        Project project;
+        QFile::remove(project.data.filePath(QStringLiteral("liteanno/project.json")));
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        writeFile(project.data.filePath(QStringLiteral("classes.txt")), "dent\nscratch\n");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QVERIFY(w.answers.messages.isEmpty());
+        QCOMPARE(w.window.imageCount(), 3);
+        QVERIFY(!w.window.startNextBatch());
+        for (const char* tool : {"create_rectangle", "create_polygon", "create_rotation"}) {
+            const QAction* action = w.window.findChild<QAction*>(QLatin1String(tool));
+            QVERIFY2(action && action->isEnabled(), tool);
+        }
+
+        // A name the classes.txt does not have is typed in; the names known are offered.
+        w.answers.label = QStringLiteral("hole");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("hole"));
+        QVERIFY(w.answers.labelFreeText);
+        QCOMPARE(w.answers.labelsOffered, (QStringList{QStringLiteral("dent"), QStringLiteral("scratch")}));
+        QVERIFY(w.blockers().isEmpty());
+        w.window.flushSaves();
+        QVERIFY(QFile::exists(project.json(1)));
+        QVERIFY(w.window.nextImage());
+        w.answers.label = QStringLiteral("dent");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(w.answers.labelsOffered,
+                 (QStringList{QStringLiteral("dent"), QStringLiteral("scratch"), QStringLiteral("hole")}));
+
+        // The export offers the folder's classes.txt; unconfirmed images are exported too.
+        QTemporaryDir out;
+        ExportChoice choice;
+        choice.format = formats::ExportFormat::YoloDetection;
+        choice.outputDir = out.filePath(QStringLiteral("det"));
+        choice.classesFile = project.data.filePath(QStringLiteral("classes.txt"));
+        w.answers.exportChoice = choice;
+        w.answers.skipUnconvertible = true;  // "hole" is not in classes.txt
+        QVERIFY(w.window.exportAnnotations());
+        QVERIFY(w.answers.exportQuestion.plainFolder);
+        QCOMPARE(w.answers.exportQuestion.batchNumber, 0);
+        QCOMPARE(w.answers.exportQuestion.classesFile,
+                 QDir::toNativeSeparators(project.data.filePath(QStringLiteral("classes.txt"))));
+        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
+        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("hole")), qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已导出 1 张图片")), qPrintable(w.answers.messages.last()));
+        QVERIFY(readFile(out.filePath(QStringLiteral("det/line1/0002.txt"))).startsWith("0 "));
+
+        w.window.closeProject();
+        QVERIFY(!QDir(project.data.filePath(QStringLiteral("liteanno"))).exists());
+    }
+
+    // The theme (style sheet and icons) is built in, and the panel shows the status, the
+    // size and the shapes of the image.
+    void themedWindow()
+    {
+        const QString sheet = themeStyleSheet();
+        QVERIFY(sheet.contains(QStringLiteral("QPushButton#confirmButton")));
+        Project project;
+        Window w(project.options());
+        for (const char* name : {"edit_polygon", "create_rectangle", "create_polygon", "create_rotation", "create_point",
+                                 "create_line", "create_linestrip", "create_circle", "open_prev", "open_next", "fit_window"}) {
+            const QAction* action = w.window.findChild<QAction*>(QLatin1String(name));
+            QVERIFY2(action && !action->icon().pixmap(QSize(20, 20)).isNull(), name);
+            QVERIFY2(!action->text().contains(QLatin1Char('(')), name);  // the keys are in the tooltip
+            QVERIFY2(action->toolTip().contains(action->shortcut().toString(QKeySequence::NativeText)), name);
+        }
+
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* chip = w.window.findChild<QLabel*>(QStringLiteral("statusChip"));
+        QCOMPARE(chip->text(), QStringLiteral(u"未处理"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("new"));
+        QVERIFY2(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text().contains(QStringLiteral(u"第 1 / 3 张")),
+                 qPrintable(w.window.findChild<QLabel*>(QStringLiteral("imageInfo"))->text()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QCOMPARE(chip->text(), QStringLiteral(u"待确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("wait"));
+        QVERIFY(w.window.confirmCurrent());
+        QCOMPARE(chip->text(), QStringLiteral(u"已确认"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("ok"));
+
+        // The rows are drawn by the delegates, with the theme applied.
+        qApp->setStyleSheet(sheet);
+        QVERIFY(!w.window.grab().isNull());
+        qApp->setStyleSheet(QString());
+    }
+
+    // Review of #13: the open image is confirmed, then deleted on disk and the folder scanned
+    // again. The list and the panel must show "缺失", not the confirmed status of the open
+    // document.
+    void missingShowsBeforeTheDocumentStatus()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.confirmCurrent());
+        w.window.flushSaves();
+        QCOMPARE(w.window.imageStatusAt(0), std::optional<AnnotationStatus>(AnnotationStatus::Confirmed));
+
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("line1/0001.png"))));
+        w.window.rescan();
+        QVERIFY(w.window.catalog()->waitUntilIdle(10000));
+        QCoreApplication::processEvents();
+        // The missing image is kept in the list (at its end) and stays the image shown.
+        auto* list = w.window.findChild<QListWidget*>(QStringLiteral("imageList"));
+        int row = -1;
+        for (int i = 0; i < list->count(); ++i) {
+            if (list->item(i)->text().startsWith(QStringLiteral("line1/0001.png")))
+                row = i;
+        }
+        QVERIFY(row >= 0);
+        QVERIFY2(list->item(row)->text().contains(QStringLiteral(u"缺失")), qPrintable(list->item(row)->text()));
+        QCOMPARE(w.window.imageStatusAt(row), std::optional<AnnotationStatus>(AnnotationStatus::Missing));
+        QCOMPARE(w.window.currentIndex(), row);
+        auto* chip = w.window.findChild<QLabel*>(QStringLiteral("statusChip"));
+        QCOMPARE(chip->text(), QStringLiteral(u"缺失"));
+        QCOMPARE(chip->property("tone").toString(), QStringLiteral("problem"));
+    }
+
+    // Review of #13: the window shows the logo and the program's name only, also with a
+    // folder open; label tags pick the text colour by contrast.
+    void titleAndTagText()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
+        QVERIFY(!w.window.windowIcon().pixmap(QSize(32, 32)).isNull());
+        w.window.closeProject();
+        QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
+
+        const QColor dark(0x11, 0x11, 0x11);
+        QCOMPARE(readableTextOn(QColor(0xFF, 0xFF, 0x00)), dark);  // pure yellow (HSL lightness 0.5)
+        QCOMPARE(readableTextOn(QColor(0xFF, 0xB0, 0x20)), dark);
+        QCOMPARE(readableTextOn(QColor(0x00, 0xFF, 0x00)), dark);
+        QCOMPARE(readableTextOn(QColor(0x1F, 0x6F, 0xEB)), QColor(Qt::white));
+        QCOMPARE(readableTextOn(QColor(0x80, 0x00, 0x00)), QColor(Qt::white));
+    }
+
+    // The bar under the canvas: the image's place in the list, the zoom and the mouse.
+    void navigationBar()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* position = w.window.findChild<QLabel*>(QStringLiteral("positionLabel"));
+        auto* zoom = w.window.findChild<QLabel*>(QStringLiteral("zoomLabel"));
+        auto* cursor = w.window.findChild<QLabel*>(QStringLiteral("cursorLabel"));
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(position->text(), QStringLiteral("2 / 3"));
+
+        QCOMPARE(zoom->text(), QStringLiteral("%1%").arg(qRound(w.window.canvas()->zoom() * 100)));
+        w.window.canvas()->zoomToOriginalSize();
+        QCOMPARE(zoom->text(), QStringLiteral("100%"));
+        w.window.canvas()->zoomBy(2);
+        QCOMPARE(zoom->text(), QStringLiteral("200%"));
+
+        // The buttons are the menu actions: "上一张" goes back.
+        auto* bar = w.window.findChild<QWidget*>(QStringLiteral("navBar"));
+        for (QToolButton* button : bar->findChildren<QToolButton*>()) {
+            if (button->defaultAction() && button->defaultAction()->objectName() == QLatin1String("open_prev"))
+                button->click();
+        }
+        QCOMPARE(w.window.currentIndex(), 0);
+        QCOMPARE(position->text(), QStringLiteral("1 / 3"));
+
+        Canvas* canvas = w.window.canvas();
+        canvas->fitToWindow();
+        const QPoint centre = canvas->rect().center();
+        QTest::mouseMove(canvas, centre);
+        QTRY_VERIFY2(cursor->text().startsWith(QStringLiteral("x ")), qPrintable(cursor->text()));
+
+        // Review of #14: zooming or panning under a still mouse updates the position shown.
+        QTest::mouseMove(canvas, centre + QPoint(40, 20));
+        QTRY_VERIFY(cursor->text().startsWith(QStringLiteral("x ")));
+        const QString before = cursor->text();
+        w.window.findChild<QAction*>(QStringLiteral("zoom_in"))->trigger();
+        QVERIFY2(cursor->text() != before, qPrintable(before));
+        const QString zoomed = cursor->text();
+        QWheelEvent scroll(QPointF(centre + QPoint(40, 20)), canvas->mapToGlobal(QPointF(centre + QPoint(40, 20))),
+                           QPoint(), QPoint(0, -240), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QApplication::sendEvent(canvas, &scroll);  // a plain wheel scrolls the view
+        QVERIFY2(cursor->text() != zoomed, qPrintable(zoomed));
+
+        QTest::mouseMove(canvas, QPoint(1, 1));  // the margin around the image
+        canvas->fitToWindow();
+        QTRY_VERIFY(cursor->text().isEmpty());
+    }
+
+    // "选中形状": the class and a rectangle's position and size can be typed; the numbers not
+    // typed keep their exact values, the rectangle stays in the image, and undo takes it back.
+    void selectedShapeForm()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        auto* form = w.window.findChild<QWidget*>(QStringLiteral("shapeForm"));
+        QVERIFY(!form->isVisible());
+        w.drawRectangle(QPointF(20.25, 10.5), QPointF(80.75, 60.25));
+        QCOMPARE(w.canvas()->selectedShape(), qsizetype(0));
+        QVERIFY(form->isVisible());
+        QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("shapeType"))->text(), QStringLiteral(u"矩形"));
+        auto* label = w.window.findChild<QComboBox*>(QStringLiteral("shapeLabel"));
+        QCOMPARE(label->currentText(), QStringLiteral("scratch"));
+        QVERIFY(!label->isEditable());  // the project's classes only
+        const PointList drawn = w.document().shapes()[0].points;
+        const double left = drawn[0].x(), top = drawn[0].y();
+        const double right = drawn[2].x(), bottom = drawn[2].y();
+
+        const auto type = [&](const char* name, const QString& text) {
+            auto* field = w.window.findChild<QDoubleSpinBox*>(QLatin1String(name));
+            QVERIFY2(field && field->isEnabled(), name);
+            field->setFocus();
+            field->selectAll();
+            QTest::keyClicks(field, text);
+            QTest::keyClick(field, Qt::Key_Return);
+        };
+        type("shapeX", QStringLiteral("30"));
+        PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[0], QPointF(30, top));
+        QCOMPARE(points[2], QPointF(30 + (right - left), bottom));
+        type("shapeHeight", QStringLiteral("40"));
+        points = w.document().shapes()[0].points;
+        QCOMPARE(points[0], QPointF(30, top));
+        QCOMPARE(points[2].y(), top + 40);
+        QCOMPARE(points[2].x(), 30 + (right - left));
+
+        // Too wide for the image (200 pixels): the field stops at the image's edge.
+        type("shapeWidth", QStringLiteral("500"));
+        points = w.document().shapes()[0].points;
+        QVERIFY2(points[2].x() <= 200, qPrintable(QString::number(points[2].x())));
+        QCOMPARE(points[0], QPointF(30, top));
+
+        // The class from the list.
+        emit label->activated(int(label->findText(QStringLiteral("dent"))));
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("dent"));
+
+        // Undo, one step at a time.
+        QVERIFY(w.window.undo());
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("scratch"));
+        while (w.window.undo() && w.document().shapes().size() == 1 && w.document().shapes()[0].points != drawn) {
+        }
+        QCOMPARE(w.document().shapes()[0].points, drawn);
+
+        // A polygon shows its bounding box, which cannot be typed.
+        w.canvas()->setTool(Canvas::Tool::Polygon);
+        for (const QPointF& p : {QPointF(120, 20), QPointF(180, 30), QPointF(150, 80)})
+            click(w.canvas(), p);
+        QTest::keyClick(w.canvas(), Qt::Key_Return);
+        w.canvas()->setTool(Canvas::Tool::Select);
+        QCOMPARE(w.document().shapes().size(), 2);
+        w.canvas()->setSelectedShape(1);
+        w.window.findChild<QListWidget*>(QStringLiteral("shapeList"))->setCurrentRow(1);
+        QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("shapeType"))->text(), QStringLiteral(u"多边形"));
+        QVERIFY(!w.window.findChild<QDoubleSpinBox*>(QStringLiteral("shapeX"))->isEnabled());
+        QVERIFY(label->isEnabled());
+    }
+
+    // Review of #15: the fields show one decimal, so their limits are rounded (139.75 shows
+    // as 139.8). A value at the shown limit must still keep the rectangle in the image.
+    void selectedShapeFormStaysInTheImage()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        QVERIFY(w.window.session()->setShapePoints(
+            0, {QPointF(20.25, 10.5), QPointF(80.5, 10.5), QPointF(80.5, 60.25), QPointF(20.25, 60.25)}));
+        auto* shapes = w.window.findChild<QListWidget*>(QStringLiteral("shapeList"));
+        shapes->setCurrentRow(-1);
+        shapes->setCurrentRow(0);
+        const auto type = [&](const char* name, const QString& text) {
+            auto* field = w.window.findChild<QDoubleSpinBox*>(QLatin1String(name));
+            field->setFocus();
+            field->selectAll();
+            QTest::keyClicks(field, text);
+            QTest::keyClick(field, Qt::Key_Return);
+        };
+        type("shapeX", QStringLiteral("139.8"));
+        PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[2].x(), 200.0);
+        QCOMPARE(points[0].x(), 139.75);  // the width stays 60.25
+        QVERIFY(w.window.undo());
+        shapes->setCurrentRow(-1);
+        shapes->setCurrentRow(0);
+        type("shapeWidth", QStringLiteral("179.8"));
+        points = w.document().shapes()[0].points;
+        QCOMPARE(points[0].x(), 20.25);
+        QCOMPARE(points[2].x(), 200.0);
+        type("shapeHeight", QStringLiteral("89.8"));  // 100 - 10.5 = 89.5 at most
+        QVERIFY(w.document().shapes()[0].points[2].y() <= 100.0);
+    }
+
+    // Review of #15: a number typed but not yet entered is taken when the image is changed
+    // with a button that does not take the focus (the bar under the canvas).
+    void selectedShapeFormInputBeforeNextImage()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        const PointList drawn = w.document().shapes()[0].points;
+        auto* field = w.window.findChild<QDoubleSpinBox*>(QStringLiteral("shapeX"));
+        field->setFocus();
+        field->selectAll();
+        QTest::keyClicks(field, QStringLiteral("50"));
+        QToolButton* next = nullptr;
+        for (QToolButton* button : w.window.findChild<QWidget*>(QStringLiteral("navBar"))->findChildren<QToolButton*>()) {
+            if (button->defaultAction() && button->defaultAction()->objectName() == QLatin1String("open_next"))
+                next = button;
+        }
+        QVERIFY(next);
+        QTest::mouseClick(next, Qt::LeftButton);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(w.window.previousImage());
+        const PointList points = w.document().shapes()[0].points;
+        QCOMPARE(points[0].x(), 50.0);
+        QCOMPARE(points[2].x(), 50 + (drawn[2].x() - drawn[0].x()));  // read back from the saved file
+    }
+
+    // Without a class list any name may be typed in the form, as in the label dialog.
+    void selectedShapeFormFreeText()
+    {
+        Project project;
+        QDir(project.data.filePath(QStringLiteral("liteanno"))).removeRecursively();
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        w.answers.label = QStringLiteral("dent");
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        auto* label = w.window.findChild<QComboBox*>(QStringLiteral("shapeLabel"));
+        QVERIFY(label->isEditable());
+        label->setFocus();
+        label->lineEdit()->selectAll();
+        QTest::keyClicks(label->lineEdit(), QStringLiteral("  hole "));
+        QTest::keyClick(label->lineEdit(), Qt::Key_Return);
+        QCOMPARE(w.document().shapes()[0].label, QStringLiteral("hole"));
     }
 
     void projectOpenElsewhereIsLocked()
@@ -1065,9 +1507,12 @@ private slots:
         QTest::keyClick(canvas, Qt::Key_Down);
         QCOMPARE(w.document().shapes()[0].points[0], drawn[0] + QPointF(1, 1));
         // Not out of the image: the shape stays where it is.
+        // (The point was clicked at a screen pixel, so it need not be on a whole image pixel:
+        // it stops at less than one pixel from the edge.)
         for (int i = 0; i < 20; ++i)
             QTest::keyClick(canvas, Qt::Key_Up);
-        QCOMPARE(w.document().shapes()[0].points[0].y(), 0.0);
+        const double start = drawn[0].y() + 1;
+        QCOMPARE(w.document().shapes()[0].points[0].y(), start - std::floor(start));
 
         // Ctrl+E changes the class.
         w.answers.label = QStringLiteral("dent");

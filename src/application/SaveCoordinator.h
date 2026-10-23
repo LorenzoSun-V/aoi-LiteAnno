@@ -28,6 +28,10 @@ struct SaveOutcome {
     bool nameCollision = false;
 };
 
+// Moves a recovery record this program cannot use to "unusable/" next to it, kept as it is
+// (format spec 8.1: such records are never removed). False when it stays where it is.
+bool moveRecordToUnusable(const QString& recordPath);
+
 // Saves one document the way architecture section 8.1 describes: the snapshot goes to a
 // local recovery record first, then the annotation file is replaced atomically, then the
 // record is removed. A crash or a pulled USB drive at any point leaves either the old file

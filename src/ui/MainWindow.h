@@ -27,6 +27,8 @@ class QVBoxLayout;
 
 namespace liteanno::ui {
 
+class ShapeForm;
+
 struct MainWindowOptions {
     application::LocalDataPaths localData = application::LocalDataPaths::standard();
     application::BackgroundSaver::Limits saveLimits;
@@ -70,6 +72,8 @@ public:
     void rescan();
     // "导出…" (architecture 11): writes the edits first, then exports the files.
     bool exportAnnotations();
+    // "帮助 > 关于": version, source, and the licences of what is built in.
+    void showAbout();
     application::ProjectCatalog* catalog() const { return m_catalog.get(); }
     application::BackgroundSaver* saver() const { return m_saver.get(); }
 
@@ -99,6 +103,9 @@ public:
     application::DocumentSession* session() const { return m_session.get(); }
     Canvas* canvas() const { return m_canvas; }
     QString saveStateText() const;
+    // The status the image list and the panel show for row `index`: "missing" before what the
+    // annotation file says; empty when not known yet.
+    std::optional<AnnotationStatus> imageStatusAt(int index) const;
     int savingWaits() const { return m_savingWaits; }
     bool hasProject() const { return m_project != nullptr; }
 
@@ -134,6 +141,10 @@ private:
     void refresh();
     // The batch line of the status bar, and the completion event when the batch is done.
     void refreshBatchState();
+    // The save line of the status bar.
+    void refreshSaveState();
+    // "选中形状" for the shape selected on the canvas.
+    void refreshShapeForm();
     void refreshImageItem(int index);
     QString imageItemText(const QString& path) const;
     // The image list from the catalog; the current image stays current.
@@ -147,6 +158,9 @@ private:
     void addDrawnShape(const Shape& shape);
     void editLabel(qsizetype index);
     QStringList classNames() const;
+    std::optional<QString> askLabel(const QString& suggested);
+    void loadKnownLabels();
+    void addKnownLabel(const QString& label);
     // Shows the batch `stem` (all images when empty), at `preferred` when it is listed.
     void switchBatch(const QString& stem, const QString& preferred);
     // The list for the batch shown, from all images the catalog has.
@@ -259,14 +273,23 @@ private:
     bool latestNameCollision(const QString& imagePath) const;
     bool heldNewerThan(const QString& imagePath, quint64 sessionId, qint64 version) const;
     QString m_lastLabel;
+    QStringList m_knownLabels;  // offered when the project has no class list
+    QList<QAction*> m_batchActions;
     QTimer m_idleTimer;
     int m_savingWaits = 0;
     bool m_handlingResults = false;
 
     Canvas* m_canvas = nullptr;
+    QWidget* m_navBar = nullptr;  // under the canvas
+    QLabel* m_cursorLabel = nullptr;
+    QLabel* m_positionLabel = nullptr;
+    QLabel* m_zoomLabel = nullptr;
     QListWidget* m_imageList = nullptr;
     QListWidget* m_shapeList = nullptr;
-    QLabel* m_imageStatus = nullptr;
+    QLabel* m_imageStatus = nullptr;  // the image's path
+    QLabel* m_statusChip = nullptr;
+    QLabel* m_imageInfo = nullptr;  // size, format, place in the list
+    QLabel* m_shapeCount = nullptr;
     QLabel* m_readOnlyNote = nullptr;
     QLabel* m_blockers = nullptr;
     QLabel* m_saveState = nullptr;
@@ -277,6 +300,8 @@ private:
     QPushButton* m_unskipButton = nullptr;
     QPushButton* m_correctSizeButton = nullptr;
     QPushButton* m_deleteButton = nullptr;
+    QPushButton* m_editLabelButton = nullptr;
+    ShapeForm* m_shapeForm = nullptr;
     QGroupBox* m_imageLabelPanel = nullptr;
     QVBoxLayout* m_imageLabelLayout = nullptr;
     QList<QAbstractButton*> m_imageLabelButtons;

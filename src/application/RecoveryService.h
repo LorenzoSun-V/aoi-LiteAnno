@@ -33,6 +33,8 @@ struct UnusableRecord {
 struct RecoveryScan {
     QList<RecoveryCandidate> candidates;
     QList<UnusableRecord> unusable;  // kept on disk; only the user removes records
+    // The record folder is there but cannot be listed: there may be records nobody sees.
+    QString error;
 };
 
 enum class RecordStatus {

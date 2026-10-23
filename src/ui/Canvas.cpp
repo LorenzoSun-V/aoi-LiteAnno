@@ -1,5 +1,7 @@
 #include "ui/Canvas.h"
 
+#include "ui/Theme.h"
+
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
@@ -42,7 +44,7 @@ Canvas::Canvas(QWidget* parent)
     setMinimumSize(200, 150);
     setAutoFillBackground(true);
     QPalette background = palette();
-    background.setColor(QPalette::Window, QColor(48, 48, 48));
+    background.setColor(QPalette::Window, QColor(0x2A, 0x2E, 0x33));
     setPalette(background);
 }
 
@@ -204,6 +206,8 @@ void Canvas::fitToWindow()
     m_offset = QPointF((width() - m_image.width() * m_scale) / 2, (height() - m_image.height() * m_scale) / 2);
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
+    reportCursor();
 }
 
 void Canvas::zoomAround(const QPointF& anchor, double factor)
@@ -217,6 +221,8 @@ void Canvas::zoomAround(const QPointF& anchor, double factor)
     m_offset = anchor - imagePoint * m_scale;
     m_fitPending = false;
     update();
+    emit zoomChanged(m_scale);
+    reportCursor();
 }
 
 void Canvas::zoomBy(double factor)
@@ -437,6 +443,9 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
 {
     const QPointF widgetPoint = event->position();
     const QPointF imagePoint = widgetToImage(widgetPoint);
+    m_mouseWidget = widgetPoint;
+    m_mouseOver = true;
+    reportCursor();
     if ((m_drag == Drag::MoveShape || m_drag == Drag::MoveVertex)
         && (!m_document || m_selected < 0 || m_selected >= m_document->shapes().size())) {
         m_drag = Drag::None;
@@ -447,6 +456,7 @@ void Canvas::mouseMoveEvent(QMouseEvent* event)
         m_offset += widgetPoint - m_pressWidget;
         m_pressWidget = widgetPoint;
         m_fitPending = false;
+        reportCursor();
         break;
     case Drag::DrawRectangle:
         m_currentImage = clampToImage(imagePoint);
@@ -576,6 +586,7 @@ void Canvas::wheelEvent(QWheelEvent* event)
     m_offset += step;
     m_fitPending = false;
     update();
+    reportCursor();
 }
 
 void Canvas::keyPressEvent(QKeyEvent* event)
@@ -657,6 +668,23 @@ void Canvas::focusOutEvent(QFocusEvent* event)
     QWidget::focusOutEvent(event);
 }
 
+void Canvas::leaveEvent(QEvent* event)
+{
+    m_mouseOver = false;
+    reportCursor();
+    QWidget::leaveEvent(event);
+}
+
+void Canvas::reportCursor()
+{
+    if (!m_mouseOver || m_image.isNull()) {
+        emit cursorMoved(QPointF(), false);
+        return;
+    }
+    const QPointF imagePoint = widgetToImage(m_mouseWidget);
+    emit cursorMoved(imagePoint, QRectF(QPointF(0, 0), QSizeF(m_image.size())).contains(imagePoint));
+}
+
 QColor Canvas::colorFor(const QString& label) const
 {
     const auto it = m_classColors.constFind(label);
@@ -675,8 +703,9 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
     if (shape.kind != ShapeKind::Editable)
         pen.setStyle(Qt::DashLine);
     painter.setPen(pen);
+    // Only the selected shape is tinted, so that the image under the others stays clear.
     QColor fill = color;
-    fill.setAlpha(selected ? 80 : 40);
+    fill.setAlpha(selected ? 56 : 0);
 
     const QTransform t = transform();
     QPolygonF polygon;
@@ -711,12 +740,21 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
     }
 
     if (m_labelsVisible && !shape.label.isEmpty()) {
-        painter.setPen(color);
-        painter.drawText(polygon.boundingRect().topLeft() + QPointF(2, -4), shape.label);
+        // The label on a tag of the class colour above the shape's top left corner, in dark
+        // or white text, whichever contrasts more with the colour.
+        const QFontMetricsF metrics(painter.font());
+        const QPointF corner = polygon.boundingRect().topLeft();
+        const QRectF tag(corner.x() - pen.widthF() / 2, corner.y() - metrics.height() - 4,
+                         metrics.horizontalAdvance(shape.label) + 10, metrics.height() + 4);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawRoundedRect(tag, 2, 2);
+        painter.setPen(readableTextOn(color));
+        painter.drawText(tag, Qt::AlignCenter, shape.label);
     }
     if (selected) {
-        painter.setPen(QPen(Qt::white, 1));
-        painter.setBrush(color);
+        painter.setPen(QPen(color, 1.5));
+        painter.setBrush(Qt::white);
         for (const QPointF& p : polygon)
             painter.drawRect(QRectF(p - QPointF(kHandleRadius - 1, kHandleRadius - 1),
                                     QSizeF(2 * kHandleRadius - 2, 2 * kHandleRadius - 2)));

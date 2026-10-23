@@ -18,7 +18,7 @@ class ProjectSession
 public:
     enum class OpenError {
         None,
-        NoProjectFile,       // the folder has no liteanno/project.json
+        ProjectFileUnreadable,  // liteanno/ is there (or cannot be checked), its project.json cannot be read
         InvalidProjectFile,  // field and message say what is wrong
         LocationUnknown,     // the volume of the folder cannot be identified
         Locked,              // holder says who has it open
@@ -33,12 +33,16 @@ public:
         ProjectLock::Holder holder;
     };
 
-    // `root` is the data root, the folder that holds liteanno/.
+    // `root` is the data root, the folder that holds liteanno/. A folder without
+    // liteanno/project.json opens as a plain image folder (plainFolderConfig()).
     static OpenResult open(const QString& root, const LocalDataPaths& paths);
 
     ~ProjectSession();
 
     const ProjectConfig& config() const { return m_config; }
+    // Opened without a project file, as X-AnyLabeling opens a folder: any label, every shape
+    // tool, no batches, and nothing written into the folder but the annotation files.
+    bool isPlainFolder() const { return m_plainFolder; }
     // Of the project file as read: statuses derived under another one are not current.
     const QString& configDigest() const { return m_configDigest; }
     const ProjectLocation& location() const { return m_location; }
@@ -51,9 +55,10 @@ public:
 
 private:
     ProjectSession(ProjectConfig config, QString configDigest, ProjectLocation location, LocalDataPaths paths,
-                   std::unique_ptr<ProjectLock> lock);
+                   std::unique_ptr<ProjectLock> lock, bool plainFolder);
 
     ProjectConfig m_config;
+    bool m_plainFolder = false;
     QString m_configDigest;
     ProjectLocation m_location;
     LocalDataPaths m_paths;
@@ -61,5 +66,9 @@ private:
 };
 
 const char* openErrorName(ProjectSession::OpenError error);
+
+// What a folder without a project file is labeled with. Its project id comes from where the
+// folder is, so local recovery records and the catalog stay with the folder.
+ProjectConfig plainFolderConfig(const QString& bindingId);
 
 } // namespace liteanno::application

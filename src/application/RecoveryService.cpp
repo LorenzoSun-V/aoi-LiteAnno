@@ -8,6 +8,9 @@
 #include <QDir>
 #include <QFile>
 
+#include <filesystem>
+#include <system_error>
+
 namespace liteanno::application {
 
 using formats::FileStamp;
@@ -45,6 +48,13 @@ RecoveryScan RecoveryService::scan() const
 {
     RecoveryScan result;
     const QDir dir(m_paths.recoveryDir(m_location.projectId, m_location.bindingId));
+    // QDir lists a folder it cannot read as empty; a missing folder is the only empty one.
+    std::error_code error;
+    std::filesystem::directory_iterator listing(std::filesystem::path(dir.path().toStdU16String()), error);
+    if (error && error != std::errc::no_such_file_or_directory) {
+        result.error = QString::fromLocal8Bit(error.message());
+        return result;
+    }
     const QStringList names = dir.entryList({QStringLiteral("*.json")}, QDir::Files, QDir::Name);
     for (const QString& name : names) {
         const QString recordPath = dir.filePath(name);

@@ -68,6 +68,9 @@ public:
     // One image pixel per screen pixel, keeping the middle where it is.
     void zoomToOriginalSize();
     double zoom() const { return m_scale; }
+    QSize imageSize() const { return m_image.size(); }
+    // The colour shapes of the class are drawn in.
+    QColor colorFor(const QString& label) const;
     // Takes back the last point of a polygon being drawn (Ctrl+Z while drawing, as in
     // X-AnyLabeling). False when no polygon is being drawn.
     bool removeLastPolygonPoint();
@@ -83,6 +86,10 @@ signals:
     // The user asked to change the label of the selected shape (double click).
     void labelEditRequested(qsizetype index);
     void deleteRequested(qsizetype index);
+    // The image is shown at another scale (1 = one image pixel per screen pixel).
+    void zoomChanged(double scale);
+    // The mouse is over the image at `imagePoint`, or (`inside` false) has left it.
+    void cursorMoved(const QPointF& imagePoint, bool inside);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -95,6 +102,7 @@ protected:
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
     void focusOutEvent(QFocusEvent* event) override;
+    void leaveEvent(QEvent* event) override;
 
 private:
     enum class Drag {
@@ -121,10 +129,13 @@ private:
     // Z/X/C/V: turns the selected rotated box by `degrees`, as upstream's keys do.
     bool rotateSelectedBy(double degrees);
     void cancelDrawing();
-    QColor colorFor(const QString& label) const;
+    // Sends cursorMoved for the mouse's last position, after the view moved or zoomed under it.
+    void reportCursor();
     void paintShape(QPainter& painter, const Shape& shape, const PointList& points, bool selected) const;
 
     QImage m_image;
+    QPointF m_mouseWidget;  // the mouse's last position over the canvas
+    bool m_mouseOver = false;
     const AnnotationDocument* m_document = nullptr;
     bool m_readOnly = false;
     QHash<QString, QColor> m_classColors;
