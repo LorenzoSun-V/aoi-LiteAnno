@@ -25,6 +25,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QMenu>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -512,6 +513,14 @@ private slots:
         QVERIFY(w.window.openProject(project.data.path()));
         QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
         QVERIFY(!w.window.windowIcon().pixmap(QSize(32, 32)).isNull());
+        // The icon is the build's logo file (LITEANNO_LOGO), at every size a title bar or task
+        // bar asks for.
+        const QList<QSize> sizes = appIcon().availableSizes();
+        for (int size : {16, 24, 32, 48, 64, 128, 256})
+            QVERIFY2(sizes.contains(QSize(size, size)), qPrintable(QString::number(size)));
+        QVERIFY(!logoImage().isNull());
+        QCOMPARE(appIcon().pixmap(QSize(256, 256)).toImage().convertToFormat(QImage::Format_ARGB32).pixelColor(128, 128),
+                 logoImage().scaled(256, 256, Qt::IgnoreAspectRatio, Qt::SmoothTransformation).pixelColor(128, 128));
         w.window.closeProject();
         QCOMPARE(w.window.windowTitle(), QStringLiteral("aoi-LiteAnno"));
 
@@ -576,6 +585,138 @@ private slots:
 
     // "选中形状": the class and a rectangle's position and size can be typed; the numbers not
     // typed keep their exact values, the rectangle stays in the image, and undo takes it back.
+    // Boxes need no held button: a click sets one corner and the next click the other, as in
+    // X-AnyLabeling. Dragging still draws them too.
+    void clickedCorners()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        canvas->setTool(Canvas::Tool::Rectangle);
+        click(canvas, QPointF(20, 10));
+        QCOMPARE(w.document().shapes().size(), 0);
+        // The mouse moves with no button held; nothing is drawn until the second click.
+        mouse(canvas, QEvent::MouseMove, canvas->imageToWidget(QPointF(50, 40)), Qt::NoButton, Qt::NoButton);
+        QCOMPARE(w.document().shapes().size(), 0);
+        click(canvas, QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+        const PointList& corners = w.document().shapes()[0].points;
+        QVERIFY(qAbs(corners[0].x() - 20) < 1 && qAbs(corners[0].y() - 10) < 1);
+        QVERIFY(qAbs(corners[2].x() - 80) < 1 && qAbs(corners[2].y() - 60) < 1);
+
+        // A quick second click comes as a double click: it still ends the box.
+        click(canvas, QPointF(100, 20));
+        const QPointF at = canvas->imageToWidget(QPointF(150, 70));
+        mouse(canvas, QEvent::MouseButtonDblClick, at, Qt::LeftButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(w.document().shapes().size(), 2);
+
+        // A second click on the first corner is too small: the box waits for a real one.
+        click(canvas, QPointF(30, 80));
+        click(canvas, QPointF(30, 80));
+        QCOMPARE(w.document().shapes().size(), 2);
+        // Esc gives it up.
+        QTest::keyClick(canvas, Qt::Key_Escape);
+        click(canvas, QPointF(60, 90));
+        QCOMPARE(w.document().shapes().size(), 2);
+        QTest::keyClick(canvas, Qt::Key_Escape);
+
+        // Dragging still works.
+        drag(canvas, QPointF(10, 70), QPointF(40, 95));
+        QCOMPARE(w.document().shapes().size(), 3);
+
+        // Lines and circles take two clicks as well.
+        canvas->setTool(Canvas::Tool::Line);
+        click(canvas, QPointF(10, 10));
+        click(canvas, QPointF(60, 10));
+        QCOMPARE(w.document().shapes().size(), 4);
+        QCOMPARE(w.document().shapes()[3].type, ShapeType::Line);
+    }
+
+    // The rectangle tool with all three: clicked corners, a right click's menu, a right drag
+    // that pans. A right click while a box waits for its second corner opens no menu (nothing
+    // is selected under a half-drawn box) and the box still ends at the next click.
+    void clickedCornersRightClickAndPan()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->fitToWindow();
+        canvas->setTool(Canvas::Tool::Rectangle);
+        click(canvas, QPointF(20, 10));
+        click(canvas, QPointF(80, 60));
+        QCOMPARE(w.document().shapes().size(), 1);
+
+        // Right click on it: selected, menu, and the cross is back (not the panning hand).
+        const QPointF on = canvas->imageToWidget(QPointF(50, 35));
+        mouse(canvas, QEvent::MouseButtonPress, on, Qt::RightButton, Qt::RightButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::ClosedHandCursor);
+        mouse(canvas, QEvent::MouseButtonRelease, on, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        auto* menu = w.window.findChild<QMenu*>(QStringLiteral("canvasMenu"));
+        QVERIFY(menu);
+        menu->close();
+        QTRY_VERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+        QCOMPARE(canvas->tool(), Canvas::Tool::Rectangle);
+
+        // A box begun by a click: a right click opens no menu and keeps the box waiting; a right
+        // drag pans with it still waiting; the next left click ends it.
+        click(canvas, QPointF(100, 20));
+        const QPointF empty = canvas->imageToWidget(QPointF(170, 90));
+        mouse(canvas, QEvent::MouseButtonPress, empty, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, empty, Qt::RightButton, Qt::NoButton);
+        QVERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+        const QPointF origin = canvas->imageToWidget(QPointF(0, 0));
+        mouse(canvas, QEvent::MouseButtonPress, empty, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseMove, empty + QPointF(-20, -10), Qt::NoButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, empty + QPointF(-20, -10), Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->imageToWidget(QPointF(0, 0)), origin + QPointF(-20, -10));
+        QVERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        QCOMPARE(w.document().shapes().size(), 1);
+        click(canvas, QPointF(150, 70));
+        QCOMPARE(w.document().shapes().size(), 2);
+        const PointList& corners = w.document().shapes()[1].points;
+        QVERIFY(qAbs(corners[0].x() - 100) < 1 && qAbs(corners[0].y() - 20) < 1);
+        QVERIFY(qAbs(corners[2].x() - 150) < 1 && qAbs(corners[2].y() - 70) < 1);
+    }
+
+    // Space shows an open hand, panning a closed one; afterwards the tool's cursor is back.
+    void handWhilePanning()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        canvas->setTool(Canvas::Tool::Rectangle);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        QTest::keyPress(canvas, Qt::Key_Space);
+        QCOMPARE(canvas->cursor().shape(), Qt::OpenHandCursor);
+        const QPointF middle(canvas->width() / 2.0, canvas->height() / 2.0);
+        mouse(canvas, QEvent::MouseButtonPress, middle, Qt::LeftButton, Qt::LeftButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::ClosedHandCursor);
+        mouse(canvas, QEvent::MouseMove, middle + QPointF(30, 20), Qt::NoButton, Qt::LeftButton);
+        mouse(canvas, QEvent::MouseButtonRelease, middle + QPointF(30, 20), Qt::LeftButton, Qt::NoButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::OpenHandCursor);
+        QTest::keyRelease(canvas, Qt::Key_Space);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        // Right-button panning too.
+        mouse(canvas, QEvent::MouseButtonPress, middle, Qt::RightButton, Qt::RightButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::ClosedHandCursor);
+        mouse(canvas, QEvent::MouseButtonRelease, middle, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->cursor().shape(), Qt::CrossCursor);
+        canvas->setTool(Canvas::Tool::Select);
+        QCOMPARE(canvas->cursor().shape(), Qt::ArrowCursor);
+        QCOMPARE(w.document().shapes().size(), 0);
+    }
+
     void selectedShapeForm()
     {
         Project project;
@@ -1197,9 +1338,167 @@ private slots:
             {"create_rotation", "O"},         {"create_point", "Shift+P"},
             {"create_line", "Shift+L"},       {"create_linestrip", "Shift+S"},
             {"create_circle", "Shift+C"},
+            // Not in X-AnyLabeling: keys no upstream action uses.
+            {"confirm_and_next", "F"},        {"show_shortcuts", "F1"},
         };
         for (const auto& [action, keys] : upstream)
             QTest::newRow(action) << QString::fromLatin1(action) << QString::fromLatin1(keys);
+    }
+
+    // F confirms the image and opens the next one; at the last image it only confirms.
+    void confirmAndNextWithF()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.imageCount(), 3);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // Confirmed already: F just moves on.
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.document().review().checked);
+    }
+
+    // F moves on without confirming only an image that is properly confirmed: one checked in
+    // its file but failing the confirm conditions stays, and a checked-and-skipped conflict
+    // is confirmed for real (the skip cleared) before moving on.
+    void confirmAndNextNeedsAProperConfirmation()
+    {
+        Project project;
+        writeFile(project.json(1),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [{"label": "unknown", )"
+                  R"("points": [[10, 10], [50, 10], [50, 50], [10, 50]], "group_id": null, "description": "", )"
+                  R"("shape_type": "rectangle", "flags": {}}], "imagePath": "0001.png", "imageData": null, )"
+                  R"("imageHeight": 100, "imageWidth": 200})");
+        writeFile(project.json(2),
+                  R"({"version": "2.4.0", "flags": {}, "checked": true, "shapes": [], "imagePath": "0002.png", )"
+                  R"("imageData": null, "imageHeight": 100, "imageWidth": 200, )"
+                  R"("liteanno": {"formatVersion": "1.0", "status": "skipped", "skipReason": "blurred"}})");
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QCOMPARE(w.window.currentIndex(), 0);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 0);  // the unknown class blocks it
+
+        QVERIFY(w.window.nextImage());
+        QCOMPARE(w.window.currentIndex(), 1);
+        QTest::keyClick(canvas, Qt::Key_F);
+        QCOMPARE(w.window.currentIndex(), 2);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        QCOMPARE(w.document().review().skip, SkipState::None);
+    }
+
+    // Holding F does not confirm the images after it: an auto-repeated key does nothing, the
+    // key has to be pressed again.
+    void confirmAndNextDoesNotRepeat()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, true, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), true);
+        QTest::simulateEvent(canvas, false, Qt::Key_F, Qt::NoModifier, QStringLiteral("f"), false);
+        QCOMPARE(w.window.currentIndex(), 1);
+        QVERIFY(!w.document().review().checked);
+        QVERIFY(w.window.previousImage());
+        QVERIFY(w.document().review().checked);
+        // E is not repeated either: one press, one question.
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(!skip->autoRepeat());
+    }
+
+    // A right click selects the shape under it and opens a menu of what can be done with it,
+    // as in X-AnyLabeling; dragging with the right button still pans.
+    void rightClickMenu()
+    {
+        Project project;
+        Window w(project.options());
+        QVERIFY(w.window.openProject(project.data.path()));
+        Canvas* canvas = w.canvas();
+        canvas->setFocus();
+        w.drawRectangle(QPointF(20, 10), QPointF(80, 60));
+        w.drawRectangle(QPointF(100, 20), QPointF(150, 70));
+        canvas->setTool(Canvas::Tool::Rectangle);  // works with a drawing tool chosen too
+        canvas->setSelectedShape(-1);
+        const QPointF at = canvas->imageToWidget(QPointF(50, 35));
+        mouse(canvas, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->selectedShape(), qsizetype(0));
+        auto* menu = w.window.findChild<QMenu*>(QStringLiteral("canvasMenu"));
+        QVERIFY(menu);
+        QTRY_VERIFY(menu->isVisible());
+        QStringList names;
+        for (const QAction* item : menu->actions()) {
+            if (!item->isSeparator())
+                names.append(item->objectName());
+        }
+        QVERIFY(names.contains(QStringLiteral("confirm_and_next")));
+        QVERIFY(names.contains(QStringLiteral("skip_image")));
+        QVERIFY(names.contains(QStringLiteral("edit_label")));
+        const auto item = [&](const char* name) {
+            for (QAction* action : menu->actions()) {
+                if (action->objectName() == QLatin1String(name))
+                    return action;
+            }
+            return static_cast<QAction*>(nullptr);
+        };
+        // Keys are shown, but only the menu bar's actions hold them.
+        QVERIFY(item("delete_polygon")->text().contains(QLatin1Char('\t')));
+        QVERIFY(item("delete_polygon")->shortcut().isEmpty());
+        QVERIFY(!item("paste_polygon")->isEnabled());  // nothing copied yet
+        item("delete_polygon")->trigger();
+        QCOMPARE(w.document().shapes().size(), 1);
+        menu->close();
+        QTRY_VERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+
+        // On empty space: nothing selected, the shape items are off.
+        const QPointF empty = canvas->imageToWidget(QPointF(5, 95));
+        mouse(canvas, QEvent::MouseButtonPress, empty, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, empty, Qt::RightButton, Qt::NoButton);
+        QCOMPARE(canvas->selectedShape(), qsizetype(-1));
+        menu = w.window.findChild<QMenu*>(QStringLiteral("canvasMenu"));
+        QVERIFY(menu);
+        QVERIFY(!item("edit_label")->isEnabled());
+        QVERIFY(!item("delete_polygon")->isEnabled());
+        // The tool items switch tools.
+        item("edit_polygon")->trigger();
+        QCOMPARE(canvas->tool(), Canvas::Tool::Select);
+        menu->close();
+        QTRY_VERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+
+        // Dragging with the right button pans and opens no menu.
+        const QPointF origin = canvas->imageToWidget(QPointF(0, 0));
+        mouse(canvas, QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseMove, at + QPointF(40, 30), Qt::NoButton, Qt::RightButton);
+        mouse(canvas, QEvent::MouseButtonRelease, at + QPointF(40, 30), Qt::RightButton, Qt::NoButton);
+        QVERIFY(!w.window.findChild<QMenu*>(QStringLiteral("canvasMenu")));
+        QCOMPARE(canvas->imageToWidget(QPointF(0, 0)), origin + QPointF(40, 30));
+    }
+
+    void skipKeys()
+    {
+        Project project;
+        Window w(project.options());
+        const QAction* skip = w.window.findChild<QAction*>(QStringLiteral("skip_image"));
+        QVERIFY(skip);
+        QCOMPARE(skip->shortcuts(),
+                 (QList<QKeySequence>{QKeySequence(QStringLiteral("E")), QKeySequence(QStringLiteral("Ctrl+Alt+S"))}));
     }
 
     void shortcutsMatchXAnyLabeling()
@@ -1211,6 +1510,31 @@ private slots:
         const QAction* found = w.window.findChild<QAction*>(action);
         QVERIFY2(found, qPrintable(action));
         QCOMPARE(found->shortcuts(), QList<QKeySequence>{QKeySequence(keys)});
+    }
+
+    // Help > 快捷键一览 lists every key once, the canvas's own keys too.
+    void shortcutList()
+    {
+        Project project;
+        Window w(project.options());
+        const auto rows = w.window.shortcutList();
+        QStringList keys;
+        for (const auto& row : rows)
+            keys.append(row.second.split(QStringLiteral(u"、")));
+        for (const QAction* action : w.window.findChildren<QAction*>()) {
+            if (!action->shortcut().isEmpty())
+                QVERIFY2(keys.contains(action->shortcut().toString(QKeySequence::NativeText)), qPrintable(action->text()));
+        }
+        QSet<QString> names;
+        for (const auto& row : rows) {
+            QVERIFY2(!names.contains(row.first), qPrintable(row.first));
+            names.insert(row.first);
+        }
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+K")));
+        QVERIFY(keys.contains(QStringLiteral("Ctrl+Alt+S")));
+        QVERIFY(keys.contains(QStringLiteral("F")));
+        QVERIFY(keys.contains(QStringLiteral("E")));
+        QVERIFY(keys.contains(QStringLiteral(u"Esc")));
     }
 
     // No shortcut of this program may take a key X-AnyLabeling uses for something else.
@@ -1535,6 +1859,15 @@ private slots:
         // Ctrl+Alt+K confirms the image.
         QTest::keyClick(canvas, Qt::Key_K, Qt::ControlModifier | Qt::AltModifier);
         QVERIFY(w.document().review().checked);
+        // E (and Ctrl+Alt+S) skips it, with the reason asked for.
+        w.answers.skipReason = QStringLiteral(u"图片模糊");
+        QTest::keyClick(canvas, Qt::Key_E);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
+        QCOMPARE(w.document().review().skipReason, QStringLiteral(u"图片模糊"));
+        QVERIFY(w.window.unskipCurrent());
+        QTest::keyClick(canvas, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        QCOMPARE(w.document().review().skip, SkipState::Skipped);
+        QVERIFY(w.window.unskipCurrent());
 
         // The wheel scrolls, Ctrl + wheel zooms; Ctrl+= is the original size, Ctrl+F fits.
         const double fitted = canvas->zoom();

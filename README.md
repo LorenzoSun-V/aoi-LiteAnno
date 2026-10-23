@@ -25,11 +25,12 @@
 | `src/platform` | 与操作系统有关的部分：卷标识 |
 | `src/application` | 跨模块的流程：打开项目、编辑会话、保存、后台保存、恢复、项目锁 |
 | `src/dataset` | 图片目录扫描、本机目录索引 |
-| `src/imaging` | 读图（只在构建界面时编译） |
+| `src/imaging` | 读图、由 Logo 生成 Windows 图标（只在构建界面时编译） |
 | `src/ui` | 桌面程序 |
+| `branding` | 程序 Logo：换成自己的 Logo 见 [branding/README.md](branding/README.md) |
 | `tests` | Qt Test 单元测试、测试数据、与 Python json 模块的字节对照 |
 | `third_party` | 随仓库附带的第三方代码：nlohmann/json 3.12.0（MIT）；构建时下载并校验摘要的 SQLite 3.54.1（公有领域） |
-| `cmake` | 工具链版本检查、模块依赖规则检查 |
+| `cmake` | 工具链版本检查、模块依赖规则检查、Logo 设置 |
 
 ## 构建
 
