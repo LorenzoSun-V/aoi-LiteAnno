@@ -14,6 +14,7 @@ include(LiteAnnoToolchainPin)
 include(LiteAnnoDependencyRules)
 include(LiteAnnoBundledFiles)
 include(LiteAnnoLogo)
+include(LiteAnnoVersionInfo)
 
 option(LITEANNO_BUILD_UI "Build the desktop application" ON)
 option(LITEANNO_BUILD_TESTS "Build the tests" ON)
