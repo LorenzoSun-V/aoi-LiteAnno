@@ -749,6 +749,15 @@ void Canvas::reportCursor()
     emit cursorMoved(imagePoint, QRectF(QPointF(0, 0), QSizeF(m_image.size())).contains(imagePoint));
 }
 
+void Canvas::setLineWidth(double width)
+{
+    width = std::isfinite(width) ? std::clamp(width, kMinLineWidth, kMaxLineWidth) : kDefaultLineWidth;
+    if (width == m_lineWidth)
+        return;
+    m_lineWidth = width;
+    update();
+}
+
 QColor Canvas::colorFor(const QString& label) const
 {
     const auto it = m_classColors.constFind(label);
@@ -762,7 +771,7 @@ void Canvas::paintShape(QPainter& painter, const Shape& shape, const PointList& 
     if (points.isEmpty())
         return;
     QColor color = shape.kind == ShapeKind::Editable ? colorFor(shape.label) : QColor(160, 160, 160);
-    QPen pen(color, selected ? 2.5 : 1.5);
+    QPen pen(color, selected ? m_lineWidth + 1 : m_lineWidth);
     pen.setCosmetic(true);
     if (shape.kind != ShapeKind::Editable)
         pen.setStyle(Qt::DashLine);
@@ -844,7 +853,7 @@ void Canvas::paintEvent(QPaintEvent* /*event*/)
         }
     }
 
-    QPen pen(QColor(255, 220, 0), 1.5);
+    QPen pen(QColor(255, 220, 0), m_lineWidth);
     pen.setCosmetic(true);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);

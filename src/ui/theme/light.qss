@@ -46,7 +46,7 @@ QWidget#navBar QToolButton:hover { background: #F0F3F7; }
 QWidget#navBar QToolButton:pressed { background: #E6EAEF; }
 QWidget#navBar QToolButton:disabled { color: #A0A8B0; }
 QLabel#positionLabel { font-weight: bold; color: #1F2933; }
-QLabel#zoomLabel { color: #1F2933; }
+QLabel#zoomLabel, QLabel#lineWidthLabel { color: #1F2933; }
 
 QListWidget { background: #FFFFFF; border: none; outline: 0; }
 

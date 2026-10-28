@@ -40,6 +40,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSettings>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTableWidget>
@@ -615,6 +616,51 @@ void MainWindow::buildUi()
     zoomLayout->addWidget(inButton);
     zoomLayout->addWidget(button(fit, zoom));
     bar->addWidget(zoom);
+
+    // How thick the outlines are. A setting of this user on this PC, not of the data:
+    // %APPDATA%\aoi-LiteAnno\LiteAnno.ini on Windows, ~/.config/aoi-LiteAnno/LiteAnno.ini on Linux.
+    auto* lines = new QWidget;
+    lines->setObjectName(QStringLiteral("navGroup"));
+    auto* linesLayout = new QHBoxLayout(lines);
+    linesLayout->setContentsMargins(10, 2, 2, 2);
+    linesLayout->setSpacing(2);
+    linesLayout->addWidget(new QLabel(QStringLiteral(u"线宽")));
+    {
+        QSettings settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("aoi-LiteAnno"),
+                           QStringLiteral("LiteAnno"));
+        bool ok = false;
+        const double stored = settings.value(QStringLiteral("canvas/lineWidth")).toDouble(&ok);
+        m_canvas->setLineWidth(ok ? stored : Canvas::kDefaultLineWidth);
+    }
+    auto* lineWidth = new QLabel;
+    lineWidth->setObjectName(QStringLiteral("lineWidthLabel"));
+    lineWidth->setAlignment(Qt::AlignCenter);
+    lineWidth->setMinimumWidth(32);
+    lineWidth->setText(QString::number(m_canvas->lineWidth()));
+    const QString tip = QStringLiteral(u"形状线框的粗细（屏幕像素），只影响显示，不写入标注文件");
+    const auto step = [this, lineWidth](const QString& name, const QString& text, double by) {
+        auto* widget = new QToolButton;
+        widget->setObjectName(name);
+        widget->setText(text);
+        widget->setAutoRepeat(true);
+        widget->setFocusPolicy(Qt::NoFocus);  // the keys stay with the canvas
+        connect(widget, &QToolButton::clicked, this, [this, lineWidth, by] {
+            // In steps of 0.5, as X-AnyLabeling's setting.
+            m_canvas->setLineWidth(std::round((m_canvas->lineWidth() + by) * 2) / 2);
+            lineWidth->setText(QString::number(m_canvas->lineWidth()));
+            QSettings settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("aoi-LiteAnno"),
+                               QStringLiteral("LiteAnno"));
+            settings.setValue(QStringLiteral("canvas/lineWidth"), m_canvas->lineWidth());
+        });
+        return widget;
+    };
+    QToolButton* thinner = step(QStringLiteral("lineThinner"), QStringLiteral(u"−"), -0.5);
+    QToolButton* thicker = step(QStringLiteral("lineThicker"), QStringLiteral("+"), 0.5);
+    for (QWidget* widget : std::initializer_list<QWidget*>{thinner, lineWidth, thicker}) {
+        widget->setToolTip(tip);
+        linesLayout->addWidget(widget);
+    }
+    bar->addWidget(lines);
 }
 
 void MainWindow::buildImageLabelPanel()
