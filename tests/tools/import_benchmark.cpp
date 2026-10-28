@@ -12,6 +12,7 @@
 #include "application/LocalDataPaths.h"
 #include "application/ProjectSession.h"
 #include "dataset/DirectoryScanner.h"
+#include "formats/AnnotationStore.h"
 #include "imaging/ImageLoader.h"
 
 #include <QBuffer>
@@ -131,5 +132,21 @@ int main(int argc, char** argv)
         qFatal("the import did not write every image: %s", qPrintable(report.error));
     out << "| " << count << " | import (whole) | " << importMs << " | | |\n";
     out << "| " << count << " | import: reading image sizes | " << infoMs << " | " << infoCalls << " | part of the above |\n";
+
+    // The atomic write on its own: a new file per image in the same folder, as the import
+    // writes, counting the attempts that had to be retried (a scanner holding the file).
+    int retries = 0;
+    formats::SaveOptions options;
+    options.beforeRetry = [&retries](int) { ++retries; };
+    const QByteArray bytes = R"({"version": "0.1.0", "flags": {}, "shapes": [], "imagePath": "a.png", "imageData": null})";
+    timer.restart();
+    for (int i = 0; i < count; ++i) {
+        const formats::SaveResult saved =
+            formats::writeFileAtomically(root + QStringLiteral("/write-%1.json").arg(i), bytes, options);
+        if (saved.status != formats::SaveStatus::Saved)
+            qFatal("cannot write: %s", qPrintable(saved.error));
+    }
+    out << "| " << count << " | write a new file per image (atomic, synced) | " << timer.elapsed() << " | " << count
+        << " | " << retries << " retried attempts |\n";
     return 0;
 }
