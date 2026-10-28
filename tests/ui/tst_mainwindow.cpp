@@ -20,6 +20,7 @@
 #include <QDirIterator>
 #include <QDoubleSpinBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QImage>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -34,6 +35,7 @@
 #include <QPushButton>
 #include <QScopeGuard>
 #include <QSemaphore>
+#include <QSettings>
 #include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -292,7 +294,68 @@ class TestMainWindow : public QObject
 {
     Q_OBJECT
 
+    // The settings of the user on this PC (line width) go here, never to the real ones.
+    QTemporaryDir m_settings;
+
 private slots:
+    void initTestCase()
+    {
+        QVERIFY(m_settings.isValid());
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, m_settings.path());
+    }
+
+    // The outline width: 4 at first, as in X-AnyLabeling; changed under the canvas, kept for
+    // the next start in the user's settings and never in the folder of the images.
+    void lineWidthIsASettingOfThisPc()
+    {
+        const QString file = m_settings.filePath(QStringLiteral("aoi-LiteAnno/LiteAnno.ini"));
+        QFile::remove(file);
+        Project project;
+        const QStringList filesBefore = QDir(project.data.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+        {
+            Window w(project.options());
+            QVERIFY(w.window.openProject(project.data.path()));
+            auto* width = w.window.findChild<QLabel*>(QStringLiteral("lineWidthLabel"));
+            auto* thinner = w.window.findChild<QToolButton*>(QStringLiteral("lineThinner"));
+            auto* thicker = w.window.findChild<QToolButton*>(QStringLiteral("lineThicker"));
+            QVERIFY(width && thinner && thicker);
+            QCOMPARE(thinner->focusPolicy(), Qt::NoFocus);  // D, F, E and the rest stay with the canvas
+            QCOMPARE(width->text(), QStringLiteral("4"));
+            QCOMPARE(w.canvas()->lineWidth(), 4.0);
+            for (int i = 0; i < 3; ++i)
+                QTest::mouseClick(thinner, Qt::LeftButton);
+            QCOMPARE(width->text(), QStringLiteral("2.5"));
+            for (int i = 0; i < 10; ++i)
+                QTest::mouseClick(thinner, Qt::LeftButton);
+            QCOMPARE(w.canvas()->lineWidth(), 0.5);
+            for (int i = 0; i < 4; ++i)
+                QTest::mouseClick(thicker, Qt::LeftButton);
+            QCOMPARE(w.canvas()->lineWidth(), 2.5);
+        }
+        QVERIFY(QFileInfo::exists(file));
+        {
+            Window w(project.options());
+            QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("lineWidthLabel"))->text(), QStringLiteral("2.5"));
+            QCOMPARE(w.canvas()->lineWidth(), 2.5);
+        }
+        QCOMPARE(QDir(project.data.path()).entryList(QDir::AllEntries | QDir::NoDotAndDotDot), filesBefore);
+
+        // A hand-edited value that is not a number, or out of range.
+        for (const auto& [stored, expected] : QList<std::pair<QString, double>>{
+                 {QStringLiteral("thick"), 4.0}, {QStringLiteral("100"), 20.0}, {QStringLiteral("0"), 0.5},
+                 {QStringLiteral("nan"), 4.0}}) {
+            {
+                QSettings settings(QSettings::IniFormat, QSettings::UserScope, QStringLiteral("aoi-LiteAnno"),
+                                   QStringLiteral("LiteAnno"));
+                settings.setValue(QStringLiteral("canvas/lineWidth"), stored);
+            }
+            Window w(project.options());
+            QCOMPARE(w.canvas()->lineWidth(), expected);
+            QCOMPARE(w.window.findChild<QLabel*>(QStringLiteral("lineWidthLabel"))->text(), QString::number(expected));
+        }
+        QFile::remove(file);
+    }
+
     void invalidProjectFileNamesTheField()
     {
         Project project;
