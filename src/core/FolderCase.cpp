@@ -3,6 +3,8 @@
 #ifdef Q_OS_WIN
 #include <QDir>
 
+#include <atomic>
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -10,7 +12,11 @@
 
 namespace liteanno {
 
-bool caseSensitiveFolder(const QString& folder)
+namespace {
+std::atomic<DWORD> g_failQuery{0};
+} // namespace
+
+FolderCase folderCase(const QString& folder)
 {
     // FileCaseSensitiveInfo and FILE_CS_FLAG_CASE_SENSITIVE_DIR (Windows 10 1803 SDK), spelled
     // out as older SDK headers or target versions hide them.
@@ -24,13 +30,27 @@ bool caseSensitiveFolder(const QString& folder)
                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
                                       FILE_FLAG_BACKUP_SEMANTICS, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
-        return true;
-    const bool read = GetFileInformationByHandleEx(handle, kCaseSensitiveInfo, &info, sizeof(info));
-    const DWORD error = read ? ERROR_SUCCESS : GetLastError();
+        return FolderCase::Unknown;
+    const DWORD injected = g_failQuery.load();
+    const bool read = injected == 0 && GetFileInformationByHandleEx(handle, kCaseSensitiveInfo, &info, sizeof(info));
+    const DWORD error = read ? ERROR_SUCCESS : injected != 0 ? injected : GetLastError();
     CloseHandle(handle);
     if (read)
-        return (info.flags & kCaseSensitiveDir) != 0;
-    return error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED && error != ERROR_INVALID_FUNCTION;
+        return (info.flags & kCaseSensitiveDir) != 0 ? FolderCase::Sensitive : FolderCase::Insensitive;
+    if (error == ERROR_INVALID_PARAMETER || error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_FUNCTION)
+        return FolderCase::NoSetting;
+    return FolderCase::Unknown;
+}
+
+bool caseSensitiveFolder(const QString& folder)
+{
+    const FolderCase found = folderCase(folder);
+    return found != FolderCase::Insensitive && found != FolderCase::NoSetting;
+}
+
+void failFolderCaseQueryForTesting(unsigned long error)
+{
+    g_failQuery.store(error);
 }
 
 } // namespace liteanno

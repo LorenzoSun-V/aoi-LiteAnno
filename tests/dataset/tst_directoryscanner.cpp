@@ -1,6 +1,7 @@
 // Listing the images of a data root (format spec 2, 9.1) and their order.
 
 #include "common/FolderBlocker.h"
+#include "core/FolderCase.h"
 #include "dataset/DirectoryScanner.h"
 #include "dataset/NaturalSort.h"
 #include "formats/AnnotationStore.h"
@@ -8,6 +9,7 @@
 #include <QDir>
 #include <QDateTime>
 #include <QFile>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -315,6 +317,18 @@ private slots:
         touch(root, QStringLiteral("cs/AB.jpg"));
         QVERIFY(hasNameCollision(root.filePath(QStringLiteral("cs/ab.png"))));
         QVERIFY(hasNameCollision(root.filePath(QStringLiteral("cs/AB.jpg"))));
+        QCOMPARE(liteanno::folderCase(root.filePath(QStringLiteral("cs"))), liteanno::FolderCase::Sensitive);
+
+        // Review of #33: a query Windows does not support proves nothing about the folder, so
+        // the folder is still listed and the collision found.
+        const auto restore = qScopeGuard([] { liteanno::failFolderCaseQueryForTesting(0); });
+        for (const DWORD error : {DWORD(ERROR_INVALID_PARAMETER), DWORD(ERROR_NOT_SUPPORTED), DWORD(ERROR_INVALID_FUNCTION),
+                                  DWORD(ERROR_ACCESS_DENIED)}) {
+            liteanno::failFolderCaseQueryForTesting(error);
+            QVERIFY(liteanno::folderCase(root.filePath(QStringLiteral("cs"))) != liteanno::FolderCase::Insensitive);
+            QVERIFY2(hasNameCollision(root.filePath(QStringLiteral("cs/ab.png"))), qPrintable(QString::number(error)));
+            QVERIFY2(hasNameCollision(root.filePath(QStringLiteral("cs/AB.jpg"))), qPrintable(QString::number(error)));
+        }
 #endif
     }
 
