@@ -1,6 +1,7 @@
 #include "formats/PoseConfig.h"
 
 #include <QFile>
+#include <QMap>
 #include <QRegularExpression>
 #include <QSet>
 #include <QStringDecoder>
@@ -172,6 +173,149 @@ bool splitKey(const QString& text, QString& key, QString& value)
     return false;
 }
 
+// The lines of a YAML file without comments, blank lines and a leading "---". nullopt with
+// `error` set (its line number in it) for text that is not UTF-8 or indented with tabs.
+std::optional<QList<Line>> yamlLines(const QByteArray& bytes, QString& error)
+{
+    QByteArray data = bytes;
+    if (data.startsWith("\xEF\xBB\xBF"))
+        data.remove(0, 3);
+    QStringDecoder decoder(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
+    QString text = decoder(data);
+    if (decoder.hasError()) {
+        error = QStringLiteral(u"不是 UTF-8 编码的文本文件");
+        return std::nullopt;
+    }
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+
+    QList<Line> lines;
+    const QStringList raw = text.split(QLatin1Char('\n'));
+    for (qsizetype i = 0; i < raw.size(); ++i) {
+        const QString content = withoutComment(raw[i]);
+        if (content.trimmed().isEmpty())
+            continue;
+        if (content.trimmed() == QLatin1String("---") && lines.isEmpty())
+            continue;  // the document start
+        int indent = 0;
+        while (indent < content.size() && content[indent] == QLatin1Char(' '))
+            ++indent;
+        if (indent < content.size() && content[indent] == QLatin1Char('\t')) {
+            error = QStringLiteral(u"第 %1 行：缩进不能用制表符").arg(i + 1);
+            return std::nullopt;
+        }
+        lines.append({int(i) + 1, indent, content.mid(indent).trimmed()});
+    }
+    return lines;
+}
+
+// A class number as a YAML key: digits only (ultralytics reads the keys of names as ints).
+std::optional<int> classNumber(const QString& key)
+{
+    static const QRegularExpression digits(QStringLiteral("^(0|[1-9][0-9]{0,8})$"));
+    if (!digits.match(key).hasMatch())
+        return std::nullopt;
+    return key.toInt();
+}
+
+QString atLine(int line, const QString& reason)
+{
+    return QStringLiteral(u"第 %1 行：%2").arg(line).arg(reason);
+}
+
+bool isItem(const Line& line)
+{
+    return line.text == QLatin1String("-") || line.text.startsWith(QLatin1String("- "));
+}
+
+// The class names in `lines` from `i` on, while they are indented at least `indent`: "- name"
+// items, or "number: name" with each of the numbers 0, 1, ... once, in any order. With
+// `itemsOnly`, only "- name" lines (a list at the indentation of its key). Moves `i` past them.
+std::optional<QStringList> namesBlock(const QList<Line>& lines, qsizetype& i, int indent, bool itemsOnly, QString& error)
+{
+    QStringList list;
+    QMap<int, QString> numbered;
+    QMap<int, int> numberLine;
+    int itemIndent = -1;
+    while (i < lines.size() && lines[i].indent >= indent && (!itemsOnly || (lines[i].indent == indent && isItem(lines[i])))) {
+        const Line& line = lines[i];
+        if (itemIndent < 0)
+            itemIndent = line.indent;
+        if (line.indent != itemIndent) {
+            error = atLine(line.number, QStringLiteral(u"缩进不对"));
+            return std::nullopt;
+        }
+        const bool item = isItem(line);
+        if (item ? !numbered.isEmpty() : !list.isEmpty()) {
+            error = atLine(line.number, QStringLiteral(u"“- 名称”和“编号: 名称”不能混用"));
+            return std::nullopt;
+        }
+        QString value = line.text.mid(1);
+        std::optional<int> number;
+        if (!item) {
+            QString key;
+            if (splitKey(line.text, key, value))
+                number = classNumber(key.trimmed());
+            if (!number) {
+                error = atLine(line.number, QStringLiteral(u"应是“编号: 名称”（编号 0、1、2…）或“- 名称”"));
+                return std::nullopt;
+            }
+            if (numbered.contains(*number)) {
+                error = atLine(line.number, QStringLiteral(u"编号 %1 写了两次").arg(*number));
+                return std::nullopt;
+            }
+        }
+        QString reason;
+        const std::optional<QString> name = scalar(value, reason);
+        if (!name) {
+            error = atLine(line.number, reason);
+            return std::nullopt;
+        }
+        if (number) {
+            numbered.insert(*number, *name);
+            numberLine.insert(*number, line.number);
+        } else {
+            list.append(*name);
+        }
+        ++i;
+    }
+    if (!numbered.isEmpty()) {
+        int expected = 0;
+        for (auto it = numbered.cbegin(); it != numbered.cend(); ++it, ++expected) {
+            if (it.key() != expected) {
+                error = atLine(numberLine.value(it.key()), QStringLiteral(u"缺少编号 %1：编号应从 0 起连续").arg(expected));
+                return std::nullopt;
+            }
+            list.append(it.value());
+        }
+    }
+    return list;
+}
+
+// The checks a classes.txt gets as well: names, none twice.
+std::optional<QStringList> distinctNames(const QStringList& names, QString& error)
+{
+    if (names.isEmpty()) {
+        error = QStringLiteral(u"文件里没有类别");
+        return std::nullopt;
+    }
+    QSet<QString> seen;
+    for (const QString& name : names) {
+        // Quotes can hold an empty or blank name: a classes.txt written with it could not be
+        // read back.
+        if (name.trimmed().isEmpty()) {
+            error = QStringLiteral(u"有类别名是空的");
+            return std::nullopt;
+        }
+        if (seen.contains(name)) {
+            error = QStringLiteral(u"类别“%1”写了两次").arg(name);
+            return std::nullopt;
+        }
+        seen.insert(name);
+    }
+    return names;
+}
+
 PoseConfig failed(int line, const QString& reason)
 {
     PoseConfig config;
@@ -217,31 +361,11 @@ int PoseConfig::maxKeypoints() const
 
 PoseConfig parsePoseConfig(const QByteArray& bytes)
 {
-    QByteArray data = bytes;
-    if (data.startsWith("\xEF\xBB\xBF"))
-        data.remove(0, 3);
-    QStringDecoder decoder(QStringDecoder::Utf8, QStringDecoder::Flag::Stateless);
-    QString text = decoder(data);
-    if (decoder.hasError())
-        return failed(0, QStringLiteral(u"不是 UTF-8 编码的文本文件"));
-    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
-    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
-
-    QList<Line> lines;
-    const QStringList raw = text.split(QLatin1Char('\n'));
-    for (qsizetype i = 0; i < raw.size(); ++i) {
-        const QString content = withoutComment(raw[i]);
-        if (content.trimmed().isEmpty())
-            continue;
-        if (content.trimmed() == QLatin1String("---") && lines.isEmpty())
-            continue;  // the document start
-        int indent = 0;
-        while (indent < content.size() && content[indent] == QLatin1Char(' '))
-            ++indent;
-        if (indent < content.size() && content[indent] == QLatin1Char('\t'))
-            return failed(int(i) + 1, QStringLiteral(u"缩进不能用制表符"));
-        lines.append({int(i) + 1, indent, content.mid(indent).trimmed()});
-    }
+    QString error;
+    const std::optional<QList<Line>> read = yamlLines(bytes, error);
+    if (!read)
+        return failed(0, error);
+    const QList<Line>& lines = *read;
 
     PoseConfig config;
     bool sawClasses = false;
@@ -357,6 +481,103 @@ QByteArray poseConfigFile(const PoseConfig& config)
             text += QStringLiteral("    - ") + quotedIfNeeded(keypoint) + QLatin1Char('\n');
     }
     return text.toUtf8();
+}
+
+ClassNamesFile parseDatasetYaml(const QByteArray& bytes)
+{
+    ClassNamesFile result;
+    const std::optional<QList<Line>> read = yamlLines(bytes, result.error);
+    if (!read)
+        return result;
+    const QList<Line>& lines = *read;
+    std::optional<QStringList> names;
+    std::optional<int> nc;
+    int ncLine = 0;
+    for (qsizetype i = 0; i < lines.size();) {
+        const Line& line = lines[i];
+        QString key;
+        QString value;
+        if (line.indent != 0 || !splitKey(line.text, key, value)) {
+            result.error = atLine(line.number, QStringLiteral(u"应是“名称: 值”"));
+            return result;
+        }
+        key = key.trimmed();
+        ++i;
+        if (key == QLatin1String("nc")) {
+            nc = classNumber(value);
+            ncLine = line.number;
+            if (!nc) {
+                result.error = atLine(line.number, QStringLiteral(u"nc 应是类别个数"));
+                return result;
+            }
+        } else if (key == QLatin1String("names")) {
+            if (names) {
+                result.error = atLine(line.number, QStringLiteral(u"names 写了两次"));
+                return result;
+            }
+            if (!value.isEmpty()) {
+                if (value.startsWith(QLatin1Char('{'))) {
+                    result.error = atLine(line.number, QStringLiteral(u"names 请写成 [a, b]，或下面每行一个“编号: 名称”"));
+                    return result;
+                }
+                QString reason;
+                names = flowList(value, reason);
+                if (!names) {
+                    result.error = atLine(line.number, reason);
+                    return result;
+                }
+            } else {
+                // Indented under the key, or a "- name" list at its indentation.
+                const bool sameIndent = i < lines.size() && lines[i].indent == 0 && isItem(lines[i]);
+                names = namesBlock(lines, i, sameIndent ? 0 : 1, sameIndent, result.error);
+                if (!names)
+                    return result;
+            }
+        }
+        // Other keys (path, train, val, download, ...) and what is under them are passed over,
+        // also a "- item" list at the key's indentation (train: with a list of folders).
+        while (i < lines.size() && (lines[i].indent > 0 || isItem(lines[i])))
+            ++i;
+    }
+    if (!names) {
+        result.error = QStringLiteral(u"文件里没有 names（类别名称）");
+        return result;
+    }
+    if (!distinctNames(*names, result.error))
+        return result;
+    if (nc && *nc != names->size()) {
+        result.error = atLine(ncLine, QStringLiteral(u"nc 是 %1，names 里有 %2 个类别").arg(*nc).arg(names->size()));
+        return result;
+    }
+    result.names = *names;
+    return result;
+}
+
+std::optional<ClassNamesFile> numberedClassLines(const QStringList& lines)
+{
+    static const QRegularExpression numbered(QStringLiteral(R"(^\s*[0-9]+\s*:(\s|$))"));
+    qsizetype count = 0;
+    for (const QString& line : lines)
+        count += numbered.match(line).hasMatch() ? 1 : 0;
+    if (count == 0)
+        return std::nullopt;
+    ClassNamesFile result;
+    if (count != lines.size()) {
+        for (qsizetype i = 0; i < lines.size(); ++i) {
+            if (!numbered.match(lines[i]).hasMatch()) {
+                result.error = atLine(int(i) + 1, QStringLiteral(u"有的行写了“编号: 名称”，这一行没有；请每行都写编号，或都不写"));
+                return result;
+            }
+        }
+    }
+    QList<Line> parsed;
+    for (qsizetype i = 0; i < lines.size(); ++i)
+        parsed.append({int(i) + 1, 0, lines[i].trimmed()});
+    qsizetype i = 0;
+    const std::optional<QStringList> names = namesBlock(parsed, i, 0, false, result.error);
+    if (names && distinctNames(*names, result.error))
+        result.names = *names;
+    return result;
 }
 
 } // namespace liteanno::formats

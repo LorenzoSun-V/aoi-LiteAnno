@@ -106,6 +106,21 @@ struct Project {
     bool checked(const QString& imagePath) { return document(imagePath).review().checked; }
 };
 
+// An annotation file of a.png (200 x 100) with one rectangle of each label.
+QByteArray annotationOf(std::initializer_list<const char*> labels)
+{
+    QByteArray shapes;
+    for (const char* label : labels) {
+        if (!shapes.isEmpty())
+            shapes += ", ";
+        shapes += QByteArray(R"({"label": ")") + label
+                  + R"(", "points": [[1.0, 1.0], [9.0, 1.0], [9.0, 9.0], [1.0, 9.0]], "group_id": null, "description": "", )"
+                    R"("difficult": false, "shape_type": "rectangle", "flags": {}})";
+    }
+    return R"({"version": "4.2.0", "flags": {}, "shapes": [)" + shapes
+           + R"(], "imagePath": "a.png", "imageData": null, "imageHeight": 100, "imageWidth": 200})";
+}
+
 const ImportItem* itemOf(const ImportReport& report, const QString& image)
 {
     for (const ImportItem& item : report.items) {
@@ -579,6 +594,74 @@ private slots:
             QVERIFY2(!QFileInfo::exists(lower), what.constData());
         }
 #endif
+    }
+
+    // Field 2026-10-28: a classes.txt of "0: Dirty" lines gave the label "0: Dirty". The
+    // names are read by their numbers, also from a data.yaml chosen as the class file.
+    void numberedClassFile()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("b.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n0 0.2 0.2 0.1 0.1\n");
+        writeFile(project.labels.filePath(QStringLiteral("b.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("classes.txt")), "0: scratch\n1: dent\n");
+        ImportReport report = project.run({});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QList<Shape> shapes = project.shapes(QStringLiteral("a.png"));
+        QCOMPARE(shapes.size(), 2);
+        QCOMPARE(shapes[0].label, QStringLiteral("dent"));
+        QCOMPARE(shapes[1].label, QStringLiteral("scratch"));
+
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("b.json"))));
+        writeFile(project.labels.filePath(QStringLiteral("data.yaml")), "nc: 2\nnames:\n  0: scratch\n  1: dent\n");
+        ImportRequest request;
+        request.classesFile = project.labels.filePath(QStringLiteral("data.yaml"));
+        report = project.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(project.shapes(QStringLiteral("b.png")).value(0).label, QStringLiteral("dent"));
+
+        // Some lines numbered, some not: nothing is imported.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("b.json"))));
+        writeFile(project.labels.filePath(QStringLiteral("classes.txt")), "0: scratch\ndent\n");
+        report = project.run({});
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral(u"第 2 行")), qPrintable(report.error));
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("b.json"))));
+    }
+
+    // Review of #36: what re-importing does to an image that has hand-drawn shapes and one
+    // imported earlier under the whole line "0: ..." as its class (CHANGELOG, manual 17): the
+    // default leaves it as it is, appending keeps the old label, replacing drops the
+    // hand-drawn shapes too. Correcting the label is the way that keeps them.
+    void reimportAfterNumberedClasses()
+    {
+        const QByteArray before = annotationOf({"scratch", "0: dent"});
+        const auto labels = [](const QList<Shape>& shapes) {
+            QStringList list;
+            for (const Shape& shape : shapes)
+                list.append(shape.label);
+            return list;
+        };
+        for (const ImportMode mode : {ImportMode::OnlyNew, ImportMode::Append, ImportMode::Replace}) {
+            Project project;
+            project.image(QStringLiteral("a.png"));
+            writeFile(project.data.filePath(QStringLiteral("a.json")), before);
+            writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+            writeFile(project.labels.filePath(QStringLiteral("classes.txt")), "0: scratch\n1: dent\n");
+            ImportRequest request;
+            request.mode = mode;
+            const ImportReport report = project.run(request);
+            const QStringList found = labels(project.shapes(QStringLiteral("a.png")));
+            if (mode == ImportMode::OnlyNew) {
+                QCOMPARE(itemOf(report, QStringLiteral("a.png"))->result, ImportResult::HasAnnotation);
+                QCOMPARE(found, (QStringList{QStringLiteral("scratch"), QStringLiteral("0: dent")}));
+            } else if (mode == ImportMode::Append) {
+                QCOMPARE(found, (QStringList{QStringLiteral("scratch"), QStringLiteral("0: dent"), QStringLiteral("dent")}));
+            } else {
+                QCOMPARE(found, QStringList{QStringLiteral("dent")});
+            }
+        }
     }
 
     // A tab-separated file imports through the whole service as well.

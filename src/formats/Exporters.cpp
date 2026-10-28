@@ -1,5 +1,7 @@
 #include "formats/Exporters.h"
 
+#include "formats/PoseConfig.h"
+
 #include "core/FormatVersion.h"
 #include "core/Shape.h"
 #include "core/ShapeType.h"
@@ -543,12 +545,21 @@ ClassesFile parseClassesFile(const QByteArray& bytes)
         result.error = QStringLiteral(u"文件里没有类别");
         return result;
     }
-    QSet<QString> seen;
     for (qsizetype i = 0; i < lines.size(); ++i) {
         if (lines[i].isEmpty()) {
             result.error = QStringLiteral(u"第 %1 行是空行").arg(i + 1);
             return result;
         }
+    }
+    // "0: Dirty" lines, as the names of a data.yaml are written: the names, not the whole lines
+    // (field 2026-10-28). X-AnyLabeling takes each line as it is.
+    if (const std::optional<ClassNamesFile> numbered = numberedClassLines(lines)) {
+        result.names = numbered->names;
+        result.error = numbered->error;
+        return result;
+    }
+    QSet<QString> seen;
+    for (qsizetype i = 0; i < lines.size(); ++i) {
         if (seen.contains(lines[i])) {
             result.error = QStringLiteral(u"第 %1 行的类别“%2”重复了").arg(i + 1).arg(lines[i]);
             return result;
@@ -565,6 +576,15 @@ ClassesFile readClassesFile(const QString& path)
     if (!file.open(QIODevice::ReadOnly)) {
         ClassesFile result;
         result.error = QStringLiteral(u"无法读取：%1").arg(file.errorString());
+        return result;
+    }
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    if (suffix == QLatin1String("yaml") || suffix == QLatin1String("yml")) {
+        // An ultralytics dataset yaml: its names.
+        const ClassNamesFile read = parseDatasetYaml(file.readAll());
+        ClassesFile result;
+        result.names = read.names;
+        result.error = read.error;
         return result;
     }
     return parseClassesFile(file.readAll());
