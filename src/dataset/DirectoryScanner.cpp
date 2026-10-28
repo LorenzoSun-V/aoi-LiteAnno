@@ -2,6 +2,8 @@
 
 #include "dataset/NaturalSort.h"
 
+#include "core/FolderCase.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
