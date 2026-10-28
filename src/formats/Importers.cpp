@@ -78,9 +78,10 @@ QStringList textLines(const QByteArray& bytes)
     return text.split(QLatin1Char('\n'));
 }
 
-// Fields are separated by any run of whitespace, tabs included, as ultralytics reads label
-// files with str.split(). Upstream splits on single spaces only and rejects tab-separated
-// files that train fine (architecture 11.2).
+// Fields are separated by any run of whitespace. For spaces, tabs and runs of them this is
+// how ultralytics reads label files (str.split()); upstream splits on single spaces only and
+// rejects tab-separated files that train fine (architecture 11.2). \v and \f separate fields
+// too, more lenient than ultralytics, whose splitlines() breaks the line there.
 QStringList fields(const QString& line)
 {
     return line.simplified().split(QLatin1Char(' '), Qt::SkipEmptyParts);

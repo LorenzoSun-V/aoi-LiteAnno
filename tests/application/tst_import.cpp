@@ -413,7 +413,8 @@ private slots:
     }
 
     // Tabs and runs of spaces separate fields as a single space does: ultralytics trains on
-    // such files (str.split()), so they must import. Field report: 702 tab-separated YOLO
+    // such files (str.split()), so they must import. \v and \f are accepted too, which
+    // ultralytics does not (it breaks the line there). Field report: 702 tab-separated YOLO
     // files were refused with the whole line taken as the class number.
     void whitespaceSeparatedFields()
     {
