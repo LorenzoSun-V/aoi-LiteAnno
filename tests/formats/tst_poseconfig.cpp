@@ -112,6 +112,14 @@ private slots:
         QVERIFY(parseDatasetYaml("names: [a]\nnames: [b]\n").error.contains(QStringLiteral(u"第 2 行")));
         QVERIFY(parseDatasetYaml("names:\n\t0: a\n").error.contains(QStringLiteral(u"第 2 行")));
         QVERIFY(!parseDatasetYaml("\xFF").error.isEmpty());
+
+        // Review of #36: a list at the indentation of another key is passed over with it.
+        QCOMPARE(parseDatasetYaml("train:\n- images/train\n- images/extra\nval: images/val\nnames: [Dirty, Scratch]\n").names, two);
+        QCOMPARE(parseDatasetYaml("names:\n- Dirty\n- Scratch\nval:\n- images/val\n").names, two);
+        // Review of #36: quotes do not make an empty or blank name.
+        QVERIFY(parseDatasetYaml("names: [Dirty, \"\"]\n").error.contains(QStringLiteral(u"空")));
+        QVERIFY(parseDatasetYaml("names:\n  0: Dirty\n  1: ' '\n").error.contains(QStringLiteral(u"空")));
+        QVERIFY(parseDatasetYaml("names:\n- ''\n").error.contains(QStringLiteral(u"空")));
     }
 
     void poseChecks()

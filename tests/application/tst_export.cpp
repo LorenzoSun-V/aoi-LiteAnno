@@ -411,6 +411,9 @@ private slots:
         QVERIFY(formats::parseClassesFile("0: Dirty\n0: Crack\n").error.contains(QStringLiteral(u"编号 0 写了两次")));
         QVERIFY(formats::parseClassesFile("0: Dirty\n1: Dirty\n").error.contains(QStringLiteral("Dirty")));
         QVERIFY(formats::parseClassesFile("0: Dirty\n1:\n").error.contains(QStringLiteral(u"第 2 行")));
+        // Review of #36: a quoted empty name is no name.
+        QVERIFY(formats::parseClassesFile("0: ''\n").error.contains(QStringLiteral(u"空")));
+        QVERIFY(formats::parseClassesFile("0: Dirty\n1: \"  \"\n").error.contains(QStringLiteral(u"空")));
     }
 
     // A data.yaml chosen as the class file: its names.

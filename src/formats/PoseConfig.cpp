@@ -301,6 +301,12 @@ std::optional<QStringList> distinctNames(const QStringList& names, QString& erro
     }
     QSet<QString> seen;
     for (const QString& name : names) {
+        // Quotes can hold an empty or blank name: a classes.txt written with it could not be
+        // read back.
+        if (name.trimmed().isEmpty()) {
+            error = QStringLiteral(u"有类别名是空的");
+            return std::nullopt;
+        }
         if (seen.contains(name)) {
             error = QStringLiteral(u"类别“%1”写了两次").arg(name);
             return std::nullopt;
@@ -528,8 +534,9 @@ ClassNamesFile parseDatasetYaml(const QByteArray& bytes)
                     return result;
             }
         }
-        // Other keys (path, train, val, download, ...) and what is under them are passed over.
-        while (i < lines.size() && lines[i].indent > 0)
+        // Other keys (path, train, val, download, ...) and what is under them are passed over,
+        // also a "- item" list at the key's indentation (train: with a list of folders).
+        while (i < lines.size() && (lines[i].indent > 0 || isItem(lines[i])))
             ++i;
     }
     if (!names) {
