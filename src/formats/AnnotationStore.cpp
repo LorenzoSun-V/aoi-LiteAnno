@@ -124,8 +124,9 @@ QString existingAnnotationPath(const QString& jsonPath)
     // Not found, or a folder of that name. In a folder set to tell case apart (fsutil
     // setCaseSensitiveInfo) the look-up finds the exact name only, while the scan pairs
     // "a.JSON" too: the folder is listed as before, so editing, import and export use the
-    // file the scan shows.
-    if (!caseSensitiveFolder(info.path()))
+    // file the scan shows. Listed as well whenever the setting was not read as off (also
+    // where Windows cannot say, as on FAT drives): finding an existing file comes first.
+    if (folderCase(info.path()) == FolderCase::Insensitive)
         return jsonPath;
     QString pattern = info.fileName();
     // Wildcard characters in the name are matched literally.
