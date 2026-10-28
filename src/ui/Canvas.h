@@ -58,6 +58,14 @@ public:
     // Ctrl+L: the class names next to the shapes; big names can cover small boxes.
     void setLabelsVisible(bool visible);
     bool labelsVisible() const { return m_labelsVisible; }
+    // How thick the outlines are drawn, in screen pixels at any zoom; the selected shape's
+    // is one pixel thicker. 4 by default, as X-AnyLabeling 4.2.0's shape.line_width.
+    static constexpr double kDefaultLineWidth = 4.0;
+    static constexpr double kMinLineWidth = 0.5;
+    static constexpr double kMaxLineWidth = 20.0;
+    // Kept between kMinLineWidth and kMaxLineWidth.
+    void setLineWidth(double width);
+    double lineWidth() const { return m_lineWidth; }
 
     // Image and widget coordinates.
     QPointF imageToWidget(const QPointF& point) const;
@@ -167,6 +175,7 @@ private:
     bool m_shapesVisible = true;
     bool m_hideAllPending = false;  // all shapes are off: hide those of the next document
     bool m_labelsVisible = true;
+    double m_lineWidth = kDefaultLineWidth;
 };
 
 } // namespace liteanno::ui
