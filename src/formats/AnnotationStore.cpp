@@ -48,6 +48,34 @@ SaveResult writeOnce(const QString& path, const QByteArray& bytes)
     return {SaveStatus::Saved, QString()};
 }
 
+#ifdef Q_OS_WIN
+// Whether the folder is set to tell case apart in names. Not known (the folder cannot be
+// opened, another error): true, so the folder is listed. Windows versions and file systems
+// without the setting have no such folders.
+bool caseSensitiveFolder(const QString& folder)
+{
+    // FileCaseSensitiveInfo and FILE_CS_FLAG_CASE_SENSITIVE_DIR (Windows 10 1803 SDK), spelled
+    // out as older SDK headers or target versions hide them.
+    constexpr auto kCaseSensitiveInfo = static_cast<FILE_INFO_BY_HANDLE_CLASS>(23);
+    constexpr ULONG kCaseSensitiveDir = 0x1;
+    struct {
+        ULONG flags;
+    } info{};
+    const QString native = QDir::toNativeSeparators(folder);
+    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), FILE_READ_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return true;
+    const bool read = GetFileInformationByHandleEx(handle, kCaseSensitiveInfo, &info, sizeof(info));
+    const DWORD error = read ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    if (read)
+        return (info.flags & kCaseSensitiveDir) != 0;
+    return error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED && error != ERROR_INVALID_FUNCTION;
+}
+#endif
+
 // fsync, or FlushFileBuffers on Windows: the bytes are on the disk, not only in the cache.
 bool syncToDisk(int fd)
 {
@@ -89,14 +117,29 @@ QString existingAnnotationPath(const QString& jsonPath)
     const QString native = QDir::toNativeSeparators(info.absoluteFilePath());
     const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(native.utf16()), FindExInfoBasic, &data,
                                          FindExSearchNameMatch, nullptr, 0);
-    if (find == INVALID_HANDLE_VALUE)
+    if (find != INVALID_HANDLE_VALUE) {
+        FindClose(find);
+        const QString onDisk = QString::fromWCharArray(data.cFileName);
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && onDisk != info.fileName()
+            && onDisk.compare(info.fileName(), Qt::CaseInsensitive) == 0)
+            return info.dir().filePath(onDisk);
         return jsonPath;
-    FindClose(find);
-    const QString onDisk = QString::fromWCharArray(data.cFileName);
-    if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 || onDisk == info.fileName()
-        || onDisk.compare(info.fileName(), Qt::CaseInsensitive) != 0)
+    }
+    // Not found. In a folder set to tell case apart (fsutil setCaseSensitiveInfo) the look-up
+    // finds the exact name only, while the scan pairs "a.JSON" too: the folder is listed as
+    // before, so editing, import and export use the file the scan shows.
+    if (!caseSensitiveFolder(info.path()))
         return jsonPath;
-    return info.dir().filePath(onDisk);
+    QString pattern = info.fileName();
+    // Wildcard characters in the name are matched literally.
+    for (const QChar special : {QLatin1Char('['), QLatin1Char('*'), QLatin1Char('?')})
+        pattern.replace(special, QLatin1Char('[') + special + QLatin1Char(']'));
+    // Name filters ignore case; the scan pairs a differing stem too in such a folder.
+    const QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
+    if (names.isEmpty() || names.contains(info.fileName()))
+        return jsonPath;
+    // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
+    return info.dir().filePath(names.first());
 #else
     // Case-sensitive names: the lower-case file is the one.
     if (info.exists())

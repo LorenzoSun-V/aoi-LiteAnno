@@ -22,6 +22,13 @@
 
 #include <cmath>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 using namespace liteanno;
 using namespace liteanno::application;
 
@@ -105,6 +112,32 @@ const ImportItem* itemOf(const ImportReport& report, const QString& image)
     }
     return nullptr;
 }
+
+#ifdef Q_OS_WIN
+// Sets an empty folder to tell case apart in names (what fsutil file setCaseSensitiveInfo
+// does). False where Windows or the file system cannot.
+bool makeCaseSensitive(const QString& folder)
+{
+    const QString native = QDir::toNativeSeparators(folder);
+    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), FILE_WRITE_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    struct {
+        ULONG flags;
+    } info{0x1};  // FILE_CASE_SENSITIVE_INFO, FILE_CS_FLAG_CASE_SENSITIVE_DIR
+    const bool set = SetFileInformationByHandle(handle, static_cast<FILE_INFO_BY_HANDLE_CLASS>(23), &info, sizeof(info));
+    CloseHandle(handle);
+    if (!set)
+        return false;
+    // Set and in effect: a name in other case is another file.
+    writeFile(folder + QStringLiteral("/probe.txt"), "x");
+    const bool sensitive = !QFileInfo::exists(folder + QStringLiteral("/PROBE.TXT"));
+    QFile::remove(folder + QStringLiteral("/probe.txt"));
+    return sensitive;
+}
+#endif
 
 QByteArray coco(const QByteArray& images, const QByteArray& annotations)
 {
@@ -460,6 +493,36 @@ private slots:
         // Still one class number per line: a malformed number is reported as before.
         const ImportedLabels bad = parseYoloLabels("1x\t0.5\t0.25\t0.1\t0.2\n", ImportFormat::YoloDetection, classes, 200, 100);
         QVERIFY(bad.error.contains(QStringLiteral(u"类别编号“1x”")));
+    }
+
+    // Review of #30: in a Windows folder set to tell case apart, "a.JSON" is still the
+    // annotation of "a.png" (as the scan pairs it): it is read, the default import leaves the
+    // image alone, and no second "a.json" is made.
+    void caseSensitiveWindowsFolder()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Windows folders set to tell case apart");
+#else
+        Project project;
+        QVERIFY(QDir(project.data.path()).mkpath(QStringLiteral("cs")));
+        if (!makeCaseSensitive(project.data.filePath(QStringLiteral("cs"))))
+            QSKIP("this Windows cannot set a folder to tell case apart");
+        project.image(QStringLiteral("cs/a.png"));
+        project.annotation(QStringLiteral("cs/a.png"), "scratch");
+        const QString lower = project.data.filePath(QStringLiteral("cs/a.json"));
+        const QString upper = project.data.filePath(QStringLiteral("cs/a.JSON"));
+        QVERIFY(QFile::rename(lower, upper));
+        QVERIFY(!QFileInfo::exists(lower));
+        QCOMPARE(formats::existingAnnotationPath(lower), upper);
+        QCOMPARE(project.open()->annotationFilePath(QStringLiteral("cs/a.png")), upper);
+
+        writeFile(project.labels.filePath(QStringLiteral("cs/a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        const ImportReport report = project.run({});
+        QCOMPARE(itemOf(report, QStringLiteral("cs/a.png"))->result, ImportResult::HasAnnotation);
+        QVERIFY(!QFileInfo::exists(lower));
+        QCOMPARE(QDir(project.data.filePath(QStringLiteral("cs"))).entryList(QDir::Files),
+                 (QStringList{QStringLiteral("a.JSON"), QStringLiteral("a.png")}));
+#endif
     }
 
     // A tab-separated file imports through the whole service as well.
