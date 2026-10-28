@@ -7,6 +7,7 @@
 #include "application/LocalDataPaths.h"
 #include "application/ProjectSession.h"
 #include "application/RecoveryService.h"
+#include "core/FolderCase.h"
 #include "formats/AnnotationStore.h"
 #include "formats/Importers.h"
 #include "formats/MaskContours.h"
@@ -18,6 +19,7 @@
 #include <QFile>
 #include <QImage>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QTest>
 
 #include <cmath>
@@ -340,6 +342,41 @@ private slots:
         QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("a.json"))));
     }
 
+    // An image of the same name that turns up after the check is still found right before
+    // the write, for ASCII names, names that others fold to, and Chinese ones: nothing is
+    // written to the annotation file the images would share.
+    void sameNameImageBeforeWriting()
+    {
+        Project project;
+        const QStringList images = {QStringLiteral("plain.png"), QStringLiteral("ses-k.png"), QStringLiteral(u"划痕.png"),
+                                    QStringLiteral("kept.png")};
+        for (const QString& image : images) {
+            project.image(image);
+            writeFile(project.labels.filePath(image.left(image.lastIndexOf(QLatin1Char('.'))) + QStringLiteral(".txt")),
+                      "0 0.5 0.5 0.2 0.2\n");
+        }
+        const QStringList arriving = {QStringLiteral("PLAIN.jpg"), QStringLiteral(u"\u017FE\u017F-\u212A.bmp"),
+                                      QStringLiteral(u"划痕.JPG")};
+        bool added = false;
+        const ImportReport report = project.run({}, [&](int done, int total) {
+            if (!added && total > 0 && done == total / 2) {  // the writing starts
+                for (const QString& image : arriving)
+                    writeFile(project.data.filePath(image), "x");
+                added = true;
+            }
+            return true;
+        });
+        QVERIFY(added);
+        for (int i = 0; i < 3; ++i) {
+            const ImportItem* item = itemOf(report, images[i]);
+            QVERIFY2(item, qPrintable(images[i]));
+            QCOMPARE(item->result, ImportResult::NotWritten);
+            QCOMPARE(item->reason, QStringLiteral(u"同一目录下有同名图片"));
+            QVERIFY(!QFile::exists(project.data.filePath(images[i].left(images[i].lastIndexOf(QLatin1Char('.'))) + QStringLiteral(".json"))));
+        }
+        QCOMPARE(itemOf(report, QStringLiteral("kept.png"))->result, ImportResult::Imported);
+    }
+
     // Appended instances get group numbers the image does not use yet; the parts of one
     // instance keep sharing theirs.
     void appendedGroupsDoNotMerge()
@@ -526,6 +563,21 @@ private slots:
         QVERIFY(!QFileInfo::exists(lower));
         QCOMPARE(QDir(project.data.filePath(QStringLiteral("cs"))).entryList(QDir::Files),
                  (QStringList{QStringLiteral("a.JSON"), QStringLiteral("a.png")}));
+
+        // Review of #33: where the case setting cannot be read (a query Windows does not
+        // support, or another error) the folder is listed all the same.
+        const auto restore = qScopeGuard([] { liteanno::failFolderCaseQueryForTesting(0); });
+        for (const DWORD error : {DWORD(ERROR_INVALID_PARAMETER), DWORD(ERROR_NOT_SUPPORTED), DWORD(ERROR_INVALID_FUNCTION),
+                                  DWORD(ERROR_ACCESS_DENIED)}) {
+            liteanno::failFolderCaseQueryForTesting(error);
+            const QByteArray what = QByteArray::number(qulonglong(error));
+            QVERIFY2(formats::existingAnnotationPath(lower) == upper, what.constData());
+            QVERIFY(QDir(project.data.path()).mkdir(QStringLiteral("cs/a.json")));
+            QVERIFY2(formats::existingAnnotationPath(lower) == upper, what.constData());
+            QVERIFY(QDir(project.data.path()).rmdir(QStringLiteral("cs/a.json")));
+            QCOMPARE(itemOf(project.run({}), QStringLiteral("cs/a.png"))->result, ImportResult::HasAnnotation);
+            QVERIFY2(!QFileInfo::exists(lower), what.constData());
+        }
 #endif
     }
 

@@ -5,6 +5,8 @@ add_library(liteanno_core STATIC
     AnnotationDocument.h
     Diagnostic.cpp
     Diagnostic.h
+    FolderCase.cpp
+    FolderCase.h
     FormatVersion.h
     Geometry.cpp
     Geometry.h

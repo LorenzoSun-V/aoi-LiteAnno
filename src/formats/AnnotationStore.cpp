@@ -1,5 +1,7 @@
 #include "formats/AnnotationStore.h"
 
+#include "core/FolderCase.h"
+
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -47,34 +49,6 @@ SaveResult writeOnce(const QString& path, const QByteArray& bytes)
         return {SaveStatus::Failed, out.errorString()};
     return {SaveStatus::Saved, QString()};
 }
-
-#ifdef Q_OS_WIN
-// Whether the folder is set to tell case apart in names. Not known (the folder cannot be
-// opened, another error): true, so the folder is listed. Windows versions and file systems
-// without the setting have no such folders.
-bool caseSensitiveFolder(const QString& folder)
-{
-    // FileCaseSensitiveInfo and FILE_CS_FLAG_CASE_SENSITIVE_DIR (Windows 10 1803 SDK), spelled
-    // out as older SDK headers or target versions hide them.
-    constexpr auto kCaseSensitiveInfo = static_cast<FILE_INFO_BY_HANDLE_CLASS>(23);
-    constexpr ULONG kCaseSensitiveDir = 0x1;
-    struct {
-        ULONG flags;
-    } info{};
-    const QString native = QDir::toNativeSeparators(folder);
-    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), FILE_READ_ATTRIBUTES,
-                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                                      FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (handle == INVALID_HANDLE_VALUE)
-        return true;
-    const bool read = GetFileInformationByHandleEx(handle, kCaseSensitiveInfo, &info, sizeof(info));
-    const DWORD error = read ? ERROR_SUCCESS : GetLastError();
-    CloseHandle(handle);
-    if (read)
-        return (info.flags & kCaseSensitiveDir) != 0;
-    return error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED && error != ERROR_INVALID_FUNCTION;
-}
-#endif
 
 // fsync, or FlushFileBuffers on Windows: the bytes are on the disk, not only in the cache.
 bool syncToDisk(int fd)
@@ -129,8 +103,9 @@ QString existingAnnotationPath(const QString& jsonPath)
     // Not found, or a folder of that name. In a folder set to tell case apart (fsutil
     // setCaseSensitiveInfo) the look-up finds the exact name only, while the scan pairs
     // "a.JSON" too: the folder is listed as before, so editing, import and export use the
-    // file the scan shows.
-    if (!caseSensitiveFolder(info.path()))
+    // file the scan shows. Listed as well whenever the setting was not read as off (also
+    // where Windows cannot say, as on FAT drives): finding an existing file comes first.
+    if (folderCase(info.path()) == FolderCase::Insensitive)
         return jsonPath;
     QString pattern = info.fileName();
     // Wildcard characters in the name are matched literally.

@@ -41,7 +41,14 @@ jobs:
         run: cmake --preset windows-msvc
 
       - name: Build
-        run: cmake --build --preset windows-msvc --parallel
+        # Compiler errors also as annotations: the job log is not readable everywhere.
+        run: |
+          cmake --build --preset windows-msvc --parallel 2>&1 | Tee-Object -Variable out
+          if ($LASTEXITCODE -ne 0) {
+            $out | Select-String -Pattern ': (fatal )?error ' | Select-Object -First 20 |
+              ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+            exit 1
+          }
 
       - name: Test
         # On failure, run the failed tests again verbosely so their output is in the log.

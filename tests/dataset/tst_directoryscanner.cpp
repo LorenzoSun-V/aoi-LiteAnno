@@ -1,6 +1,7 @@
 // Listing the images of a data root (format spec 2, 9.1) and their order.
 
 #include "common/FolderBlocker.h"
+#include "core/FolderCase.h"
 #include "dataset/DirectoryScanner.h"
 #include "dataset/NaturalSort.h"
 #include "formats/AnnotationStore.h"
@@ -8,8 +9,11 @@
 #include <QDir>
 #include <QDateTime>
 #include <QFile>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <algorithm>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -37,6 +41,32 @@ QStringList paths(const ScanResult& result)
         list.append(image.path);
     return list;
 }
+
+#ifdef Q_OS_WIN
+// Sets an empty folder to tell case apart in names (what fsutil file setCaseSensitiveInfo
+// does). False where Windows or the file system cannot.
+bool makeCaseSensitive(const QString& folder)
+{
+    const QString native = QDir::toNativeSeparators(folder);
+    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), FILE_WRITE_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    struct {
+        ULONG flags;
+    } info{0x1};  // FILE_CASE_SENSITIVE_INFO, FILE_CS_FLAG_CASE_SENSITIVE_DIR
+    const bool set = SetFileInformationByHandle(handle, static_cast<FILE_INFO_BY_HANDLE_CLASS>(23), &info, sizeof(info));
+    CloseHandle(handle);
+    if (!set)
+        return false;
+    // Set and in effect: a name in other case is another file.
+    touch(QDir(folder), QStringLiteral("probe.txt"));
+    const bool sensitive = !QFileInfo::exists(folder + QStringLiteral("/PROBE.TXT"));
+    QFile::remove(folder + QStringLiteral("/probe.txt"));
+    return sensitive;
+}
+#endif
 
 } // namespace
 
@@ -200,6 +230,106 @@ private slots:
             QCOMPARE(hasNameCollision(root.filePath(image.path)), image.nameCollision);
         // A folder that cannot be listed: nothing says the annotation file may be written.
         QVERIFY(hasNameCollision(root.filePath(QStringLiteral("missing/a.png"))));
+    }
+
+    // The search by name on Windows: '?' for every character a name not in ASCII folds to,
+    // checked against every code point with the comparison of format spec 3. Such names are
+    // one UTF-16 unit and give one ASCII character, so the '?' covers them in place.
+    void nameQueryCoversEveryFold()
+    {
+        const auto ascii = [](const QString& text) {
+            return !text.isEmpty() && std::all_of(text.begin(), text.end(), [](QChar c) { return c.unicode() < 0x80; });
+        };
+        int folds = 0;
+        for (char32_t cp = 0x80; cp <= 0x10FFFF; ++cp) {
+            if (cp >= 0xD800 && cp <= 0xDFFF)
+                continue;
+            const QString other = QString::fromUcs4(&cp, 1);
+            const QString key = other.normalized(QString::NormalizationForm_C).toCaseFolded();
+            if (!ascii(key))
+                continue;
+            ++folds;
+            QVERIFY2(other.size() == 1 && key.size() == 1, qPrintable(QString::number(uint(cp), 16)));
+            for (const QString& stem : {key, key.toUpper(), QStringLiteral("x") + key + QStringLiteral("y")})
+                QVERIFY2(nameQueryPattern(stem) == QString(stem).replace(key, QStringLiteral("?"), Qt::CaseInsensitive) + QStringLiteral(".*"),
+                         qPrintable(QString::number(uint(cp), 16) + QLatin1Char(' ') + nameQueryPattern(stem)));
+        }
+        QVERIFY(folds >= 4);
+        QCOMPARE(nameQueryPattern(u"SES-260713-7_0"), QStringLiteral("?E?-260713-7_0.*"));
+        QCOMPARE(nameQueryPattern(u"a.b"), QStringLiteral("a.b.*"));
+        QCOMPARE(nameQueryPattern(u"abc;`"), QStringLiteral("abc??.*"));
+        QVERIFY(nameQueryPattern(u"").isEmpty());
+        QVERIFY(nameQueryPattern(u"划痕_001").isEmpty());
+        QVERIFY(nameQueryPattern(u"caf\u00e9").isEmpty());
+    }
+
+    // What the search finds is filtered as a listing is, and names in and out of ASCII meet:
+    // "a.*" also finds "a.b.png", "a.png.txt" and a folder named "A.jpg", none of them an
+    // image of stem "a"; ASCII stems collide with names that fold to them, Chinese ones with
+    // the same characters.
+    void nameCollisionAcrossScripts()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        touch(root, QStringLiteral("a.png"));
+        touch(root, QStringLiteral("a.b.png"));
+        touch(root, QStringLiteral("a.png.txt"));
+        touch(root, QStringLiteral("a.json"));
+        touch(root, QStringLiteral("A.jpg/inside.txt"));
+        touch(root, QStringLiteral("ab.png"));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("a.png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("a.b.png"))));
+
+        const QString ascii = QStringLiteral("SES-1_k;`");
+        const QString folded = QStringLiteral(u"\u017FE\u017F-1_\u212A\u037E\u1FEF");  // ſ, KELVIN SIGN, GREEK QUESTION MARK, VARIA
+        const QString chinese = QStringLiteral(u"划痕_001");
+        touch(root, ascii + QStringLiteral(".png"));
+        touch(root, chinese + QStringLiteral(".png"));
+        touch(root, QStringLiteral("SES-1_k.png"));
+        QVERIFY(!hasNameCollision(root.filePath(ascii + QStringLiteral(".png"))));
+        QVERIFY(!hasNameCollision(root.filePath(chinese + QStringLiteral(".png"))));
+        touch(root, folded + QStringLiteral(".jpg"));
+        touch(root, chinese + QStringLiteral(".BMP"));
+        if (QDir(root.path()).entryList({folded + QStringLiteral(".jpg")}, QDir::Files).isEmpty())
+            QSKIP("this file system changes such names");
+        QVERIFY(hasNameCollision(root.filePath(ascii + QStringLiteral(".png"))));
+        QVERIFY(hasNameCollision(root.filePath(folded + QStringLiteral(".jpg"))));
+        QVERIFY(hasNameCollision(root.filePath(chinese + QStringLiteral(".png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("SES-1_k.png"))));
+        for (const ScannedImage& image : scanDirectory(root.path()).images)
+            QCOMPARE(hasNameCollision(root.filePath(image.path)), image.nameCollision);
+    }
+
+    // A Windows folder set to tell case apart: the search would compare with case, so the
+    // folder is listed and "AB.jpg" still collides with "ab.png" (format spec 3).
+    void nameCollisionInCaseSensitiveFolder()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Windows folders set to tell case apart");
+#else
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        QVERIFY(root.mkdir(QStringLiteral("cs")));
+        if (!makeCaseSensitive(root.filePath(QStringLiteral("cs"))))
+            QSKIP("this Windows cannot set a folder to tell case apart");
+        touch(root, QStringLiteral("cs/ab.png"));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("cs/ab.png"))));
+        touch(root, QStringLiteral("cs/AB.jpg"));
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("cs/ab.png"))));
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("cs/AB.jpg"))));
+        QCOMPARE(liteanno::folderCase(root.filePath(QStringLiteral("cs"))), liteanno::FolderCase::Sensitive);
+
+        // Review of #33: a query Windows does not support proves nothing about the folder, so
+        // the folder is still listed and the collision found.
+        const auto restore = qScopeGuard([] { liteanno::failFolderCaseQueryForTesting(0); });
+        for (const DWORD error : {DWORD(ERROR_INVALID_PARAMETER), DWORD(ERROR_NOT_SUPPORTED), DWORD(ERROR_INVALID_FUNCTION),
+                                  DWORD(ERROR_ACCESS_DENIED)}) {
+            liteanno::failFolderCaseQueryForTesting(error);
+            QVERIFY(liteanno::folderCase(root.filePath(QStringLiteral("cs"))) != liteanno::FolderCase::Insensitive);
+            QVERIFY2(hasNameCollision(root.filePath(QStringLiteral("cs/ab.png"))), qPrintable(QString::number(error)));
+            QVERIFY2(hasNameCollision(root.filePath(QStringLiteral("cs/AB.jpg"))), qPrintable(QString::number(error)));
+        }
+#endif
     }
 
     void pairingMatchesTheEditor()
