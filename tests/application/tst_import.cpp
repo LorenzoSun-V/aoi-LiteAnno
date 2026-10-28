@@ -7,6 +7,7 @@
 #include "application/LocalDataPaths.h"
 #include "application/ProjectSession.h"
 #include "application/RecoveryService.h"
+#include "core/FolderCase.h"
 #include "formats/AnnotationStore.h"
 #include "formats/Importers.h"
 #include "formats/MaskContours.h"
@@ -18,6 +19,7 @@
 #include <QFile>
 #include <QImage>
 #include <QTemporaryDir>
+#include <QScopeGuard>
 #include <QTest>
 
 #include <cmath>
@@ -561,6 +563,21 @@ private slots:
         QVERIFY(!QFileInfo::exists(lower));
         QCOMPARE(QDir(project.data.filePath(QStringLiteral("cs"))).entryList(QDir::Files),
                  (QStringList{QStringLiteral("a.JSON"), QStringLiteral("a.png")}));
+
+        // Review of #33: where the case setting cannot be read (a query Windows does not
+        // support, or another error) the folder is listed all the same.
+        const auto restore = qScopeGuard([] { liteanno::failFolderCaseQueryForTesting(0); });
+        for (const DWORD error : {DWORD(ERROR_INVALID_PARAMETER), DWORD(ERROR_NOT_SUPPORTED), DWORD(ERROR_INVALID_FUNCTION),
+                                  DWORD(ERROR_ACCESS_DENIED)}) {
+            liteanno::failFolderCaseQueryForTesting(error);
+            const QByteArray what = QByteArray::number(qulonglong(error));
+            QVERIFY2(formats::existingAnnotationPath(lower) == upper, what.constData());
+            QVERIFY(QDir(project.data.path()).mkdir(QStringLiteral("cs/a.json")));
+            QVERIFY2(formats::existingAnnotationPath(lower) == upper, what.constData());
+            QVERIFY(QDir(project.data.path()).rmdir(QStringLiteral("cs/a.json")));
+            QCOMPARE(itemOf(project.run({}), QStringLiteral("cs/a.png"))->result, ImportResult::HasAnnotation);
+            QVERIFY2(!QFileInfo::exists(lower), what.constData());
+        }
 #endif
     }
 

@@ -42,12 +42,6 @@ FolderCase folderCase(const QString& folder)
     return FolderCase::Unknown;
 }
 
-bool caseSensitiveFolder(const QString& folder)
-{
-    const FolderCase found = folderCase(folder);
-    return found != FolderCase::Insensitive && found != FolderCase::NoSetting;
-}
-
 void failFolderCaseQueryForTesting(unsigned long error)
 {
     g_failQuery.store(error);

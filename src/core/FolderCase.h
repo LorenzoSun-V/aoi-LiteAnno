@@ -5,7 +5,8 @@
 namespace liteanno {
 
 #ifdef Q_OS_WIN
-// What Windows says about a folder's case setting (fsutil file setCaseSensitiveInfo).
+// What Windows says about a folder's case setting (fsutil file setCaseSensitiveInfo). Only
+// Insensitive lets a look-up by name stand for a listing of the folder.
 enum class FolderCase {
     Insensitive,  // read: names ignore case
     Sensitive,    // read: the folder tells case apart
@@ -15,10 +16,6 @@ enum class FolderCase {
 };
 
 FolderCase folderCase(const QString& folder);
-
-// Whether the folder may tell case apart, for finding a file by name: true unless the setting
-// was read as off or the file system has no such setting.
-bool caseSensitiveFolder(const QString& folder);
 
 // Tests only: the query fails with `error` instead of asking Windows; 0 asks Windows again.
 void failFolderCaseQueryForTesting(unsigned long error);
