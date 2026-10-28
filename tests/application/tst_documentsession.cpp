@@ -445,6 +445,9 @@ private slots:
         writeFile(setup.data.filePath(QStringLiteral("line1/a.JSON")), "{}");
         QDir(setup.data.path()).mkpath(QStringLiteral("line1/a.JSOn"));
         QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/a.JSON")));
+        QVERIFY(QDir(setup.data.path()).mkdir(QStringLiteral("line1/a.json")));
+        QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/a.JSON")));
+        QVERIFY(QDir(setup.data.path()).rmdir(QStringLiteral("line1/a.json")));
         writeFile(setup.data.filePath(QStringLiteral("line1/a.json")), "{}");
         QCOMPARE(existingAnnotationPath(lower), lower);
 #endif

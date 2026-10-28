@@ -120,14 +120,16 @@ QString existingAnnotationPath(const QString& jsonPath)
     if (find != INVALID_HANDLE_VALUE) {
         FindClose(find);
         const QString onDisk = QString::fromWCharArray(data.cFileName);
-        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 && onDisk != info.fileName()
-            && onDisk.compare(info.fileName(), Qt::CaseInsensitive) == 0)
-            return info.dir().filePath(onDisk);
-        return jsonPath;
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            if (onDisk != info.fileName() && onDisk.compare(info.fileName(), Qt::CaseInsensitive) == 0)
+                return info.dir().filePath(onDisk);
+            return jsonPath;
+        }
     }
-    // Not found. In a folder set to tell case apart (fsutil setCaseSensitiveInfo) the look-up
-    // finds the exact name only, while the scan pairs "a.JSON" too: the folder is listed as
-    // before, so editing, import and export use the file the scan shows.
+    // Not found, or a folder of that name. In a folder set to tell case apart (fsutil
+    // setCaseSensitiveInfo) the look-up finds the exact name only, while the scan pairs
+    // "a.JSON" too: the folder is listed as before, so editing, import and export use the
+    // file the scan shows.
     if (!caseSensitiveFolder(info.path()))
         return jsonPath;
     QString pattern = info.fileName();
@@ -141,8 +143,8 @@ QString existingAnnotationPath(const QString& jsonPath)
     // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
     return info.dir().filePath(names.first());
 #else
-    // Case-sensitive names: the lower-case file is the one.
-    if (info.exists())
+    // Case-sensitive names: the lower-case file is the one (a folder of that name is not).
+    if (info.isFile())
         return jsonPath;
     // Otherwise a file whose extension differs only in case. The 16 spellings of "json" are
     // looked up one by one instead of listing the folder, as this runs for every image without

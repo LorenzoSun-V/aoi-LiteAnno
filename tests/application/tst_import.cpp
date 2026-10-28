@@ -515,6 +515,10 @@ private slots:
         QVERIFY(!QFileInfo::exists(lower));
         QCOMPARE(formats::existingAnnotationPath(lower), upper);
         QCOMPARE(project.open()->annotationFilePath(QStringLiteral("cs/a.png")), upper);
+        // A folder named "a.json" beside it is no annotation file.
+        QVERIFY(QDir(project.data.path()).mkdir(QStringLiteral("cs/a.json")));
+        QCOMPARE(formats::existingAnnotationPath(lower), upper);
+        QVERIFY(QDir(project.data.path()).rmdir(QStringLiteral("cs/a.json")));
 
         writeFile(project.labels.filePath(QStringLiteral("cs/a.txt")), "1 0.5 0.5 0.1 0.2\n");
         const ImportReport report = project.run({});
