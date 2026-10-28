@@ -227,9 +227,9 @@ bool isImageFileName(const QString& fileName)
 
 namespace {
 
-// hasNameCollision() lists the folder of every image it is asked about (each image an
-// import or export writes, each save): the names are compared as they come from the file
-// system, with no file information built and no strings made for names that cannot match.
+// hasNameCollision() runs for every image an import or export writes and for each save: the
+// names are compared as they come from the file system, with no file information built and
+// no strings made for names that cannot match.
 
 bool isAscii(QStringView text)
 {
@@ -281,7 +281,58 @@ bool sameStem(QByteArrayView other, QStringView stem, const QString& key)
 }
 #endif
 
+// The ASCII characters, as comparisonKey() gives them, that a name not in ASCII gives as well:
+// U+017F LATIN SMALL LETTER LONG S folds to "s", U+212A KELVIN SIGN is "K" in NFC, U+037E
+// GREEK QUESTION MARK is ";" and U+1FEF GREEK VARIA is "`". Each is one UTF-16 unit, as its
+// ASCII form is. tst_directoryscanner checks the list against every code point.
+constexpr char kFoldTargets[] = "sk;`";
+
+#ifdef Q_OS_WIN
+// The images whose stem is `stem` among the folder entries that match `pattern`, counted up to
+// two; -1 when the search fails, also part way. No entry matching is 0. Directories and
+// hidden or system entries are no images (format spec 3).
+int sameStemImages(const QString& pattern, QStringView stem, const QString& key)
+{
+    WIN32_FIND_DATAW data;
+    const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(pattern.utf16()), FindExInfoBasic, &data,
+                                         FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    if (find == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_FILE_NOT_FOUND ? 0 : -1;
+    int same = 0;
+    for (;;) {
+        const std::size_t size = wcslen(data.cFileName);
+        std::size_t dot = 0;
+        if ((data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) == 0
+            && hasImageSuffix(data.cFileName, size, dot)
+            && sameStem(QStringView(reinterpret_cast<const QChar*>(data.cFileName), qsizetype(dot)), stem, key))
+            ++same;
+        if (same > 1)
+            break;
+        if (!FindNextFileW(find, &data)) {
+            if (GetLastError() != ERROR_NO_MORE_FILES)
+                same = -1;
+            break;
+        }
+    }
+    FindClose(find);
+    return same;
+}
+#endif
+
 } // namespace
+
+QString nameQueryPattern(QStringView stem)
+{
+    if (stem.isEmpty() || !isAscii(stem))
+        return {};
+    QString pattern;
+    pattern.reserve(stem.size() + 2);
+    for (const QChar c : stem) {
+        const char folded = char(c.toCaseFolded().unicode());
+        pattern += folded != 0 && std::strchr(kFoldTargets, folded) ? QLatin1Char('?') : c;
+    }
+    return pattern + QLatin1String(".*");
+}
 
 bool hasNameCollision(const QString& imageFile)
 {
@@ -289,26 +340,27 @@ bool hasNameCollision(const QString& imageFile)
     const QString name = image.fileName();
     const QStringView stem = QStringView(name).left(name.lastIndexOf(QLatin1Char('.')));
     const QString key = comparisonKey(stem.toString());
-    int same = 0;
 #ifdef Q_OS_WIN
-    WIN32_FIND_DATAW data;
-    const QString pattern = QDir::toNativeSeparators(image.path()) + QLatin1String("\\*");
-    const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(pattern.utf16()), FindExInfoBasic, &data,
-                                         FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    // First only the entries that may have the stem: a search by name that the file system
+    // answers without going through the folder. Listing the whole folder for every image took
+    // 230 ms an image in a field folder of 1,300 files (import timing, 2026-10-28). The search
+    // compares as the file system does, ASCII letters without case unless the folder tells
+    // case apart, and a '?' stands in for each character other names fold to; what it finds
+    // is filtered as a listing is ("a.*" also finds "a.b.png"). The full listing instead for
+    // a stem not in ASCII (its NFC and NFD forms differ in length), a folder that tells case
+    // apart or may, and a search that fails or does not even find the image.
+    const QString folder = QDir::toNativeSeparators(image.path()) + QLatin1Char('\\');
+    const QString pattern = nameQueryPattern(stem);
+    if (!pattern.isEmpty() && !caseSensitiveFolder(image.path())) {
+        const int found = sameStemImages(folder + pattern, stem, key);
+        if (found > 0)
+            return found > 1;
+    }
     // A folder that cannot be listed says nothing about the other images.
-    if (find == INVALID_HANDLE_VALUE)
-        return GetLastError() != ERROR_FILE_NOT_FOUND;
-    do {
-        const std::size_t size = wcslen(data.cFileName);
-        std::size_t dot = 0;
-        if ((data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0
-            || !hasImageSuffix(data.cFileName, size, dot))
-            continue;
-        if (sameStem(QStringView(reinterpret_cast<const QChar*>(data.cFileName), qsizetype(dot)), stem, key))
-            ++same;
-    } while (same <= 1 && FindNextFileW(find, &data));
-    FindClose(find);
+    const int found = sameStemImages(folder + QLatin1Char('*'), stem, key);
+    return found < 0 || found > 1;
 #else
+    int same = 0;
     const QByteArray folder = QFile::encodeName(image.path()) + '/';
     DIR* dir = opendir(folder.constData());
     if (!dir)
@@ -330,8 +382,8 @@ bool hasNameCollision(const QString& imageFile)
             ++same;
     }
     closedir(dir);
-#endif
     return same > 1;
+#endif
 }
 
 ScanResult scanDirectory(const QString& root, const ScanOptions& options)

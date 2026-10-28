@@ -65,4 +65,10 @@ bool isImageFileName(const QString& fileName);
 // since then nothing says the shared annotation file may be written.
 bool hasNameCollision(const QString& imageFile);
 
+// The search pattern hasNameCollision() asks Windows with for the images that may have the
+// stem `stem`: the stem with a '?' for each character that a name not in ASCII also folds to
+// (s, k, ';' and '`' in any case), then ".*". Empty for a stem that is empty or not ASCII,
+// whose folder is listed in full instead.
+QString nameQueryPattern(QStringView stem);
+
 } // namespace liteanno::dataset
