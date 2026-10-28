@@ -349,11 +349,12 @@ bool hasNameCollision(const QString& imageFile)
     // compares as the file system does, ASCII letters without case unless the folder tells
     // case apart, and a '?' stands in for each character other names fold to; what it finds
     // is filtered as a listing is ("a.*" also finds "a.b.png"). The full listing instead for
-    // a stem not in ASCII (its NFC and NFD forms differ in length), a folder that tells case
-    // apart or may, and a search that fails or does not even find the image.
+    // a stem not in ASCII (its NFC and NFD forms differ in length), a folder not read as
+    // ignoring case (also where Windows cannot say, as on FAT drives: an unsupported query
+    // proves nothing), and a search that fails or does not even find the image.
     const QString folder = QDir::toNativeSeparators(image.path()) + QLatin1Char('\\');
     const QString pattern = nameQueryPattern(stem);
-    if (!pattern.isEmpty() && !caseSensitiveFolder(image.path())) {
+    if (!pattern.isEmpty() && folderCase(image.path()) == FolderCase::Insensitive) {
         const int found = sameStemImages(folder + pattern, stem, key);
         if (found > 0)
             return found > 1;
