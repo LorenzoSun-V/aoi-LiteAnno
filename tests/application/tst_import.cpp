@@ -529,6 +529,39 @@ private slots:
 #endif
     }
 
+    // Import diagnosis: each written file has its read and save timed, one attempt each here,
+    // and the text names every step.
+    void timing()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("b.png"));
+        project.image(QStringLiteral("c.png"));
+        project.annotation(QStringLiteral("c.png"), "dent");
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("b.txt")), "0 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("c.txt")), "0 0.5 0.5 0.1 0.2\n");
+        int calls = 0;
+        const ImportReport report = project.run({}, [&calls](int, int) { return ++calls > 0; });
+        QVERIFY2(report.written, qPrintable(report.error));
+        const ImportTiming& t = report.timing;
+        QCOMPARE(t.files.size(), 2);  // c.png has an annotation and is left alone
+        QCOMPARE(t.progressCalls, calls);
+        QVERIFY(t.checkUs > 0 && t.writeUs > 0);
+        for (const ImportFileTiming& file : t.files) {
+            QCOMPARE(file.save.attempts.size(), 1);
+            QVERIFY(file.save.attempts[0].stoppedAt.isEmpty());
+            QVERIFY(file.save.attempts[0].mayWriteUs >= 0);  // the name-collision check
+            QVERIFY(file.save.attempts[0].commitUs >= 0);
+            QVERIFY(file.saveUs >= file.save.attempts[0].commitUs);
+        }
+        const QString text = importTimingText(report);
+        for (const QString& part : {QStringLiteral(u"检查（进度前半）"), QStringLiteral(u"写入（进度后半）"), QStringLiteral(u"进度框"),
+                                    QStringLiteral(u"同名检查"), QStringLiteral(u"提交（刷盘并改名）"), QStringLiteral(u"重试前等待"),
+                                    QStringLiteral(u"1 次 2 个"), QStringLiteral("a.png |"), QStringLiteral("b.png |")})
+            QVERIFY2(text.contains(part), qPrintable(text));
+    }
+
     // A tab-separated file imports through the whole service as well.
     void tabSeparatedYoloFile()
     {

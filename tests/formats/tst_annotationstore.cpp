@@ -488,6 +488,53 @@ private slots:
 #endif
     }
 
+    // The timing of each attempt (import diagnosis): retries show their wait and where they
+    // stopped; the attempt that saved has every step. Nothing else changes.
+    void attemptTiming()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("a.json"));
+        SaveTiming timing;
+        SaveOptions options;
+        options.retryDelayMs = 5;
+        options.timing = &timing;
+        int checks = 0;
+        int mayWrites = 0;
+        options.mayWrite = [&mayWrites] {
+            ++mayWrites;
+            return SaveResult{SaveStatus::Saved, QString()};
+        };
+        const SaveResult result = writeFileAtomically(path, "x", options, [&checks] {
+            return ++checks < 3 ? SaveResult{SaveStatus::Failed, QStringLiteral("held by a scanner")}
+                                : SaveResult{SaveStatus::Saved, QString()};
+        });
+        QCOMPARE(saveStatusName(result.status), saveStatusName(SaveStatus::Saved));
+        QCOMPARE(result.attempts, 3);
+        QCOMPARE(mayWrites, 1);
+        QCOMPARE(timing.attempts.size(), 3);
+        QCOMPARE(timing.attempts[0].waitUs, 0);
+        for (int k = 0; k < 2; ++k) {
+            QCOMPARE(timing.attempts[k].stoppedAt, QStringLiteral("check"));
+            QCOMPARE(timing.attempts[k].error, QStringLiteral("held by a scanner"));
+            QVERIFY(timing.attempts[k].checkUs >= 0);
+            QCOMPARE(timing.attempts[k].mayWriteUs, -1);
+            QCOMPARE(timing.attempts[k].commitUs, -1);
+        }
+        QVERIFY(timing.attempts[1].waitUs >= 4000);
+        const AttemptTiming& last = timing.attempts[2];
+        QVERIFY(last.stoppedAt.isEmpty());
+        QVERIFY(last.waitUs >= 4000);
+        QVERIFY(last.checkUs >= 0 && last.mayWriteUs >= 0 && last.openUs >= 0 && last.writeUs >= 0 && last.commitUs >= 0);
+
+        // Stopped by mayWrite: recorded there, no file step.
+        timing.attempts.clear();
+        options.mayWrite = [] { return SaveResult{SaveStatus::ReadOnly, QStringLiteral("name collision")}; };
+        QCOMPARE(saveStatusName(writeFileAtomically(path, "y", options).status), saveStatusName(SaveStatus::ReadOnly));
+        QCOMPARE(timing.attempts.size(), 1);
+        QCOMPARE(timing.attempts[0].stoppedAt, QStringLiteral("may-write"));
+        QCOMPARE(timing.attempts[0].openUs, -1);
+    }
+
     // A disk that fills up part way through a write (here: a file size limit) must not leave
     // the first part of the new file in place of the old one.
     void writeCutShortIsNotCommitted()

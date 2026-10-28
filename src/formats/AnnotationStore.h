@@ -63,6 +63,23 @@ struct SaveResult {
     int attempts = 0;  // write attempts made; more than 1 when the replace was retried
 };
 
+// What one write attempt took, for diagnosing slow saves (microseconds; -1: the step was not
+// reached). Filling it changes nothing that is done.
+struct AttemptTiming {
+    qint64 waitUs = 0;        // the pause before this attempt (retries only)
+    qint64 checkUs = -1;      // the check for external changes
+    qint64 mayWriteUs = -1;   // SaveOptions::mayWrite, such as the name-collision check
+    qint64 openUs = -1;       // creating the temporary file
+    qint64 writeUs = -1;      // writing the bytes into it
+    qint64 commitUs = -1;     // QSaveFile::commit: flushing to the disk and renaming
+    QString stoppedAt;        // "check", "may-write", "open", "write" or "commit"; empty when saved
+    QString error;
+};
+
+struct SaveTiming {
+    QList<AttemptTiming> attempts;
+};
+
 struct SaveOptions {
     // Write even if the file changed on disk: the user chose "use my version" (format spec 5.2).
     bool overwriteExternalChanges = false;
@@ -76,6 +93,8 @@ struct SaveOptions {
     // when overwriting: Saved lets the attempt go ahead, any other status stops and is
     // returned. For conditions outside the file, such as a name collision (format spec 2).
     std::function<SaveResult()> mayWrite;
+    // When set, filled with each attempt.
+    SaveTiming* timing = nullptr;
 };
 
 // Run before each write attempt. Saved lets the attempt go ahead, Failed waits for the next

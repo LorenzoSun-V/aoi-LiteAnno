@@ -2,6 +2,7 @@
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QSaveFile>
@@ -31,20 +32,40 @@ FileStamp stampOf(const QString& path, const QByteArray& bytes)
     return {true, bytes.size(), info.lastModified(), contentDigest(bytes)};
 }
 
-SaveResult writeOnce(const QString& path, const QByteArray& bytes)
+SaveResult writeOnce(const QString& path, const QByteArray& bytes, AttemptTiming* timing)
 {
+    QElapsedTimer timer;
+    timer.start();
+    const auto stopped = [&](const char* step, const QString& error) {
+        if (timing) {
+            timing->stoppedAt = QString::fromLatin1(step);
+            timing->error = error;
+        }
+        return SaveResult{SaveStatus::Failed, error};
+    };
     QSaveFile out(path);
     // Unbuffered: a write cut short (disk full) shows in the count. Through the buffer it is
     // lost, and commit() would put the first part of the file in place of the old one.
-    if (!out.open(QIODevice::WriteOnly | QIODevice::Unbuffered))
-        return {SaveStatus::Failed, out.errorString()};
-    if (out.write(bytes) != bytes.size()) {
+    const bool opened = out.open(QIODevice::WriteOnly | QIODevice::Unbuffered);
+    if (timing)
+        timing->openUs = timer.nsecsElapsed() / 1000;
+    if (!opened)
+        return stopped("open", out.errorString());
+    timer.restart();
+    const bool written = out.write(bytes) == bytes.size();
+    if (timing)
+        timing->writeUs = timer.nsecsElapsed() / 1000;
+    if (!written) {
         const QString error = out.errorString();
         out.cancelWriting();
-        return {SaveStatus::Failed, error};
+        return stopped("write", error);
     }
-    if (!out.commit())
-        return {SaveStatus::Failed, out.errorString()};
+    timer.restart();
+    const bool committed = out.commit();
+    if (timing)
+        timing->commitUs = timer.nsecsElapsed() / 1000;
+    if (!committed)
+        return stopped("commit", out.errorString());
     return {SaveStatus::Saved, QString()};
 }
 
@@ -205,28 +226,53 @@ SaveResult writeFileAtomically(const QString& path, const QByteArray& bytes, con
 {
     const int maxAttempts = qMax(1, options.maxAttempts);
     SaveResult result;
+    QElapsedTimer timer;
     for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        AttemptTiming* timing = nullptr;
+        if (options.timing) {
+            options.timing->attempts.append(AttemptTiming());
+            timing = &options.timing->attempts.last();
+        }
         if (attempt > 1) {
             if (options.beforeRetry)
                 options.beforeRetry(attempt);
+            timer.start();
             QThread::msleep(static_cast<unsigned long>(qMax(0, options.retryDelayMs)));
+            if (timing)
+                timing->waitUs = timer.nsecsElapsed() / 1000;
         }
         // Checked before every attempt: the target can change while a retry waits.
         if (check) {
+            timer.start();
             result = check();
             result.attempts = attempt;
+            if (timing) {
+                timing->checkUs = timer.nsecsElapsed() / 1000;
+                if (result.status != SaveStatus::Saved) {
+                    timing->stoppedAt = QStringLiteral("check");
+                    timing->error = result.error;
+                }
+            }
             if (result.status == SaveStatus::Failed)
                 continue;
             if (result.status != SaveStatus::Saved)
                 return result;
         }
         if (options.mayWrite) {
+            timer.start();
             result = options.mayWrite();
             result.attempts = attempt;
+            if (timing) {
+                timing->mayWriteUs = timer.nsecsElapsed() / 1000;
+                if (result.status != SaveStatus::Saved) {
+                    timing->stoppedAt = QStringLiteral("may-write");
+                    timing->error = result.error;
+                }
+            }
             if (result.status != SaveStatus::Saved)
                 return result;
         }
-        result = writeOnce(path, bytes);
+        result = writeOnce(path, bytes, timing);
         result.attempts = attempt;
         if (result.status == SaveStatus::Saved)
             break;

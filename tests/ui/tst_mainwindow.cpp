@@ -2939,6 +2939,13 @@ private slots:
         QVERIFY2(w.answers.messages.last().startsWith(QStringLiteral(u"导入完成")), qPrintable(w.answers.messages.last()));
         QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已导入 1 张图片")), qPrintable(w.answers.messages.last()));
         QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已有标注而没有改动 1 张")), qPrintable(w.answers.messages.last()));
+        // The timing of the import is written to the local data folder and named.
+        const QString timingLine = w.answers.messages.last().section(QStringLiteral(u"导入计时记录："), 1).section(QLatin1Char('\n'), 0, 0);
+        QVERIFY2(!timingLine.isEmpty(), qPrintable(w.answers.messages.last()));
+        QVERIFY(QDir::fromNativeSeparators(timingLine).startsWith(QDir::fromNativeSeparators(project.local.path())));
+        QFile timingFile(timingLine);
+        QVERIFY(timingFile.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(timingFile.readAll()).contains(QStringLiteral(u"aoi-LiteAnno 导入计时")));
         QCOMPARE(w.document().shapes().size(), 1);
         QVERIFY(QFile::exists(project.json(2)));
         QVERIFY(!QFile::exists(project.json(3)));

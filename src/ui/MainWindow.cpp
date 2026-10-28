@@ -13,6 +13,7 @@
 #include "ui/Texts.h"
 #include "ui/Theme.h"
 
+#include <QDateTime>
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
@@ -1132,6 +1133,17 @@ bool MainWindow::importAnnotations()
         for (const application::UnmatchedLabel& label : report.unmatched.mid(0, 10))
             names.append(QStringLiteral(u"%1：%2").arg(label.fileName, label.reason));
         text += QStringLiteral(u"\n\nCOCO 文件里有 %1 张图片在文件夹里找不到：\n%2").arg(report.unmatched.size()).arg(names.join(QLatin1Char('\n')));
+    }
+    // The timing goes to the local data folder (never the data folder), for diagnosing a slow
+    // import on a field PC.
+    const QString timingDir = m_options.localData.root() + QStringLiteral("/diagnostics");
+    const QString timingFile =
+        timingDir + QStringLiteral("/import-%1.txt").arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd-HHmmss")));
+    QFile timing(timingFile);
+    if (QDir().mkpath(timingDir) && timing.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        && timing.write(application::importTimingText(report).toUtf8()) >= 0) {
+        timing.close();
+        text += QStringLiteral(u"\n\n导入计时记录：%1").arg(QDir::toNativeSeparators(timingFile));
     }
     m_prompts.message(report.written ? QStringLiteral(u"导入完成") : QStringLiteral(u"没有导入"), text);
     return report.written;

@@ -73,6 +73,24 @@ struct ImportItem {
     int shapes = 0;  // imported shapes
 };
 
+// Where the time of an import went, for diagnosing slow imports on a field PC
+// (microseconds). Collected in memory; importTimingText() puts it in words afterwards.
+struct ImportFileTiming {
+    QString image;
+    qint64 readUs = 0;  // reading the image and its annotation file again before writing
+    qint64 saveUs = 0;  // the whole save, all attempts
+    formats::SaveTiming save;
+};
+
+struct ImportTiming {
+    qint64 prepareUs = 0;   // options, the folder scan, recovery records, pairing label files
+    qint64 checkUs = 0;     // reading and checking every label file (the first half of the progress)
+    qint64 writeUs = 0;     // writing the annotation files (the second half)
+    qint64 progressUs = 0;  // in the progress callback (the window's progress dialog)
+    int progressCalls = 0;
+    QList<ImportFileTiming> files;  // each written or attempted file
+};
+
 struct ImportReport {
     // No annotation file was changed unless this is true.
     bool written = false;
@@ -80,10 +98,15 @@ struct ImportReport {
     bool cancelled = false;
     QList<ImportItem> items;
     QList<UnmatchedLabel> unmatched;  // COCO only
+    ImportTiming timing;
 
     int count(ImportResult result) const;
     QList<ImportItem> unconvertible() const;
 };
+
+// The timing of a finished import as plain text: totals, the time per step summed over all
+// files, the attempts that failed and why, the slowest files, then one line per file.
+QString importTimingText(const ImportReport& report);
 
 // Turns label files into annotation files (architecture 11.2): reads the label file of every
 // image of the scope, refuses when any cannot be imported (unless told to skip those images),

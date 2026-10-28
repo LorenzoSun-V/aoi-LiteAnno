@@ -6,9 +6,11 @@
 #include "formats/Exporters.h"
 
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QMap>
 #include <QSet>
 
 #include <algorithm>
@@ -229,6 +231,96 @@ const char* importResultName(ImportResult result)
     return "unknown";
 }
 
+namespace {
+
+// "-" for a step that was not reached.
+QString ms(qint64 us)
+{
+    return us < 0 ? QStringLiteral("-") : QString::number(double(us) / 1000.0, 'f', 2);
+}
+
+// A step not reached in an attempt counts as 0.
+qint64 reached(qint64 us)
+{
+    return qMax<qint64>(us, 0);
+}
+
+} // namespace
+
+QString importTimingText(const ImportReport& report)
+{
+    const ImportTiming& t = report.timing;
+    QStringList lines;
+    lines << QStringLiteral(u"aoi-LiteAnno 导入计时（毫秒）");
+    lines << QStringLiteral(u"图片 %1 张，导入 %2 张，尝试写入 %3 个文件")
+                 .arg(report.items.size())
+                 .arg(report.count(ImportResult::Imported))
+                 .arg(t.files.size());
+    lines << QStringLiteral(u"准备 %1；检查（进度前半）%2；写入（进度后半）%3；其中进度框 %4（%5 次）")
+                 .arg(ms(t.prepareUs), ms(t.checkUs), ms(t.writeUs), ms(t.progressUs))
+                 .arg(t.progressCalls);
+
+    qint64 read = 0, save = 0, wait = 0, check = 0, mayWrite = 0, open = 0, write = 0, commit = 0;
+    QMap<int, int> attemptsPerFile;
+    QStringList failed;
+    for (const ImportFileTiming& file : t.files) {
+        read += file.readUs;
+        save += file.saveUs;
+        ++attemptsPerFile[int(file.save.attempts.size())];
+        for (qsizetype k = 0; k < file.save.attempts.size(); ++k) {
+            const formats::AttemptTiming& a = file.save.attempts[k];
+            wait += a.waitUs;
+            check += reached(a.checkUs);
+            mayWrite += reached(a.mayWriteUs);
+            open += reached(a.openUs);
+            write += reached(a.writeUs);
+            commit += reached(a.commitUs);
+            if (!a.stoppedAt.isEmpty() && failed.size() < 50)
+                failed << QStringLiteral(u"  %1 第 %2 次：停在 %3（%4）").arg(file.image).arg(k + 1).arg(a.stoppedAt, a.error);
+        }
+    }
+    lines << QString();
+    lines << QStringLiteral(u"写入阶段各步合计（所有文件、所有尝试）：");
+    lines << QStringLiteral(u"  重读图片和标注 %1").arg(ms(read));
+    lines << QStringLiteral(u"  保存合计 %1，其中：").arg(ms(save));
+    lines << QStringLiteral(u"    重试前等待 %1").arg(ms(wait));
+    lines << QStringLiteral(u"    检查外部修改 %1").arg(ms(check));
+    lines << QStringLiteral(u"    同名检查 %1").arg(ms(mayWrite));
+    lines << QStringLiteral(u"    建临时文件 %1").arg(ms(open));
+    lines << QStringLiteral(u"    写入内容 %1").arg(ms(write));
+    lines << QStringLiteral(u"    提交（刷盘并改名）%1").arg(ms(commit));
+    lines << QStringLiteral(u"    其余（找标注文件名、生成内容等）%1")
+                 .arg(ms(qMax<qint64>(0, save - wait - check - mayWrite - open - write - commit)));
+    QStringList histogram;
+    for (auto it = attemptsPerFile.cbegin(); it != attemptsPerFile.cend(); ++it)
+        histogram << QStringLiteral(u"%1 次 %2 个").arg(it.key()).arg(it.value());
+    lines << QStringLiteral(u"每个文件的尝试次数：%1").arg(histogram.join(QStringLiteral(u"，")));
+    lines << QStringLiteral(u"没有成功的尝试（最多列 50 条）：%1").arg(failed.isEmpty() ? QStringLiteral(u"无") : QString());
+    lines << failed;
+
+    QList<const ImportFileTiming*> slowest;
+    for (const ImportFileTiming& file : t.files)
+        slowest.append(&file);
+    std::sort(slowest.begin(), slowest.end(), [](const ImportFileTiming* a, const ImportFileTiming* b) {
+        return a->readUs + a->saveUs > b->readUs + b->saveUs;
+    });
+    lines << QString();
+    lines << QStringLiteral(u"逐个文件（最慢的在前）：图片 | 重读 | 保存 | 尝试次数 | 每次尝试的 等待/检查/同名/建文件/写入/提交");
+    for (const ImportFileTiming* file : slowest) {
+        QStringList attempts;
+        for (const formats::AttemptTiming& a : file->save.attempts) {
+            attempts << QStringList{ms(a.waitUs), ms(a.checkUs), ms(a.mayWriteUs), ms(a.openUs), ms(a.writeUs),
+                                    ms(a.commitUs)}
+                            .join(QLatin1Char('/'));
+        }
+        lines << QStringLiteral(u"%1 | %2 | %3 | %4 | %5")
+                     .arg(file->image, ms(file->readUs), ms(file->saveUs))
+                     .arg(file->save.attempts.size())
+                     .arg(attempts.join(QStringLiteral("  ")));
+    }
+    return lines.join(QLatin1Char('\n')) + QLatin1Char('\n');
+}
+
 int ImportReport::count(ImportResult result) const
 {
     return int(std::count_if(items.cbegin(), items.cend(), [result](const ImportItem& item) { return item.result == result; }));
@@ -254,6 +346,19 @@ ImportService::ImportService(const ProjectSession& project, ImageInfoReader read
 ImportReport ImportService::run(const ImportRequest& request, const Progress& progress) const
 {
     ImportReport report;
+    QElapsedTimer phase;
+    phase.start();
+    // The time in the callback is counted: the window's progress dialog runs its events there.
+    const auto reportProgress = [&progress, &report](int done, int total) {
+        if (!progress)
+            return true;
+        QElapsedTimer timer;
+        timer.start();
+        const bool go = progress(done, total);
+        report.timing.progressUs += timer.nsecsElapsed() / 1000;
+        ++report.timing.progressCalls;
+        return go;
+    };
     const ProjectConfig& config = m_project.config();
     const ImportFormat format = request.format;
     if (config.shapeTypes.isEmpty()) {
@@ -317,7 +422,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
         }
     }
 
-    const ExportScope scope = scopeOf(m_project, request.batches, [&progress] { return progress && !progress(0, 0); });
+    const ExportScope scope = scopeOf(m_project, request.batches, [&reportProgress] { return !reportProgress(0, 0); });
     if (!scope.error.isEmpty()) {
         report.error = scope.error;
         report.cancelled = scope.error == QStringLiteral(u"已取消");
@@ -444,8 +549,11 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
     QList<QList<Shape>> imported(scope.images.size());
     QList<ImageInfo> checkedInfo(scope.images.size());
     report.items.reserve(scope.images.size());
+    report.timing.prepareUs = phase.nsecsElapsed() / 1000;
+    phase.restart();
     for (qsizetype i = 0; i < scope.images.size(); ++i) {
-        if (progress && !progress(int(i), total)) {
+        if (!reportProgress(int(i), total)) {
+            report.timing.checkUs = phase.nsecsElapsed() / 1000;
             report.cancelled = true;
             stopFrom(0, cancelled);
             return report;
@@ -564,6 +672,7 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
         checkedInfo[i] = info;
         done(ImportResult::Imported);
     }
+    report.timing.checkUs = phase.nsecsElapsed() / 1000;
     if (const int refused = report.count(ImportResult::Unconvertible); refused > 0 && !request.skipUnconvertible) {
         report.error = QStringLiteral(u"有 %1 张图片的标注无法导入，没有写入任何标注文件。").arg(refused);
         stopFrom(0, QStringLiteral(u"其他图片的标注无法导入，没有写入"));
@@ -572,8 +681,10 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
 
     // Write: each file is read again and saved with the checks of a normal save, so a change
     // made since the check above is never overwritten.
+    phase.restart();
     for (qsizetype i = 0; i < scope.images.size(); ++i) {
-        if (progress && !progress(int(scope.images.size() + i), total)) {
+        if (!reportProgress(int(scope.images.size() + i), total)) {
+            report.timing.writeUs = phase.nsecsElapsed() / 1000;
             report.cancelled = true;
             stopFrom(i, cancelled);
             return report;
@@ -582,8 +693,13 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
         if (item.result != ImportResult::Imported)
             continue;
         const ScopeImage& scoped = scope.images[i];
+        QElapsedTimer step;
+        step.start();
         ImageOnDisk image =
             readImageOnDisk(m_project, scoped.path, scoped.missing, scoped.nameCollision, m_readImageInfo);
+        ImportFileTiming fileTiming;
+        fileTiming.image = scoped.path;
+        fileTiming.readUs = step.nsecsElapsed() / 1000;
         if (!image.missing && keepsExisting(image, request.mode)) {
             item.result = ImportResult::HasAnnotation;
             item.reason = QStringLiteral(u"检查之后有了标注文件");
@@ -629,8 +745,12 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             }
             return result;
         };
+        options.timing = &fileTiming.save;
+        step.restart();
         const formats::SaveResult saved =
             formats::saveAnnotationFile(m_project.annotationFilePath(scoped.path), annotation, options);
+        fileTiming.saveUs = step.nsecsElapsed() / 1000;
+        report.timing.files.append(std::move(fileTiming));
         if (saved.status == formats::SaveStatus::Saved) {
             report.written = true;
         } else {
@@ -638,8 +758,8 @@ ImportReport ImportService::run(const ImportRequest& request, const Progress& pr
             item.reason = saved.error.isEmpty() ? QString::fromLatin1(formats::saveStatusName(saved.status)) : saved.error;
         }
     }
-    if (progress)
-        progress(total, total);
+    report.timing.writeUs = phase.nsecsElapsed() / 1000;
+    reportProgress(total, total);
     return report;
 }
 
