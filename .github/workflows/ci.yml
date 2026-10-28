@@ -70,6 +70,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
+      - name: Import timings
+        # Architecture 14: a YOLO import into one plain folder, shown in the run summary.
+        timeout-minutes: 30
+        run: |
+          $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
+          foreach ($count in 702, 2000) {
+            & build/windows-msvc/Release/liteanno_import_benchmark.exe "$env:RUNNER_TEMP" $count | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+
   linux:
     name: Linux x64 (GCC)
     runs-on: ubuntu-24.04
@@ -122,4 +132,13 @@ jobs:
           set -o pipefail
           for count in 5000 200000; do
             build/linux-gcc/tests/liteanno_catalog_benchmark "$RUNNER_TEMP" "$count" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Import timings
+        # Architecture 14: a YOLO import into one plain folder, shown in the run summary.
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          for count in 702 2000; do
+            build/linux-gcc/tests/liteanno_import_benchmark "$RUNNER_TEMP" "$count" | tee -a "$GITHUB_STEP_SUMMARY"
           done

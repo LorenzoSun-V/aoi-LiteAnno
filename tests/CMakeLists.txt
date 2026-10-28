@@ -143,6 +143,13 @@ if(LITEANNO_BUILD_UI)
         COMMAND liteanno_catalog_benchmark "${CMAKE_CURRENT_BINARY_DIR}/benchmark" 2000)
     liteanno_set_test_environment(catalog_benchmark_runs)
 
+    # Architecture 14: import timings of a plain folder; CI prints the table.
+    add_executable(liteanno_import_benchmark tools/import_benchmark.cpp)
+    target_link_libraries(liteanno_import_benchmark PRIVATE liteanno_application liteanno_imaging Qt6::Core)
+    add_test(NAME import_benchmark_runs
+        COMMAND liteanno_import_benchmark "${CMAKE_CURRENT_BINARY_DIR}/benchmark" 200)
+    liteanno_set_test_environment(import_benchmark_runs)
+
     liteanno_add_test(tst_mainwindow ui/tst_mainwindow.cpp)
     target_link_libraries(tst_mainwindow PRIVATE liteanno_ui_lib)
     set_property(TEST tst_mainwindow PROPERTY ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
