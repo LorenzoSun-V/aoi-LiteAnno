@@ -1042,7 +1042,7 @@ bool MainWindow::importAnnotations()
                                             u"可以跳过这些图片导入其余图片；也可以先修正标注文件再导入。")
                                  .arg(report.unconvertible().size())
                                  .arg(formatText, unconvertibleLines(report));
-        if (!m_prompts.skipUnconvertible(text))
+        if (!m_prompts.skipUnimportable(text))
             return false;
         request.skipUnconvertible = true;
         report = run();
@@ -1187,6 +1187,7 @@ void MainWindow::setPrompts(Prompts prompts)
     m_prompts.exportOptions = held(std::move(prompts.exportOptions));
     m_prompts.importOptions = held(std::move(prompts.importOptions));
     m_prompts.skipUnconvertible = held(std::move(prompts.skipUnconvertible));
+    m_prompts.skipUnimportable = held(std::move(prompts.skipUnimportable));
     m_prompts.setAsideUnusable = held(std::move(prompts.setAsideUnusable));
 }
 

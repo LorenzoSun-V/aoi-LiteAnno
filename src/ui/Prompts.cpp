@@ -444,6 +444,14 @@ Prompts Prompts::dialogs(QWidget* parent)
         box.exec();
         return box.clickedButton() != stop;
     };
+    prompts.skipUnimportable = [parent](const QString& text) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral(u"有不能导入的标注文件"), text, QMessageBox::NoButton, parent);
+        QPushButton* stop = box.addButton(QStringLiteral(u"不导入"), QMessageBox::RejectRole);
+        box.addButton(QStringLiteral(u"跳过这些图片继续导入"), QMessageBox::AcceptRole);
+        box.setDefaultButton(stop);
+        box.exec();
+        return box.clickedButton() != stop;
+    };
     prompts.setAsideUnusable = [parent](const QString& text) {
         QMessageBox box(QMessageBox::Warning, QStringLiteral(u"无法使用的恢复记录"), text, QMessageBox::NoButton, parent);
         QPushButton* keep = box.addButton(QStringLiteral(u"先不动"), QMessageBox::RejectRole);
