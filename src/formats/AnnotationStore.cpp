@@ -17,6 +17,7 @@
 #endif
 #include <windows.h>
 #else
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -46,6 +47,34 @@ SaveResult writeOnce(const QString& path, const QByteArray& bytes)
         return {SaveStatus::Failed, out.errorString()};
     return {SaveStatus::Saved, QString()};
 }
+
+#ifdef Q_OS_WIN
+// Whether the folder is set to tell case apart in names. Not known (the folder cannot be
+// opened, another error): true, so the folder is listed. Windows versions and file systems
+// without the setting have no such folders.
+bool caseSensitiveFolder(const QString& folder)
+{
+    // FileCaseSensitiveInfo and FILE_CS_FLAG_CASE_SENSITIVE_DIR (Windows 10 1803 SDK), spelled
+    // out as older SDK headers or target versions hide them.
+    constexpr auto kCaseSensitiveInfo = static_cast<FILE_INFO_BY_HANDLE_CLASS>(23);
+    constexpr ULONG kCaseSensitiveDir = 0x1;
+    struct {
+        ULONG flags;
+    } info{};
+    const QString native = QDir::toNativeSeparators(folder);
+    const HANDLE handle = CreateFileW(reinterpret_cast<const wchar_t*>(native.utf16()), FILE_READ_ATTRIBUTES,
+                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                      FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return true;
+    const bool read = GetFileInformationByHandleEx(handle, kCaseSensitiveInfo, &info, sizeof(info));
+    const DWORD error = read ? ERROR_SUCCESS : GetLastError();
+    CloseHandle(handle);
+    if (read)
+        return (info.flags & kCaseSensitiveDir) != 0;
+    return error != ERROR_INVALID_PARAMETER && error != ERROR_NOT_SUPPORTED && error != ERROR_INVALID_FUNCTION;
+}
+#endif
 
 // fsync, or FlushFileBuffers on Windows: the bytes are on the disk, not only in the cache.
 bool syncToDisk(int fd)
@@ -79,31 +108,65 @@ FileStamp readFileStamp(const QString& path)
 QString existingAnnotationPath(const QString& jsonPath)
 {
     const QFileInfo info(jsonPath);
-#ifndef Q_OS_WIN
-    // Case-sensitive names: the lower-case file is the one.
-    if (info.exists())
+#ifdef Q_OS_WIN
+    // Names ignore case: at most one file matches, and the search gives its name as it is on
+    // disk, which Windows keeps when the file is replaced under it. One look-up, not a listing
+    // of the folder: this runs for every image an import or export touches. The name holds
+    // no wildcard characters, as Windows allows none in file names.
+    WIN32_FIND_DATAW data;
+    const QString native = QDir::toNativeSeparators(info.absoluteFilePath());
+    const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(native.utf16()), FindExInfoBasic, &data,
+                                         FindExSearchNameMatch, nullptr, 0);
+    if (find != INVALID_HANDLE_VALUE) {
+        FindClose(find);
+        const QString onDisk = QString::fromWCharArray(data.cFileName);
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            if (onDisk != info.fileName() && onDisk.compare(info.fileName(), Qt::CaseInsensitive) == 0)
+                return info.dir().filePath(onDisk);
+            return jsonPath;
+        }
+    }
+    // Not found, or a folder of that name. In a folder set to tell case apart (fsutil
+    // setCaseSensitiveInfo) the look-up finds the exact name only, while the scan pairs
+    // "a.JSON" too: the folder is listed as before, so editing, import and export use the
+    // file the scan shows.
+    if (!caseSensitiveFolder(info.path()))
         return jsonPath;
-#endif
     QString pattern = info.fileName();
     // Wildcard characters in the name are matched literally.
     for (const QChar special : {QLatin1Char('['), QLatin1Char('*'), QLatin1Char('?')})
         pattern.replace(special, QLatin1Char('[') + special + QLatin1Char(']'));
-    // Name filters ignore case. Listing also gives the name as it is on disk, which Windows
-    // keeps when the file is replaced under it.
-    QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
-    if (names.contains(info.fileName()))
-        return jsonPath;
-#ifndef Q_OS_WIN
-    // The filter ignores case in the whole name; on Linux only the extension may differ.
-    const QString stem = info.completeBaseName() + QLatin1Char('.');
-    names.erase(std::remove_if(names.begin(), names.end(),
-                               [&stem](const QString& name) { return !name.startsWith(stem, Qt::CaseSensitive); }),
-                names.end());
-#endif
-    if (names.isEmpty())
+    // Name filters ignore case; the scan pairs a differing stem too in such a folder.
+    const QStringList names = info.dir().entryList({pattern}, QDir::Files | QDir::Hidden, QDir::Name);
+    if (names.isEmpty() || names.contains(info.fileName()))
         return jsonPath;
     // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
     return info.dir().filePath(names.first());
+#else
+    // Case-sensitive names: the lower-case file is the one (a folder of that name is not).
+    if (info.isFile())
+        return jsonPath;
+    // Otherwise a file whose extension differs only in case. The 16 spellings of "json" are
+    // looked up one by one instead of listing the folder, as this runs for every image without
+    // an annotation file that an import or export touches.
+    const QByteArray base = QFile::encodeName(info.path() + QLatin1Char('/') + info.completeBaseName()) + '.';
+    QStringList names;
+    for (int mask = 1; mask < 16; ++mask) {
+        QByteArray path = base + "json";
+        for (int i = 0; i < 4; ++i) {
+            if (mask & (1 << i))
+                path[base.size() + i] = char(path[base.size() + i] - 'a' + 'A');
+        }
+        struct stat st;
+        if (stat(path.constData(), &st) == 0 && S_ISREG(st.st_mode))
+            names.append(QFile::decodeName(path.mid(path.lastIndexOf('/') + 1)));
+    }
+    if (names.isEmpty())
+        return jsonPath;
+    // Sorted, so the choice between "a.JSON" and "a.Json" is the same every time.
+    std::sort(names.begin(), names.end());
+    return info.dir().filePath(names.first());
+#endif
 }
 
 LoadedAnnotation loadAnnotationFile(const QString& jsonPath, const ImageInfo& image,
