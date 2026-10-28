@@ -172,6 +172,36 @@ private slots:
             QCOMPARE(hasNameCollision(root.filePath(image.path)), image.nameCollision);
     }
 
+    // The check for one image reads names straight from the folder (it runs for every image
+    // an import writes): the same answers as the full comparison of format spec 3.
+    void nameCollisionWithoutFileInformation()
+    {
+        QTemporaryDir dir;
+        const QDir root(dir.path());
+        const QString nfc = QStringLiteral(u"café");
+        const QString nfd = QStringLiteral(u"café");
+        touch(root, nfc + QStringLiteral(".png"));
+        touch(root, QStringLiteral(u"K.png"));  // KELVIN SIGN folds to "k"
+        touch(root, QStringLiteral("x.png"));
+        touch(root, QStringLiteral("x.png.txt"));
+        touch(root, QStringLiteral("x.pngx"));
+        touch(root, QStringLiteral(".png"));
+        touch(root, QStringLiteral("x.JpEg/inside.txt"));  // a folder, not an image
+        QVERIFY(!hasNameCollision(root.filePath(nfc + QStringLiteral(".png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral(u"K.png"))));
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("x.png"))));
+        touch(root, nfd + QStringLiteral(".JPG"));
+        touch(root, QStringLiteral("k.bmp"));
+        touch(root, QStringLiteral("X.TIFF"));
+        QVERIFY(hasNameCollision(root.filePath(nfc + QStringLiteral(".png"))));
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral(u"K.png"))));
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("x.png"))));
+        for (const ScannedImage& image : scanDirectory(root.path()).images)
+            QCOMPARE(hasNameCollision(root.filePath(image.path)), image.nameCollision);
+        // A folder that cannot be listed: nothing says the annotation file may be written.
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("missing/a.png"))));
+    }
+
     void pairingMatchesTheEditor()
     {
         QTemporaryDir dir;
@@ -300,6 +330,15 @@ private slots:
 
         const ScanResult result = scanDirectory(dir.path());
         QCOMPARE(paths(result), QStringList{QStringLiteral("kept.png")});
+        // Hidden and system images do not collide with the one that is scanned.
+        touch(root, QStringLiteral("KEPT.jpg"));
+        set(QStringLiteral("KEPT.jpg"), FILE_ATTRIBUTE_HIDDEN);
+        touch(root, QStringLiteral("kept.bmp"));
+        set(QStringLiteral("kept.bmp"), FILE_ATTRIBUTE_SYSTEM);
+        QVERIFY(!hasNameCollision(root.filePath(QStringLiteral("kept.png"))));
+        set(QStringLiteral("KEPT.jpg"), FILE_ATTRIBUTE_NORMAL);
+        QVERIFY(hasNameCollision(root.filePath(QStringLiteral("kept.png"))));
+        set(QStringLiteral("kept.bmp"), FILE_ATTRIBUTE_NORMAL);
 
         // Removable again by QTemporaryDir.
         set(QStringLiteral("system.png"), FILE_ATTRIBUTE_NORMAL);

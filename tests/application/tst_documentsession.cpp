@@ -440,6 +440,31 @@ private slots:
         QCOMPARE(existingAnnotationPath(lower), lower);
         writeFile(setup.data.filePath(QStringLiteral("line1/a.Json")), "{}");
         QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/a.Json")));
+        // Of several spellings the first by name, every time; a folder is no annotation file.
+        writeFile(setup.data.filePath(QStringLiteral("line1/a.jSON")), "{}");
+        writeFile(setup.data.filePath(QStringLiteral("line1/a.JSON")), "{}");
+        QDir(setup.data.path()).mkpath(QStringLiteral("line1/a.JSOn"));
+        QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/a.JSON")));
+        writeFile(setup.data.filePath(QStringLiteral("line1/a.json")), "{}");
+        QCOMPARE(existingAnnotationPath(lower), lower);
+#endif
+    }
+
+    // Windows: the file is found whatever the case of its name, and the name is given as it
+    // is on disk; a folder of that name is no annotation file.
+    void nameAsOnDisk()
+    {
+#ifndef Q_OS_WIN
+        QSKIP("Windows names ignore case");
+#else
+        Setup setup;
+        QDir(setup.data.path()).mkpath(QStringLiteral("line1/b.json"));
+        const QString lower = setup.data.filePath(QStringLiteral("line1/a.json"));
+        QCOMPARE(existingAnnotationPath(lower), lower);
+        QCOMPARE(existingAnnotationPath(setup.data.filePath(QStringLiteral("line1/b.json"))),
+                 setup.data.filePath(QStringLiteral("line1/b.json")));
+        writeFile(setup.data.filePath(QStringLiteral("line1/A.Json")), "{}");
+        QCOMPARE(existingAnnotationPath(lower), setup.data.filePath(QStringLiteral("line1/A.Json")));
 #endif
     }
 

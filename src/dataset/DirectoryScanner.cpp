@@ -10,6 +10,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <cstring>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -18,6 +19,7 @@
 #include <windows.h>
 #else
 #include <dirent.h>
+#include <sys/stat.h>
 #endif
 
 namespace liteanno::dataset {
@@ -223,25 +225,113 @@ bool isImageFileName(const QString& fileName)
     return kImageSuffixes.contains(suffixOf(fileName));
 }
 
+namespace {
+
+// hasNameCollision() lists the folder of every image it is asked about (each image an
+// import or export writes, each save): the names are compared as they come from the file
+// system, with no file information built and no strings made for names that cannot match.
+
+bool isAscii(QStringView text)
+{
+    return std::all_of(text.begin(), text.end(), [](QChar c) { return c.unicode() < 0x80; });
+}
+
+// isImageFileName() of a name; image suffixes are ASCII.
+template <typename Char>
+bool hasImageSuffix(const Char* name, std::size_t size, std::size_t& dot)
+{
+    dot = size;
+    while (dot > 0 && name[dot - 1] != Char('.'))
+        --dot;
+    if (dot <= 1 || size - dot > 4)
+        return false;  // no dot, a leading dot only, or a suffix longer than any image's
+    --dot;
+    char suffix[5] = {};
+    for (std::size_t i = dot + 1; i < size; ++i) {
+        const auto c = name[i];
+        if (c >= 0x80)
+            return false;
+        suffix[i - dot - 1] = char(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+    }
+    return kImageSuffixes.contains(QLatin1String(suffix));
+}
+
+// Whether a stem is the same as `stem` under comparisonKey(); `key` is that of `stem`. ASCII
+// names, the usual case, are compared without building the key.
+bool sameStem(QStringView other, QStringView stem, const QString& key)
+{
+    if (isAscii(other) && isAscii(stem))
+        return other.compare(stem, Qt::CaseInsensitive) == 0;
+    return comparisonKey(other.toString()) == key;
+}
+
+#ifndef Q_OS_WIN
+bool sameStem(QByteArrayView other, QStringView stem, const QString& key)
+{
+    if (std::all_of(other.begin(), other.end(), [](char c) { return uchar(c) < 0x80; }) && isAscii(stem)) {
+        if (other.size() != stem.size())
+            return false;
+        for (qsizetype i = 0; i < other.size(); ++i) {
+            if (QChar::toCaseFolded(char16_t(uchar(other[i]))) != QChar::toCaseFolded(stem[i].unicode()))
+                return false;
+        }
+        return true;
+    }
+    return sameStem(QFile::decodeName(other.toByteArray()), stem, key);
+}
+#endif
+
+} // namespace
+
 bool hasNameCollision(const QString& imageFile)
 {
     const QFileInfo image(imageFile);
     const QString name = image.fileName();
-    const QString stem = comparisonKey(name.left(name.lastIndexOf(QLatin1Char('.'))));
-    const QDir folder = image.dir();
-    const QFileInfoList entries =
-        folder.entryInfoList(QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::NoSort);
-    if (entries.isEmpty() && cannotList(folder.path()))
-        return true;
-    int sameStem = 0;
-    for (const QFileInfo& entry : entries) {
-        const QString other = entry.fileName();
-        if (!isImageFileName(other) || hasHiddenOrSystemAttribute(entry))
+    const QStringView stem = QStringView(name).left(name.lastIndexOf(QLatin1Char('.')));
+    const QString key = comparisonKey(stem.toString());
+    int same = 0;
+#ifdef Q_OS_WIN
+    WIN32_FIND_DATAW data;
+    const QString pattern = QDir::toNativeSeparators(image.path()) + QLatin1String("\\*");
+    const HANDLE find = FindFirstFileExW(reinterpret_cast<const wchar_t*>(pattern.utf16()), FindExInfoBasic, &data,
+                                         FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+    // A folder that cannot be listed says nothing about the other images.
+    if (find == INVALID_HANDLE_VALUE)
+        return GetLastError() != ERROR_FILE_NOT_FOUND;
+    do {
+        const std::size_t size = wcslen(data.cFileName);
+        std::size_t dot = 0;
+        if ((data.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0
+            || !hasImageSuffix(data.cFileName, size, dot))
             continue;
-        if (comparisonKey(other.left(other.lastIndexOf(QLatin1Char('.')))) == stem && ++sameStem > 1)
-            return true;
+        if (sameStem(QStringView(reinterpret_cast<const QChar*>(data.cFileName), qsizetype(dot)), stem, key))
+            ++same;
+    } while (same <= 1 && FindNextFileW(find, &data));
+    FindClose(find);
+#else
+    const QByteArray folder = QFile::encodeName(image.path()) + '/';
+    DIR* dir = opendir(folder.constData());
+    if (!dir)
+        return true;
+    while (same <= 1) {
+        const dirent* entry = readdir(dir);
+        if (!entry)
+            break;
+        std::size_t dot = 0;
+        if (entry->d_type == DT_DIR || !hasImageSuffix(entry->d_name, std::strlen(entry->d_name), dot)
+            || !sameStem(QByteArrayView(entry->d_name, qsizetype(dot)), stem, key))
+            continue;
+        bool file = entry->d_type == DT_REG;
+        if (!file) {
+            struct stat st;
+            file = stat((folder + entry->d_name).constData(), &st) == 0 && S_ISREG(st.st_mode);
+        }
+        if (file)
+            ++same;
     }
-    return false;
+    closedir(dir);
+#endif
+    return same > 1;
 }
 
 ScanResult scanDirectory(const QString& root, const ScanOptions& options)
