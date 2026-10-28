@@ -10,6 +10,7 @@
 #include "formats/AnnotationStore.h"
 #include "formats/Importers.h"
 #include "formats/MaskContours.h"
+#include "formats/PoseConfig.h"
 #include "formats/RecoveryRecord.h"
 #include "imaging/ImageLoader.h"
 
@@ -409,6 +410,68 @@ private slots:
         const ImportReport report = project.run({});
         QVERIFY2(report.written, qPrintable(report.error));
         QCOMPARE(project.shapes(QStringLiteral("a.png"))[0].label, QStringLiteral("scratch"));
+    }
+
+    // Tabs and runs of spaces separate fields as a single space does: ultralytics trains on
+    // such files (str.split()), so they must import. \v and \f are accepted too, which
+    // ultralytics does not (it breaks the line there). Field report: 702 tab-separated YOLO
+    // files were refused with the whole line taken as the class number.
+    void whitespaceSeparatedFields()
+    {
+        using namespace formats;
+        const ClassNames classes{{0, QStringLiteral("dent")}, {1, QStringLiteral("scratch")}};
+        const ImportedLabels spaced =
+            parseYoloLabels("1 0.5 0.25 0.1 0.2\n0 0.25 0.5 0.5 0.5\n", ImportFormat::YoloDetection, classes, 200, 100);
+        QVERIFY2(spaced.error.isEmpty(), qPrintable(spaced.error));
+        for (const QByteArray& bytes : {QByteArray("1\t0.5\t0.25\t0.1\t0.2\n0\t0.25\t0.5\t0.5\t0.5\n"),
+                                        QByteArray("1   0.5\t\t0.25 \t0.1  0.2\t\r\n\t0  0.25 0.5\v0.5\f0.5  \r\n"),
+                                        QByteArray("1\t0.5 0.25 0.1 0.2\n\t \n0 0.25 0.5 0.5 0.5")}) {
+            const ImportedLabels tabbed = parseYoloLabels(bytes, ImportFormat::YoloDetection, classes, 200, 100);
+            QVERIFY2(tabbed.error.isEmpty(), qPrintable(tabbed.error));
+            QCOMPARE(tabbed.shapes.size(), 2);
+            for (qsizetype i = 0; i < 2; ++i) {
+                QCOMPARE(tabbed.shapes[i].label, spaced.shapes[i].label);
+                QCOMPARE(tabbed.shapes[i].points, spaced.shapes[i].points);
+            }
+        }
+
+        const ImportedLabels seg =
+            parseYoloLabels("0\t0.1\t0.1\t0.9\t0.1\t0.5\t0.9\n", ImportFormat::YoloSegmentation, classes, 200, 100);
+        QVERIFY2(seg.error.isEmpty(), qPrintable(seg.error));
+        QCOMPARE(seg.shapes.size(), 1);
+        QCOMPARE(seg.shapes[0].points.size(), 3);
+
+        const ImportedLabels obb = parseYoloLabels("1\t0.1\t0.1\t0.9\t0.1\t0.9\t0.9\t0.1\t0.9\n",
+                                                   ImportFormat::YoloObb, classes, 200, 100);
+        QVERIFY2(obb.error.isEmpty(), qPrintable(obb.error));
+        QCOMPARE(obb.shapes.size(), 1);
+
+        const PoseConfig pose = parsePoseConfig("classes:\n  person: [nose, eye]\n");
+        const ImportedLabels keypoints =
+            parseYoloPoseLabels("0\t0.5\t0.5\t0.2\t0.2\t0.45\t0.45\t2\t0.55\t0.45\t1\n", pose, 100, 100);
+        QVERIFY2(keypoints.error.isEmpty(), qPrintable(keypoints.error));
+        QCOMPARE(keypoints.shapes.size(), 3);
+
+        const ImportedLabels dota = parseDotaLabels("imagesource:GoogleEarth\ngsd:0.5\n10\t10\t90\t10\t90\t60\t10\t60\tdent\t0\n");
+        QVERIFY2(dota.error.isEmpty(), qPrintable(dota.error));
+        QCOMPARE(dota.shapes.size(), 1);
+        QCOMPARE(dota.shapes[0].label, QStringLiteral("dent"));
+
+        // Still one class number per line: a malformed number is reported as before.
+        const ImportedLabels bad = parseYoloLabels("1x\t0.5\t0.25\t0.1\t0.2\n", ImportFormat::YoloDetection, classes, 200, 100);
+        QVERIFY(bad.error.contains(QStringLiteral(u"类别编号“1x”")));
+    }
+
+    // A tab-separated file imports through the whole service as well.
+    void tabSeparatedYoloFile()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1\t0.5\t0.5\t0.1\t0.2\r\n");
+        const ImportReport report = project.run({});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(report.count(ImportResult::Imported), 1);
+        QCOMPARE(project.shapes(QStringLiteral("a.png")).size(), 1);
     }
 
     // Coordinates that overflow when scaled to the image are refused before anything is

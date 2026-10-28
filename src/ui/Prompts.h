@@ -85,6 +85,9 @@ struct Prompts {
     // Some images hold objects the format cannot take (`text` lists them). True: export the
     // others; the default answer exports nothing.
     std::function<bool(const QString& text)> skipUnconvertible;
+    // Some label files cannot be imported (`text` lists them). True: import the others; the
+    // default answer imports nothing.
+    std::function<bool(const QString& text)> skipUnimportable;
     // Recovery records that cannot be used (`text` lists them). True: move them to the
     // "unusable" folder, kept as they are; the default answer leaves them.
     std::function<bool(const QString& text)> setAsideUnusable;

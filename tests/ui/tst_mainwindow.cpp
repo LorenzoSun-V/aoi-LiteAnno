@@ -135,6 +135,8 @@ struct Answers {
     bool skipUnconvertible = false;
     int exportBatchOffered = -1;
     QStringList unconvertibleTexts;
+    bool skipUnimportable = false;
+    QStringList unimportableTexts;
     // Run while the recovery question or a message is shown, like the event loop behind a
     // dialog.
     std::function<void()> duringRecovery;
@@ -199,6 +201,10 @@ struct Answers {
         p.skipUnconvertible = [this](const QString& text) {
             unconvertibleTexts.append(text);
             return skipUnconvertible;
+        };
+        p.skipUnimportable = [this](const QString& text) {
+            unimportableTexts.append(text);
+            return skipUnimportable;
         };
         p.setAsideUnusable = [this](const QString& text) {
             unusableTexts.append(text);
@@ -2856,15 +2862,16 @@ private slots:
         choice.format = formats::ImportFormat::YoloDetection;
         choice.labels = labels.path();
         w.answers.importChoice = choice;
-        w.answers.skipUnconvertible = false;
+        w.answers.skipUnimportable = false;
         QVERIFY(!w.window.importAnnotations());
-        QCOMPARE(w.answers.unconvertibleTexts.size(), 1);
-        QVERIFY2(w.answers.unconvertibleTexts[0].contains(QStringLiteral("line1/0003.png")),
-                 qPrintable(w.answers.unconvertibleTexts[0]));
+        QVERIFY(w.answers.unconvertibleTexts.isEmpty());  // the import asks its own question
+        QCOMPARE(w.answers.unimportableTexts.size(), 1);
+        QVERIFY2(w.answers.unimportableTexts[0].contains(QStringLiteral("line1/0003.png")),
+                 qPrintable(w.answers.unimportableTexts[0]));
         QVERIFY(!QFile::exists(project.json(2)));
         QVERIFY(QFile::exists(project.json(1)));  // the edits went in first
 
-        w.answers.skipUnconvertible = true;
+        w.answers.skipUnimportable = true;
         QVERIFY(w.window.importAnnotations());
         QVERIFY2(w.answers.messages.last().startsWith(QStringLiteral(u"导入完成")), qPrintable(w.answers.messages.last()));
         QVERIFY2(w.answers.messages.last().contains(QStringLiteral(u"已导入 1 张图片")), qPrintable(w.answers.messages.last()));
