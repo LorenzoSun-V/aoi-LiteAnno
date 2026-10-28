@@ -76,8 +76,11 @@ jobs:
         run: |
           $env:PATH = "$env:QT_ROOT_DIR\bin;$env:PATH"
           foreach ($count in 702, 2000) {
-            & build/windows-msvc/Release/liteanno_import_benchmark.exe "$env:RUNNER_TEMP" $count | Tee-Object -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $table = & build/windows-msvc/Release/liteanno_import_benchmark.exe "$env:RUNNER_TEMP" $count
             if ($LASTEXITCODE -ne 0) { exit 1 }
+            $table | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            # Also as an annotation, which the checks API returns without the log.
+            Write-Output "::notice title=Import timings (Windows, $count images)::$(($table | Select-Object -Skip 2) -join '%0A')"
           }
 
   linux:
@@ -140,5 +143,8 @@ jobs:
         run: |
           set -o pipefail
           for count in 702 2000; do
-            build/linux-gcc/tests/liteanno_import_benchmark "$RUNNER_TEMP" "$count" | tee -a "$GITHUB_STEP_SUMMARY"
+            table=$(build/linux-gcc/tests/liteanno_import_benchmark "$RUNNER_TEMP" "$count")
+            echo "$table" >> "$GITHUB_STEP_SUMMARY"
+            # Also as an annotation, which the checks API returns without the log.
+            echo "::notice title=Import timings (Linux, $count images)::$(echo "$table" | tail -n +3 | sed ':a;N;$!ba;s/\n/%0A/g')"
           done
