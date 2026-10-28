@@ -68,7 +68,7 @@ std::optional<ExportChoice> askExportOptions(QWidget* parent, const ExportQuesti
     auto* browseClasses = new QPushButton(QStringLiteral(u"选择…"));
     QObject::connect(browseClasses, &QPushButton::clicked, &dialog, [&dialog, classes] {
         const QString chosen = QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择类别文件"), classes->text(),
-                                                            QStringLiteral(u"类别文件 (*.txt);;所有文件 (*)"));
+                                                            QStringLiteral(u"类别文件 (*.txt *.yaml *.yml);;所有文件 (*)"));
         if (!chosen.isEmpty())
             classes->setText(chosen);
     });
@@ -218,7 +218,7 @@ std::optional<ImportChoice> askImportOptions(QWidget* parent, const ImportQuesti
     form->setWidget(form->rowCount() - 1, QFormLayout::LabelRole, labelsLabel);
     const auto [classes, browseClasses] = fileRow(QStringLiteral("importClasses"), QStringLiteral(u"类别文件："), [&dialog](const QString& start) {
         return QFileDialog::getOpenFileName(&dialog, QStringLiteral(u"选择类别文件"), start,
-                                            QStringLiteral(u"类别文件 (*.txt);;所有文件 (*)"));
+                                            QStringLiteral(u"类别文件 (*.txt *.yaml *.yml);;所有文件 (*)"));
     });
     classes->setPlaceholderText(question.plainFolder ? QStringLiteral(u"不选：用标注文件夹里的 classes.txt")
                                                      : QStringLiteral(u"不选：用标注文件夹里的 classes.txt，没有就用项目的类别"));

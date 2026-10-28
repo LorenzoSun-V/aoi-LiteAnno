@@ -393,6 +393,38 @@ private slots:
         QVERIFY(!formats::readClassesFile(QStringLiteral("/nonexistent/classes.txt")).error.isEmpty());
     }
 
+    // Field 2026-10-28: a classes.txt of "0: Dirty" lines, as copied from the names of a
+    // data.yaml, gives the names, by their numbers.
+    void numberedClassLines()
+    {
+        const QStringList expected = {QStringLiteral("Dirty"), QStringLiteral("Scratch"), QStringLiteral("Crack"), QStringLiteral("Solder")};
+        QCOMPARE(formats::parseClassesFile("0: Dirty\n1: Scratch\n2: Crack\n3: Solder\n").names, expected);
+        QCOMPARE(formats::parseClassesFile("0: Dirty\r\n1: Scratch\r\n2: Crack\r\n3: Solder").names, expected);
+        QCOMPARE(formats::parseClassesFile("2: Crack\n0: Dirty\n3: Solder\n1:   Scratch  \n").names, expected);
+        QCOMPARE(formats::parseClassesFile(u8"0: 划痕\n1: '0: 脏污'\n").names, (QStringList{QStringLiteral(u"划痕"), QStringLiteral(u"0: 脏污")}));
+        // Not numbered: names that only hold a colon or digits stay as they are.
+        QCOMPARE(formats::parseClassesFile("12:30\na:b\n7\n").names,
+                 (QStringList{QStringLiteral("12:30"), QStringLiteral("a:b"), QStringLiteral("7")}));
+        // Refused rather than guessed.
+        QVERIFY(formats::parseClassesFile("0: Dirty\nScratch\n").error.contains(QStringLiteral(u"第 2 行")));
+        QVERIFY(formats::parseClassesFile("0: Dirty\n2: Crack\n").error.contains(QStringLiteral(u"缺少编号 1")));
+        QVERIFY(formats::parseClassesFile("0: Dirty\n0: Crack\n").error.contains(QStringLiteral(u"编号 0 写了两次")));
+        QVERIFY(formats::parseClassesFile("0: Dirty\n1: Dirty\n").error.contains(QStringLiteral("Dirty")));
+        QVERIFY(formats::parseClassesFile("0: Dirty\n1:\n").error.contains(QStringLiteral(u"第 2 行")));
+    }
+
+    // A data.yaml chosen as the class file: its names.
+    void datasetYamlAsClassFile()
+    {
+        QTemporaryDir dir;
+        const QString path = dir.filePath(QStringLiteral("data.YAML"));
+        QFile file(path);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write("path: ../datasets/aoi\ntrain: images/train\nval: images/val\nnc: 2\nnames:\n  0: Dirty\n  1: Scratch\n");
+        file.close();
+        QCOMPARE(formats::readClassesFile(path).names, (QStringList{QStringLiteral("Dirty"), QStringLiteral("Scratch")}));
+    }
+
     void onlyConfirmedImagesAreExported()
     {
         Project project;

@@ -87,6 +87,33 @@ private slots:
 
     // Each group: one rectangle of a class the file names, points named by its keypoints,
     // each at most once.
+    // The names of an ultralytics dataset yaml (data.yaml), chosen as the class file.
+    void datasetYaml()
+    {
+        const QStringList two = {QStringLiteral("Dirty"), QStringLiteral("Scratch")};
+        QCOMPARE(parseDatasetYaml("names:\n  0: Dirty\n  1: Scratch\n").names, two);
+        QCOMPARE(parseDatasetYaml("names:\n  1: Scratch\n  0: Dirty  # comment\n").names, two);
+        QCOMPARE(parseDatasetYaml("names: [Dirty, 'Scratch']\n").names, two);
+        QCOMPARE(parseDatasetYaml("names:\n- Dirty\n- Scratch\n").names, two);
+        QCOMPARE(parseDatasetYaml("\xEF\xBB\xBF# dataset\n---\npath: ../datasets/aoi  # root\ntrain: images/train\nval:\n  - images/val\n"
+                                  "test:\nnc: 2\nnames:\n  0: Dirty\n  1: Scratch\ndownload: |\n  from x import y\n  y()\n")
+                     .names,
+                 two);
+        QCOMPARE(parseDatasetYaml(u8"names:\n  0: 划痕\n  1: '1'\n").names, (QStringList{QStringLiteral(u"划痕"), QStringLiteral("1")}));
+
+        QVERIFY(parseDatasetYaml("nc: 3\nnames: [a, b]\n").error.contains(QStringLiteral(u"第 1 行")));
+        QVERIFY(parseDatasetYaml("train: images\n").error.contains(QStringLiteral("names")));
+        QVERIFY(parseDatasetYaml("names: {0: a, 1: b}\n").error.contains(QStringLiteral(u"第 1 行")));
+        QVERIFY(parseDatasetYaml("names:\n  0: a\n  2: b\n").error.contains(QStringLiteral(u"缺少编号 1")));
+        QVERIFY(parseDatasetYaml("names:\n  0: a\n  - b\n").error.contains(QStringLiteral(u"第 3 行")));
+        QVERIFY(parseDatasetYaml("names:\n  0: a\n  x: b\n").error.contains(QStringLiteral(u"第 3 行")));
+        QVERIFY(parseDatasetYaml("names:\n  0: 1\n").error.contains(QStringLiteral(u"第 2 行")));  // a number, not a name
+        QVERIFY(parseDatasetYaml("names: [a, a]\n").error.contains(QStringLiteral("a")));
+        QVERIFY(parseDatasetYaml("names: [a]\nnames: [b]\n").error.contains(QStringLiteral(u"第 2 行")));
+        QVERIFY(parseDatasetYaml("names:\n\t0: a\n").error.contains(QStringLiteral(u"第 2 行")));
+        QVERIFY(!parseDatasetYaml("\xFF").error.isEmpty());
+    }
+
     void poseChecks()
     {
         const PoseConfig pose = parsePoseConfig("classes:\n  person: [nose, tail]\n");

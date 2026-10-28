@@ -581,6 +581,40 @@ private slots:
 #endif
     }
 
+    // Field 2026-10-28: a classes.txt of "0: Dirty" lines gave the label "0: Dirty". The
+    // names are read by their numbers, also from a data.yaml chosen as the class file.
+    void numberedClassFile()
+    {
+        Project project;
+        project.image(QStringLiteral("a.png"));
+        project.image(QStringLiteral("b.png"));
+        writeFile(project.labels.filePath(QStringLiteral("a.txt")), "1 0.5 0.5 0.1 0.2\n0 0.2 0.2 0.1 0.1\n");
+        writeFile(project.labels.filePath(QStringLiteral("b.txt")), "1 0.5 0.5 0.1 0.2\n");
+        writeFile(project.labels.filePath(QStringLiteral("classes.txt")), "0: scratch\n1: dent\n");
+        ImportReport report = project.run({});
+        QVERIFY2(report.written, qPrintable(report.error));
+        QList<Shape> shapes = project.shapes(QStringLiteral("a.png"));
+        QCOMPARE(shapes.size(), 2);
+        QCOMPARE(shapes[0].label, QStringLiteral("dent"));
+        QCOMPARE(shapes[1].label, QStringLiteral("scratch"));
+
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("b.json"))));
+        writeFile(project.labels.filePath(QStringLiteral("data.yaml")), "nc: 2\nnames:\n  0: scratch\n  1: dent\n");
+        ImportRequest request;
+        request.classesFile = project.labels.filePath(QStringLiteral("data.yaml"));
+        report = project.run(request);
+        QVERIFY2(report.written, qPrintable(report.error));
+        QCOMPARE(project.shapes(QStringLiteral("b.png")).value(0).label, QStringLiteral("dent"));
+
+        // Some lines numbered, some not: nothing is imported.
+        QVERIFY(QFile::remove(project.data.filePath(QStringLiteral("b.json"))));
+        writeFile(project.labels.filePath(QStringLiteral("classes.txt")), "0: scratch\ndent\n");
+        report = project.run({});
+        QVERIFY(!report.written);
+        QVERIFY2(report.error.contains(QStringLiteral(u"第 2 行")), qPrintable(report.error));
+        QVERIFY(!QFile::exists(project.data.filePath(QStringLiteral("b.json"))));
+    }
+
     // A tab-separated file imports through the whole service as well.
     void tabSeparatedYoloFile()
     {
