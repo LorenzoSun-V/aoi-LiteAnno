@@ -2,7 +2,7 @@
 
 轻量的图片标注工具，标注文件与 X-AnyLabeling 的 JSON 格式兼容。面向工业检测和安防场景的标注人员：启动快、安装包小，软件内不加载模型。
 
-使用说明（标注人员、现场部署人员、算法工程师）见 [docs/user-manual.md](docs/user-manual.md)。
+使用说明（标注人员、现场部署人员、算法工程师）见 [docs/user-manual.md](docs/user-manual.md)。每次更新的变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 当前状态
 
